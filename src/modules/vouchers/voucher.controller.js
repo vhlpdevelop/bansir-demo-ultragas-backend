@@ -1,4 +1,5 @@
 import { Voucher } from './voucher.model.js';
+import { Customer } from '../customers/customer.model.js';
 
 export async function emitVoucher(req, res) {
   try {
@@ -8,9 +9,18 @@ export async function emitVoucher(req, res) {
       return res.status(400).json({ success: false, message: 'Dados incompletos para emitir o vale.' });
     }
 
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    let customer = await Customer.findOne({ phone: cleanPhone });
+    if (!customer) {
+      await Customer.create({ name: customerName, phone: cleanPhone });
+    } else if (customer.name !== customerName) {
+      customer.name = customerName;
+      await customer.save();
+    }
+
     const voucher = new Voucher({
       customerName,
-      customerPhone,
+      customerPhone: cleanPhone,
       items,
       totalAmount
     });
@@ -60,7 +70,7 @@ export async function redeemVoucher(req, res) {
     }
     
     if (voucher.status !== 'ACTIVE') {
-      return res.status(400).json({ success: false, message: \`Este vale já foi \${voucher.status === 'REDEEMED' ? 'resgatado' : 'cancelado'}.\` });
+      return res.status(400).json({ success: false, message: `Este vale já foi ${voucher.status === 'REDEEMED' ? 'resgatado' : 'cancelado'}.` });
     }
     
     voucher.status = 'REDEEMED';

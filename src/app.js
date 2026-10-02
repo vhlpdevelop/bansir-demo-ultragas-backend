@@ -22,6 +22,7 @@ import operationRoutes from './modules/operations/operation.routes.js';
 import supplierRoutes from './modules/suppliers/supplier.routes.js';
 import settingsRoutes from './modules/settings/settings.routes.js';
 import voucherRoutes from './modules/vouchers/voucher.routes.js';
+import customerRoutes from './modules/customers/customer.routes.js';
 
 const app = express();
 
@@ -96,6 +97,7 @@ app.use(['/api/v1', '/api/reports', '/api/suppliers'], (req, res, next) => {
 });
 
 // Mount domain modules
+app.use('/api/v1/customers', customerRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/vouchers', voucherRoutes);
 app.use('/api/v1/auth', authRoutes);
