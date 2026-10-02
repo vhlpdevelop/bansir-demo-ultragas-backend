@@ -12,7 +12,7 @@ export async function logout(req, res) {
 
 export function start(req, res) {
   try {
-    whatsappService.client.initialize();
+    whatsappService.initialize();
   } catch (e) {
     console.error('Error starting whatsapp', e);
   }

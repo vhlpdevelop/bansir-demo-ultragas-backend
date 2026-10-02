@@ -20,6 +20,7 @@
   "dependencies": {
     "@nfewizard/danfe": "1.0.7",
     "@nfewizard/nfce": "1.0.6",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -31,9 +32,9 @@
     "mongoose": "^8.9.5",
     "nfewizard-io": "1.1.4",
     "pdfkit": "^0.20.2",
+    "pino": "^10.3.1",
     "qrcode": "^1.5.4",
     "web-push": "^3.6.7",
-    "whatsapp-web.js": "^1.34.7",
     "zod": "^4.6.5"
   },
   "devDependencies": {
