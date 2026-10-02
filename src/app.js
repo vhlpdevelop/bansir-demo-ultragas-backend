@@ -23,6 +23,7 @@ import supplierRoutes from './modules/suppliers/supplier.routes.js';
 import settingsRoutes from './modules/settings/settings.routes.js';
 import voucherRoutes from './modules/vouchers/voucher.routes.js';
 import customerRoutes from './modules/customers/customer.routes.js';
+import whatsappRoutes from './modules/whatsapp/whatsapp.routes.js';
 
 const app = express();
 
@@ -114,6 +115,7 @@ app.use('/api/v1/operations', operationRoutes);
 app.use('/api/reports', reportsRoutes); // Alias as referenced in specification
 app.use('/api/v1/suppliers', supplierRoutes);
 app.use('/api/suppliers', supplierRoutes);
+app.use('/api/v1/whatsapp', whatsappRoutes);
 
 // Error handlers
 app.use(notFound);

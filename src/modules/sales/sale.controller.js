@@ -16,6 +16,8 @@ export async function list(req, res, next) {
   }
 }
 
+import { whatsappService } from '../../services/whatsapp.service.js';
+
 export async function create(req, res, next) {
   try {
     const { productName, unitPrice, quantity } = req.body;
@@ -44,6 +46,15 @@ export async function create(req, res, next) {
       });
     } catch (notifErr) {
       console.warn('[Sale Notification Error]', notifErr.message);
+    }
+
+    // Enviar WhatsApp automaticamente se for entrega
+    if (sale.deliveryMode === 'delivery' && sale.deliveryEmployeePhone) {
+      const payText = sale.paymentMethod === 'pagar_na_entrega' ? 'Cobrar na entrega do cliente' : 'Já pago';
+      const msg = `🛵 *Nova Entrega Ultragaz*\n\n*Local:* ${sale.deliveryAddress}\n*Cliente:* ${sale.customerName || 'Não informado'}\n*Produto:* ${sale.quantity || 1}x ${sale.productName}\n*Total da Entrega:* R$ ${Number(sale.totalAmount).toFixed(2)}\n*Pagamento:* ${payText}`;
+      
+      // Send asynchronously without awaiting to not block the request
+      whatsappService.sendMessage(sale.deliveryEmployeePhone, msg).catch(err => console.error('Erro enviando WA', err));
     }
 
     return res.status(201).json({
