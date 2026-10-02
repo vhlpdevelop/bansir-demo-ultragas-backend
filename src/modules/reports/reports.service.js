@@ -4,6 +4,8 @@ import { Product, Category } from '../products/product.model.js';
 import { StockMovement } from '../products/stock-movement.model.js';
 import { StoreSettings } from '../settings/settings.model.js';
 import { ROLE_HIERARCHY } from '../users/user.model.js';
+import { Employee } from '../employees/employee.model.js';
+import { Voucher } from '../vouchers/voucher.model.js';
 import { requireDatabase } from '../../config/db.js';
 
 // Helper to safely format numbers with 2 decimals
@@ -112,13 +114,15 @@ export async function getReportsSummary(filters = {}, currentUser = null) {
   if (filters.saleStatus) prevSaleQuery.status = filters.saleStatus;
 
   // Execute concurrent queries
-  const [currentSales, prevSales, allProducts, stockMovementsPeriod, allStockMovements, categoriesList] = await Promise.all([
+  const [currentSales, prevSales, allProducts, stockMovementsPeriod, allStockMovements, categoriesList, allEmployees, currentVouchers] = await Promise.all([
     Sale.find(saleQuery).sort({ date: -1 }).lean(),
     Sale.find(prevSaleQuery).lean(),
     Product.find({ active: true }).lean(),
     StockMovement.find({ date: { $gte: start, $lte: end } }).lean(),
     StockMovement.find().sort({ date: -1 }).lean(),
-    Category.find().lean()
+    Category.find().lean(),
+    Employee.find().lean(),
+    Voucher.find({ issuedAt: { $gte: start, $lte: end } }).sort({ issuedAt: -1 }).lean()
   ]);
 
   // Product lookup map for quick access
@@ -640,6 +644,62 @@ export async function getReportsSummary(filters = {}, currentUser = null) {
     }
   };
 
+  // ==========================================
+  // E. FUNCIONÁRIOS & COMISSÕES
+  // ==========================================
+  const employeeMetrics = {
+    totalFuncionarios: allEmployees.length,
+    comissoesPorFuncionario: allEmployees.map(emp => {
+      // Find sales for this employee in the current period
+      const empSales = currentSales.filter(s => s.sellerName === emp.name && s.status === 'completed');
+      const totalVendido = empSales.reduce((acc, s) => acc + (Number(s.totalAmount) || 0), 0);
+      const totalItens = empSales.reduce((acc, s) => acc + (Number(s.quantity) || 0), 0);
+      
+      let comissaoEstimada = 0;
+      if (emp.commissionType === 'percentage') {
+        comissaoEstimada = totalVendido * ((Number(emp.commissionValue) || 0) / 100);
+      } else {
+        // fixed amount per item
+        comissaoEstimada = totalItens * (Number(emp.commissionValue) || 0);
+      }
+
+      return {
+        id: String(emp._id),
+        nome: emp.name,
+        cargo: emp.roleTitle,
+        salarioBase: Number(emp.baseSalary) || 0,
+        tipoComissao: emp.commissionType,
+        valorComissao: Number(emp.commissionValue) || 0,
+        totalVendido: round2(totalVendido),
+        totalItens,
+        comissaoEstimada: round2(comissaoEstimada)
+      };
+    }).sort((a, b) => b.totalVendido - a.totalVendido)
+  };
+  employeeMetrics.totalComissoesEstimadas = round2(employeeMetrics.comissoesPorFuncionario.reduce((acc, emp) => acc + emp.comissaoEstimada, 0));
+
+  // ==========================================
+  // F. VALES GÁS (VOUCHERS)
+  // ==========================================
+  const voucherMetrics = {
+    totalEmitidos: currentVouchers.length,
+    totalResgatados: currentVouchers.filter(v => v.status === 'REDEEMED').length,
+    totalPendentes: currentVouchers.filter(v => v.status === 'ACTIVE').length,
+    totalCancelados: currentVouchers.filter(v => v.status === 'CANCELLED').length,
+    valorTotalEmitido: round2(currentVouchers.reduce((acc, v) => acc + (Number(v.totalAmount) || 0), 0)),
+    detalhamento: currentVouchers.map(v => ({
+      code: v.code,
+      cliente: v.customerName,
+      status: v.status,
+      emitidoEm: v.issuedAt,
+      emitidoPor: v.issuedByName || 'Sistema',
+      origem: v.source || 'MANUAL',
+      resgatadoEm: v.redeemedAt,
+      resgatadoPor: v.redeemedByName || '',
+      valor: Number(v.totalAmount) || 0
+    }))
+  };
+
   return {
     meta: {
       geradoEm: new Date().toISOString(),
@@ -670,6 +730,8 @@ export async function getReportsSummary(filters = {}, currentUser = null) {
       resumo: fiscalMetrics,
       detalhamento: documentosFiscaisDetalhados
     },
+    funcionarios: employeeMetrics,
+    vales: voucherMetrics,
     consolidado
   };
 }
