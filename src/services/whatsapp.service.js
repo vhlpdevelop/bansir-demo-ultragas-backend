@@ -83,13 +83,13 @@ class WhatsAppService {
     }
     try {
       // Format phone number to WhatsApp format (Brazil country code assumed if not provided)
-      let cleanPhone = phone.replace(/\\D/g, '');
+      let cleanPhone = phone.replace(/\D/g, '');
       if (cleanPhone.length === 10 || cleanPhone.length === 11) {
         cleanPhone = '55' + cleanPhone;
       }
       const chatId = cleanPhone + '@c.us';
       await this.client.sendMessage(chatId, message);
-      console.log(\`Message sent to \${cleanPhone}\`);
+      console.log(`Message sent to ${cleanPhone}`);
       return true;
     } catch (error) {
       console.error('Error sending WhatsApp message:', error);
