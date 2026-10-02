@@ -28,6 +28,7 @@ export async function registerSale(data, currentUser) {
     customerName: data.customerName || '', customerCpf: data.customerCpf || '',
     paymentMethod: data.paymentMethod || 'pix', installments: Number(data.installments ?? 1),
     paymentFeeRate: Number(data.paymentFeeRate ?? 0), firstReceiptDate: data.firstReceiptDate || undefined,
+    receivedAmount: Number(data.receivedAmount || 0), changeAmount: Number(data.changeAmount || 0),
     invoiceIssued: false, financialStatus: 'posted', date: new Date() };
   buildSaleReceivables({ ...payload, _id: 'validation' });
   return mongoose.connection.transaction(async session => {

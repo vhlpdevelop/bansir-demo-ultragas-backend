@@ -98,6 +98,8 @@ const saleSchema = new mongoose.Schema(
     installments: { type: Number, default: 1 },
     paymentFeeRate: { type: Number, default: 0 },
     firstReceiptDate: { type: Date },
+    receivedAmount: { type: Number, default: 0 },
+    changeAmount: { type: Number, default: 0 },
     financialStatus: { type: String, enum: ['pending', 'posted', 'failed'], default: 'pending' },
     status: {
       type: String,
