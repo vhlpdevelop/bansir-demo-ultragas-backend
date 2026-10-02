@@ -78,7 +78,11 @@ export async function registerSale(data, currentUser) {
 
   if (payload.deliveryMode === 'delivery' && payload.deliveryEmployeePhone) {
     const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${payload.changeAmount.toFixed(2)}\n\n*Bom trabalho!*`;
-    whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).catch(err => console.error('Erro ao notificar entregador', err));
+    whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).then(async success => {
+      if (success && saleResult) {
+        await Sale.findByIdAndUpdate(saleResult._id || saleResult.id, { deliveryRouteSent: true });
+      }
+    }).catch(err => console.error('Erro ao notificar entregador', err));
   }
 
   return saleResult;
@@ -124,5 +128,7 @@ export async function resendDeliveryWhatsApp(saleId) {
   if (!success) {
     throw new Error('O Bot do WhatsApp está offline ou o número é inválido.');
   }
+  sale.deliveryRouteSent = true;
+  await sale.save();
   return true;
 }

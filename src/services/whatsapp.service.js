@@ -176,7 +176,14 @@ class WhatsAppService {
       if (cleanPhone.length === 10 || cleanPhone.length === 11) {
         cleanPhone = '55' + cleanPhone;
       }
-      const jid = `${cleanPhone}@s.whatsapp.net`;
+      
+      const rawJid = `${cleanPhone}@s.whatsapp.net`;
+      const [result] = await this.sock.onWhatsApp(rawJid);
+      
+      if (!result || !result.exists) {
+        console.error(`❌ [WhatsApp] O número ${cleanPhone} não possui WhatsApp ativo.`);
+        return false;
+      }
 
       let buffer;
       if (Buffer.isBuffer(base64Data)) {
@@ -188,13 +195,13 @@ class WhatsAppService {
         throw new Error('Formato de imagem inválido');
       }
 
-      await this.sock.sendMessage(jid, {
+      await this.sock.sendMessage(result.jid, {
         image: buffer,
         caption: message,
         mimetype: 'image/png'
       });
 
-      console.log(`📤 [WhatsApp] Imagem enviada com sucesso para ${cleanPhone}`);
+      console.log(`📤 [WhatsApp] Imagem enviada com sucesso para ${result.jid}`);
       return true;
     } catch (error) {
       console.error('❌ [WhatsApp] Erro ao enviar imagem:', error.message);

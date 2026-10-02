@@ -102,6 +102,10 @@ const saleSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    deliveryRouteSent: {
+      type: Boolean,
+      default: false
+    },
     paymentMethod: {
       type: String,
       enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'vale', 'outro', 'pagar_na_entrega'],
