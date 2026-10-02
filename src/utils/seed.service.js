@@ -14,9 +14,9 @@ const idFor = key => new mongoose.Types.ObjectId(createHash('sha256').update(`ba
 const routes = ['dashboard', 'sales', 'products', 'products-catalog', 'products-categories', 'products-stock', 'financial', 'financial-overview', 'financial-intelligence', 'employees', 'settings', 'rbac'];
 export function seedAccounts(env = process.env) {
   return [
-    { name: 'Karen', email: 'karen@ultragaz.com', role: 'superadmin', password: 'KarenUltragaz123', allowedRoutes: routes },
-    { name: 'Sibele', email: 'sibele@ultragaz.com', role: 'superadmin', password: 'SibeleUltragaz123', allowedRoutes: routes },
-    { name: 'Operador de Caixa', email: 'operador@ultragaz.com', role: 'operador', password: 'OperadorUltragaz123', allowedRoutes: ['sales'] }
+    { name: 'Karen', email: 'karen@ultragas.com', role: 'superadmin', password: 'KarenUltragas123', allowedRoutes: routes },
+    { name: 'Sibele', email: 'sibele@ultragas.com', role: 'superadmin', password: 'SibeleUltragas123', allowedRoutes: routes },
+    { name: 'Operador de Caixa', email: 'operador@ultragas.com', role: 'operador', password: 'OperadorUltragas123', allowedRoutes: ['sales'] }
   ].map(u => ({ ...u, email: u.email.trim().toLowerCase(), active: true, notificationPreferences: { sales: u.role !== 'operador', system: u.role !== 'operador', financial: u.role !== 'operador', stock: true } }));
 }
 export { seedPlan } from './seed-data.js';

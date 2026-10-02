@@ -76,4 +76,4 @@ const transactionSchema = new mongoose.Schema(
 
 transactionSchema.index({ saleId: 1, installment: 1 }, { unique: true, partialFilterExpression: { saleId: { $type: 'string' }, installment: { $type: 'number' } } });
 
-export const Transaction = mongoose.model('UltragazTransaction', transactionSchema);
+export const Transaction = mongoose.model('UltragasTransaction', transactionSchema);

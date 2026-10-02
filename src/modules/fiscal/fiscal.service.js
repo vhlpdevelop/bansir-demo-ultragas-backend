@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 import { requireDatabase } from '../../config/db.js';
 const configSchema = new mongoose.Schema({ _id: String, settings: mongoose.Schema.Types.Mixed });
-const FiscalConfig = mongoose.model('UltragazFiscalConfig', configSchema);
-const Invoice = mongoose.model('UltragazInvoice', new mongoose.Schema({ id: String, chaveAcesso: String, vendaReferencia: mongoose.Schema.Types.Mixed }, { strict: false }));
+const FiscalConfig = mongoose.model('UltragasFiscalConfig', configSchema);
+const Invoice = mongoose.model('UltragasInvoice', new mongoose.Schema({ id: String, chaveAcesso: String, vendaReferencia: mongoose.Schema.Types.Mixed }, { strict: false }));
 export async function getFiscalConfig() {
   requireDatabase();
   return (await FiscalConfig.findById('store').lean())?.settings || {};

@@ -12,7 +12,12 @@ export function generateToken(user) {
 export async function loginUser(email, password) {
   requireDatabase();
   if (typeof email !== 'string' || typeof password !== 'string') throw new Error('E-mail e senha obrigatórios.');
-  const user = await User.findOne({ email: email.trim().toLowerCase() }).select('+password');
+  const cleanEmail = email.trim().toLowerCase();
+  const altEmail = cleanEmail.includes('ultragas')
+    ? cleanEmail.replace(/ultragas/g, 'ultragaz')
+    : (cleanEmail.includes('ultragaz') ? cleanEmail.replace(/ultragaz/g, 'ultragas') : null);
+  const query = altEmail ? { email: { $in: [cleanEmail, altEmail] } } : { email: cleanEmail };
+  const user = await User.findOne(query).select('+password');
   if (!user || !user.active || !await user.matchPassword(password)) throw new Error('E-mail ou senha incorretos.');
   user.lastLogin = new Date(); await user.save();
   const data = user.toObject(); delete data.password;

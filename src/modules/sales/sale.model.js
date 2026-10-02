@@ -153,4 +153,4 @@ const saleSchema = new mongoose.Schema(
   }
 );
 
-export const Sale = mongoose.model('UltragazSale', saleSchema);
+export const Sale = mongoose.model('UltragasSale', saleSchema);

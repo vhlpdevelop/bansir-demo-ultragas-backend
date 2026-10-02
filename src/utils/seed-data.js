@@ -33,7 +33,7 @@ export const seedProducts = [
     stock: 45,
     sku: 'GAS-P13-REC',
     unit: 'UN',
-    brand: 'Ultragaz',
+    brand: 'Ultragas',
     specs: '13kg • Uso residencial • Apenas recarga',
     active: true
   },
@@ -48,7 +48,7 @@ export const seedProducts = [
     stock: 12,
     sku: 'GAS-P13-COM',
     unit: 'UN',
-    brand: 'Ultragaz',
+    brand: 'Ultragas',
     specs: '13kg • Vasilhame novo + carga completa',
     active: true
   },
@@ -63,7 +63,7 @@ export const seedProducts = [
     stock: 8,
     sku: 'GAS-P45-REC',
     unit: 'UN',
-    brand: 'Ultragaz',
+    brand: 'Ultragas',
     specs: '45kg • Uso comercial e condomínios',
     active: true
   },

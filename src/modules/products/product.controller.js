@@ -83,7 +83,7 @@ export async function create(req, res, next) {
       category: category || 'Cerâmica & Barro',
       stock: Number(stock) || 1,
       costPrice: Number(costPrice) || 0,
-      brand: brand || 'Ultragaz',
+      brand: brand || 'Ultragas',
       specs: specs || '',
       sku: sku || ''
     });

@@ -92,4 +92,4 @@ const employeeSchema = new mongoose.Schema(
   }
 );
 
-export const Employee = mongoose.model('UltragazEmployee', employeeSchema);
+export const Employee = mongoose.model('UltragasEmployee', employeeSchema);

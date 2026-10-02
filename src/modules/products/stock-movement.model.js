@@ -5,4 +5,4 @@ const schema = new mongoose.Schema({
   quantity: { type: Number, min: 1, required: true }, unitPrice: { type: Number, default: 0 },
   reason: String, notes: String, userName: String, date: { type: Date, default: Date.now }
 }, { timestamps: true });
-export const StockMovement = mongoose.model('UltragazStockMovement', schema);
+export const StockMovement = mongoose.model('UltragasStockMovement', schema);

@@ -20,8 +20,8 @@ schema.index({ job: 1, busy: 1 });
 schema.index({ ownerId: 1, createdAt: -1 });
 schema.index({ providerOrderId: 1 }, { unique: true, sparse: true });
 schema.index({ fiscalKey: 1 }, { unique: true, sparse: true });
-export const Operation = mongoose.model('UltragazCheckoutOperation', schema);
-export const FiscalSequence = mongoose.model('UltragazIntegrationFiscalSequence', new mongoose.Schema({ _id: String, value: Number }));
+export const Operation = mongoose.model('UltragasCheckoutOperation', schema);
+export const FiscalSequence = mongoose.model('UltragasIntegrationFiscalSequence', new mongoose.Schema({ _id: String, value: Number }));
 export function present(op) {
   const { fiscalPayload, fiscalData, xml, fingerprint, lockToken, leaseUntil, ...publicData } = op.toObject ? op.toObject() : op;
   return { ...publicData, id: publicData._id, hasXml: Boolean(publicData.xmlAvailable), testOnly: true };

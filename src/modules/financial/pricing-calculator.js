@@ -19,7 +19,7 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
   const safeTermRate = creditCardTermRate || 0;
   const maxSafeTotal = Math.max(50, 92 - safeTermRate);
 
-  // Inteligência de Rateio para Varejo de Gás e Água (Ultragaz):
+  // Inteligência de Rateio para Varejo de Gás e Água (Ultragas):
   // Em distribuição de gás, o custo fixo de estrutura alocado diretamente a cada unidade
   // não pode exceder uma cota viável de mercado (8% a 10%), evitando que uma baixa previsão
   // de receita mensal exploda o preço unitário do botijão.

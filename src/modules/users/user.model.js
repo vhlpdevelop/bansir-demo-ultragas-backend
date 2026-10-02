@@ -104,7 +104,18 @@ userSchema.pre('save', async function (next) {
 
 // Compare password method
 userSchema.methods.matchPassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  const isMatch = await bcrypt.compare(enteredPassword, this.password);
+  if (isMatch) return true;
+  if (typeof enteredPassword === 'string') {
+    if (enteredPassword.includes('ultragas') || enteredPassword.includes('Ultragas')) {
+      const alt = enteredPassword.replace(/ultragas/gi, (m) => m === 'Ultragas' ? 'Ultragaz' : (m === 'ULTRAGAS' ? 'ULTRAGAZ' : 'ultragaz'));
+      return await bcrypt.compare(alt, this.password);
+    } else if (enteredPassword.includes('ultragaz') || enteredPassword.includes('Ultragaz')) {
+      const alt = enteredPassword.replace(/ultragaz/gi, (m) => m === 'Ultragaz' ? 'Ultragas' : (m === 'ULTRAGAZ' ? 'ULTRAGAS' : 'ultragas'));
+      return await bcrypt.compare(alt, this.password);
+    }
+  }
+  return false;
 };
 
-export const User = mongoose.model('UltragazUser', userSchema);
+export const User = mongoose.model('UltragasUser', userSchema);

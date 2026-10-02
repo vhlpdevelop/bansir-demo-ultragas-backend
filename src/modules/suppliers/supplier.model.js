@@ -89,4 +89,4 @@ const supplierSchema = new mongoose.Schema(
 // Text index for search
 supplierSchema.index({ name: 'text', tradeName: 'text', document: 'text' });
 
-export const Supplier = mongoose.model('UltragazSupplier', supplierSchema);
+export const Supplier = mongoose.model('UltragasSupplier', supplierSchema);

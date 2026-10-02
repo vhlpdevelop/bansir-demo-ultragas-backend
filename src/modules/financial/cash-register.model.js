@@ -35,4 +35,4 @@ const cashRegisterSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export const CashRegister = mongoose.model('UltragazCashRegister', cashRegisterSchema);
+export const CashRegister = mongoose.model('UltragasCashRegister', cashRegisterSchema);

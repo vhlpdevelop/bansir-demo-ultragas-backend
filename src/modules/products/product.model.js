@@ -22,7 +22,7 @@ const categorySchema = new mongoose.Schema(
   }
 );
 
-export const Category = mongoose.model('UltragazCategory', categorySchema);
+export const Category = mongoose.model('UltragasCategory', categorySchema);
 
 const productSchema = new mongoose.Schema(
   {
@@ -69,7 +69,7 @@ const productSchema = new mongoose.Schema(
     },
     brand: {
       type: String,
-      default: 'Ultragaz'
+      default: 'Ultragas'
     },
     specs: {
       type: String,
@@ -97,5 +97,5 @@ const productSchema = new mongoose.Schema(
 // Text index for fast and fuzzy-like partial search
 productSchema.index({ name: 'text', category: 'text' });
 
-export const Product = mongoose.model('UltragazProduct', productSchema);
+export const Product = mongoose.model('UltragasProduct', productSchema);
 
