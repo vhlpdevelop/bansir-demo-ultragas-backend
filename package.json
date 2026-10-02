@@ -15,7 +15,8 @@
     "db:check": "node scripts/check-mongo.js",
     "seed:plan": "node src/utils/seed.js --dry-run",
     "seed:demo": "node src/utils/seed.js --demo",
-    "test:mongo": "node scripts/check-mongo-integration.js"
+    "test:mongo": "node scripts/check-mongo-integration.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "@nfewizard/danfe": "1.0.7",
