@@ -1,5 +1,5 @@
 import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
 
 class WhatsAppService {
@@ -93,6 +93,35 @@ class WhatsAppService {
       return true;
     } catch (error) {
       console.error('Error sending WhatsApp message:', error);
+      return false;
+    }
+  }
+  async sendMessageWithImage(phone, message, base64Data) {
+    if (this.status !== 'CONNECTED') {
+      console.log('WhatsApp is not connected, cannot send image.');
+      return false;
+    }
+    try {
+      let cleanPhone = phone.replace(/\D/g, '');
+      if (cleanPhone.length === 10 || cleanPhone.length === 11) {
+        cleanPhone = '55' + cleanPhone;
+      }
+      const chatId = cleanPhone + '@c.us';
+
+      // base64Data usually looks like "data:image/png;base64,iVBORw0KGgo..."
+      const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+      let media;
+      if (match) {
+        media = new MessageMedia(match[1], match[2], 'qrcode.png');
+      } else {
+        media = new MessageMedia('image/png', base64Data, 'qrcode.png');
+      }
+
+      await this.client.sendMessage(chatId, media, { caption: message });
+      console.log(`Image message sent to ${cleanPhone}`);
+      return true;
+    } catch (error) {
+      console.error('Error sending WhatsApp image message:', error);
       return false;
     }
   }
