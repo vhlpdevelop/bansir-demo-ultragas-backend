@@ -99,7 +99,10 @@ export async function registerSale(data, currentUser) {
           productName: data.productName,
           quantity: quantity,
           price: unitPrice
-        }]
+        }],
+        issuedBy: currentUser?._id || currentUser?.id || '',
+        issuedByName: currentUser?.name || data.sellerName || 'Operador PDV',
+        source: 'PDV'
       });
       await voucher.save();
       

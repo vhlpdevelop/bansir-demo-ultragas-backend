@@ -17,7 +17,10 @@ const voucherSchema = new mongoose.Schema({
   issuedAt: { type: Date, default: Date.now },
   redeemedAt: { type: Date },
   redeemedBy: { type: String, default: '' },
-  redeemedByName: { type: String, default: '' }
+  redeemedByName: { type: String, default: '' },
+  issuedBy: { type: String, default: '' },
+  issuedByName: { type: String, default: '' },
+  source: { type: String, enum: ['PDV', 'MANUAL'], default: 'MANUAL' }
 }, {
   timestamps: true
 });

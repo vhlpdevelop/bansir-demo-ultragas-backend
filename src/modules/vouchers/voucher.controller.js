@@ -24,7 +24,10 @@ export async function emitVoucher(req, res) {
       customerName,
       customerPhone: cleanPhone,
       items,
-      totalAmount
+      totalAmount,
+      issuedBy: req.user?._id || req.user?.id || '',
+      issuedByName: req.user?.name || 'Administrador',
+      source: 'MANUAL'
     });
 
     await voucher.save();
