@@ -49,7 +49,7 @@ const transactionSchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'transferencia', 'boleto', 'vale', 'outro', 'pagar_na_entrega'],
+      enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'transferencia', 'boleto', 'vale', 'outro', 'pagar_na_entrega', 'pix_entrega', 'maquininha_cartao'],
       default: 'pix'
     },
     date: {

@@ -2,7 +2,7 @@ import { Transaction, TRANSACTION_TYPES, TRANSACTION_CATEGORIES } from './transa
 import { requireDatabase } from '../../config/db.js';
 
 const statuses = ['completed', 'pending', 'cancelled'];
-const methods = ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'transferencia', 'boleto', 'vale', 'outro', 'pagar_na_entrega'];
+const methods = ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'transferencia', 'boleto', 'vale', 'outro', 'pagar_na_entrega', 'pix_entrega', 'maquininha_cartao'];
 const cents = value => Math.round(Number(value) * 100);
 const money = value => value / 100;
 function dateValue(value, label) {
