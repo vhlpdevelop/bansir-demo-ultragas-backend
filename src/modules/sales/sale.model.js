@@ -82,6 +82,14 @@ const saleSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    deliveryFee: {
+      type: Number,
+      default: 0
+    },
+    deliveryTime: {
+      type: String,
+      default: ''
+    },
     deliveryEmployeeId: {
       type: String,
       default: ''

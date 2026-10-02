@@ -65,15 +65,21 @@ export const useMongoDBAuthState = async () => {
           return data;
         },
         set: async (data) => {
-          const tasks = [];
           for (const category in data) {
             for (const id in data[category]) {
               const value = data[category][id];
               const key = `${category}-${id}`;
-              tasks.push(value ? writeData(value, key) : removeData(key));
+              try {
+                if (value) {
+                  await writeData(value, key);
+                } else {
+                  await removeData(key);
+                }
+              } catch (err) {
+                console.error(`[Baileys Auth] Erro silencioso na chave ${key}:`, err.message);
+              }
             }
           }
-          await Promise.all(tasks);
         }
       }
     },

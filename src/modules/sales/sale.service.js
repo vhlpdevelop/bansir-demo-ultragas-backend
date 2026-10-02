@@ -16,7 +16,8 @@ export async function registerSale(data, currentUser) {
   const round = value => Math.round(value * 100) / 100;
   const subtotal = round(unitPrice * quantity);
   const discountAmount = round(discountType === 'percentage' ? subtotal * discountValue / 100 : discountValue);
-  const totalAmount = round(subtotal - discountAmount);
+  const deliveryFee = Number(data.deliveryFee ?? 0);
+  const totalAmount = round(subtotal - discountAmount + deliveryFee);
   if (totalAmount <= 0) throw new Error('Desconto deve ser menor que o valor da venda.');
   const admin = ['admin', 'superadmin'].includes(currentUser?.role);
   const counter = ['Balcão', 'Balcão Geral'].includes(data.sellerName);
@@ -38,6 +39,8 @@ export async function registerSale(data, currentUser) {
     customerName: data.customerName || '', customerCpf: data.customerCpf || '',
     deliveryMode: data.deliveryMode || 'local',
     deliveryAddress: data.deliveryAddress || '',
+    deliveryFee,
+    deliveryTime: data.deliveryTime || '',
     deliveryEmployeeId: data.deliveryEmployeeId || '',
     deliveryEmployeeName: data.deliveryEmployeeName || '',
     deliveryEmployeePhone: data.deliveryEmployeePhone || '',
@@ -55,7 +58,7 @@ export async function registerSale(data, currentUser) {
     date: orderDate 
   };
   buildSaleReceivables({ ...payload, _id: 'validation' });
-  return mongoose.connection.transaction(async session => {
+  const saleResult = await mongoose.connection.transaction(async session => {
     const { product } = await decrementStock({ productId: data.productId, barcode: data.barcode, productName: data.productName, quantity }, session);
     const [sale] = await Sale.create([{ ...payload, productId: product._id, barcode: product.barcode, productName: product.name }], { session });
     await recordSaleReceivables(sale, currentUser._id || currentUser.id, session);
@@ -71,6 +74,15 @@ export async function registerSale(data, currentUser) {
     }
     return sale;
   });
+
+  if (payload.deliveryMode === 'delivery' && payload.deliveryEmployeePhone) {
+    import('../../services/whatsapp.service.js').then(({ whatsappService }) => {
+      const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${payload.changeAmount.toFixed(2)}\n\n*Bom trabalho!*`;
+      whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).catch(err => console.error('Erro ao notificar entregador', err));
+    }).catch(err => console.error('Erro ao importar whatsappService', err));
+  }
+
+  return saleResult;
 }
 export async function retrySaleFinancial(id, userId) {
   requireDatabase();

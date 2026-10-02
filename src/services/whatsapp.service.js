@@ -39,10 +39,13 @@ class WhatsAppService {
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: ['Bansir SaaS', 'Chrome', '1.0.0'],
-        connectTimeoutMs: 30000,
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        syncFullHistory: false,
+        markOnlineOnConnect: true,
+        connectTimeoutMs: 60000,
         keepAliveIntervalMs: 25000,
-        emitOwnEvents: false
+        emitOwnEvents: false,
+        generateHighQualityLinkPreview: false
       });
 
       this.sock.ev.on('creds.update', saveCreds);
