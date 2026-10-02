@@ -1,11 +1,16 @@
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
+import os from 'os';
+import path from 'path';
 
 class WhatsAppService {
   constructor() {
     this.client = new Client({
-      authStrategy: new LocalAuth({ clientId: 'ultragas-pdv' }),
+      authStrategy: new LocalAuth({ 
+        clientId: 'ultragas-pdv',
+        dataPath: path.join(os.tmpdir(), '.wwebjs_auth')
+      }),
       puppeteer: {
         headless: true,
         args: [
