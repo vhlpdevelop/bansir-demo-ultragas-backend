@@ -15,8 +15,7 @@
     "db:check": "node scripts/check-mongo.js",
     "seed:plan": "node src/utils/seed.js --dry-run",
     "seed:demo": "node src/utils/seed.js --demo",
-    "test:mongo": "node scripts/check-mongo-integration.js",
-    "postinstall": "node node_modules/puppeteer/install.mjs"
+    "test:mongo": "node scripts/check-mongo-integration.js"
   },
   "dependencies": {
     "@nfewizard/danfe": "1.0.7",
