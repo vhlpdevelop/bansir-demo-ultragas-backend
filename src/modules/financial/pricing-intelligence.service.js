@@ -39,8 +39,9 @@ async function compute(settings) {
   const moiEmployees = active.filter(e => e.laborType === 'MOI');
   const np = settings.businessHours.customNp ?? modEmployees.length;
   const moiPayroll = moiEmployees.reduce((sum, e) => sum + Number(e.baseSalary || 0), 0);
+  const totalPayroll = active.reduce((sum, e) => sum + Number(e.baseSalary || 0), 0);
   const registeredTotal = settings.fixedExpenses.reduce((sum, e) => sum + e.amount, 0);
-  const totalFixedExpenses = registeredTotal + moiPayroll;
+  const totalFixedExpenses = registeredTotal + totalPayroll;
   const fixedExpenseRate = totalFixedExpenses / settings.pricingRules.expectedMonthlyRevenue * 100;
   const percentEmployees = modEmployees.filter(e => e.commissionType === 'percentage');
   const commissionRate = settings.pricingRules.commissionMode === 'manual' ? settings.pricingRules.manualCommissionRate :
@@ -51,9 +52,9 @@ async function compute(settings) {
   const monthlyProductiveCapacity = np * hp * dtn * efficiencyFactor;
   return {
     businessHours: { ...settings.businessHours, weeklyStoreHours: daysPerWeek * dailyStoreHours, monthlyStoreHours: Math.round(daysPerWeek * dailyStoreHours * 52 / 12) },
-    workforce: { totalEmployees: active.length, np, moiCount: moiEmployees.length, moiPayroll, modEmployees, moiEmployees },
+    workforce: { totalEmployees: active.length, np, moiCount: moiEmployees.length, moiPayroll, totalPayroll, modEmployees, moiEmployees },
     productiveCapacity: { np, hp, dtn, efficiencyFactor, monthlyProductiveCapacity },
-    fixedExpenses: { items: settings.fixedExpenses, registeredTotal, moiPayroll, totalFixedExpenses, hourlyStructureCost: monthlyProductiveCapacity > 0 ? totalFixedExpenses / monthlyProductiveCapacity : 0 },
+    fixedExpenses: { items: settings.fixedExpenses, registeredTotal, totalPayroll, moiPayroll, totalFixedExpenses, hourlyStructureCost: monthlyProductiveCapacity > 0 ? totalFixedExpenses / monthlyProductiveCapacity : 0 },
     variableExpenses: { items: settings.variableExpenses, totalVariableExpensesRate: variableRate },
     pricingRules: { ...settings.pricingRules, fixedExpenseRate, effectiveCommissionRate: commissionRate },
     indicators: { ...calculation, totalTaxesAndDeductionsT: calculation.totalT, creditCardTermRate: settings.pricingRules.creditCardTermRate }
