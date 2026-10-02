@@ -16,5 +16,10 @@ export const createSaleSchema = z.object({
   customerName: z.string().optional(),
   customerCpf: z.string().optional(),
   firstReceiptDate: z.string().optional(),
-  invoiceIssued: z.boolean().optional()
+  invoiceIssued: z.boolean().optional(),
+  deliveryMode: z.string().optional(),
+  deliveryAddress: z.string().optional(),
+  deliveryEmployeeId: z.string().optional(),
+  deliveryEmployeeName: z.string().optional(),
+  deliveryEmployeePhone: z.string().optional()
 });

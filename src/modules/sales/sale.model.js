@@ -69,9 +69,30 @@ const saleSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    deliveryMode: {
+      type: String,
+      enum: ['local', 'delivery'],
+      default: 'local'
+    },
+    deliveryAddress: {
+      type: String,
+      default: ''
+    },
+    deliveryEmployeeId: {
+      type: String,
+      default: ''
+    },
+    deliveryEmployeeName: {
+      type: String,
+      default: ''
+    },
+    deliveryEmployeePhone: {
+      type: String,
+      default: ''
+    },
     paymentMethod: {
       type: String,
-      enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'vale', 'outro'],
+      enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'vale', 'outro', 'pagar_na_entrega'],
       default: 'pix'
     },
     installments: { type: Number, default: 1 },
