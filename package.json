@@ -1,0 +1,44 @@
+{
+  "name": "bansir-backend",
+  "version": "1.0.0",
+  "description": "Bansir SaaS Backend - Node.js API modular para gestÃ£o de negÃ³cios de artesanato",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node src/utils/seed.js",
+    "push:keys": "node scripts/generate-vapid-keys.js",
+    "test": "node --test",
+    "test:operations": "node scripts/check-operations.js",
+    "preview:operations": "node scripts/preview-operations.js",
+    "db:check": "node scripts/check-mongo.js",
+    "seed:plan": "node src/utils/seed.js --dry-run",
+    "seed:demo": "node src/utils/seed.js --demo",
+    "test:mongo": "node scripts/check-mongo-integration.js"
+  },
+  "dependencies": {
+    "@nfewizard/danfe": "1.0.7",
+    "@nfewizard/nfce": "1.0.6",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.7.0",
+    "fast-xml-parser": "^5.11.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "nfewizard-io": "1.1.4",
+    "pdfkit": "^0.20.2",
+    "web-push": "^3.6.7",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "11.3.0",
+    "morgan": "^1.10.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

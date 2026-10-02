@@ -1,0 +1,20 @@
+import { z } from 'zod';
+
+export const createSaleSchema = z.object({
+  productName: z.string({ required_error: 'Nome do produto é obrigatório' }).trim().min(1, 'Nome do produto é obrigatório'),
+  unitPrice: z.number({ required_error: 'Preço unitário é obrigatório' }).positive('Preço unitário deve ser maior que zero'),
+  quantity: z.number().int().min(1, 'Quantidade mínima é 1').optional(),
+  productId: z.string().optional(),
+  barcode: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  installments: z.number().int().min(1).max(24).optional(),
+  paymentFeeRate: z.number().min(0).max(100).optional(),
+  discountType: z.enum(['fixed', 'percentage']).optional(),
+  discountValue: z.number().min(0).optional(),
+  sellerName: z.string().optional(),
+  sellerId: z.string().optional(),
+  customerName: z.string().optional(),
+  customerCpf: z.string().optional(),
+  firstReceiptDate: z.string().optional(),
+  invoiceIssued: z.boolean().optional()
+});

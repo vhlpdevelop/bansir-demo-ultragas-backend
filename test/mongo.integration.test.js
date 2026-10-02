@@ -1,0 +1,200 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import { randomBytes, createECDH } from 'node:crypto';
+import webpush from 'web-push';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+process.env.JWT_SECRET = randomBytes(48).toString('base64url');
+const keys = webpush.generateVAPIDKeys();
+process.env.VAPID_PUBLIC_KEY = keys.publicKey;
+process.env.VAPID_PRIVATE_KEY = keys.privateKey;
+process.env.VAPID_SUBJECT = 'mailto:test@example.com';
+const uri = process.env.MONGODB_TEST_URI;
+
+test('MongoDB: seed, persistence, auth, sales atomicity, ledger and push', { skip: !uri, timeout: 180000 }, async t => {
+  const database = new URL(uri).pathname.slice(1);
+  assert.match(database, /^bansir_test_[a-f0-9]+$/, 'Only a dedicated, disposable test database is allowed');
+  const { seedDatabase, seedAccounts } = await import('../src/utils/seed.service.js');
+  const { User } = await import('../src/modules/users/user.model.js');
+  const { Employee } = await import('../src/modules/employees/employee.model.js');
+  const { Product } = await import('../src/modules/products/product.model.js');
+  const { StockMovement } = await import('../src/modules/products/stock-movement.model.js');
+  const { Sale } = await import('../src/modules/sales/sale.model.js');
+  const { Transaction } = await import('../src/modules/financial/transaction.model.js');
+  const { Notification } = await import('../src/modules/notifications/notification.model.js');
+  const finance = await import('../src/modules/financial/financial.service.js');
+  const pricing = await import('../src/modules/financial/pricing-intelligence.service.js');
+  const products = await import('../src/modules/products/product.service.js');
+  const sales = await import('../src/modules/sales/sale.service.js');
+  const auth = await import('../src/modules/auth/auth.service.js');
+  const push = await import('../src/modules/notifications/notification.service.js');
+  const { default: app } = await import('../src/app.js');
+  const password = randomBytes(24).toString('base64url');
+  const accounts = seedAccounts({ SEED_ADMIN_PASSWORD: password, SEED_MANAGER_PASSWORD: password, SEED_OPERATOR_PASSWORD: password });
+  let server;
+  const originalSend = webpush.sendNotification;
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 15000 });
+  assert.equal(mongoose.connection.name, database);
+  assert.equal((await mongoose.connection.db.listCollections().toArray()).length, 0, 'Test database must be new');
+  try {
+    await t.test('empty database stays empty; seed creates only missing data and no ledger fixtures', async () => {
+      assert.deepEqual(await products.getAllProducts(), []);
+      assert.deepEqual(await finance.getAllTransactions(), []);
+      const { stdout } = await promisify(execFile)(process.execPath, ['src/utils/seed.js'], {
+        cwd: new URL('../', import.meta.url),
+        env: { ...process.env, MONGODB_URI: uri, SEED_ADMIN_EMAIL: accounts[0].email,
+          SEED_ADMIN_PASSWORD: password, SEED_MANAGER_PASSWORD: password, SEED_OPERATOR_PASSWORD: password }
+      });
+      assert.match(stdout, /Seed concluída/);
+      assert.equal(await User.countDocuments(), 3);
+      assert.equal(await Product.countDocuments(), 8);
+      assert.equal(await Employee.countDocuments(), 5);
+      const counts = await seedDatabase({ accounts });
+      assert.ok(Object.values(counts).every(count => count === 0));
+      assert.equal(await Sale.countDocuments(),0);
+      assert.equal(await Transaction.countDocuments(),0);
+      assert.equal(await StockMovement.countDocuments(),8);
+      assert.equal((await Employee.find()).reduce((s,e)=>s+e.totalSalesAmount,0),0);
+      const product = await Product.findOne();
+      await products.updateProduct(product._id,{ stock: 7, price: 199 });
+      const movementCount = await StockMovement.countDocuments();
+      const again = await seedDatabase({ accounts });
+      assert.ok(Object.values(again).every(n=>n===0));
+      assert.equal((await Product.findById(product._id)).stock,7);
+      assert.equal((await Product.findById(product._id)).price,199);
+      assert.equal(await StockMovement.countDocuments(),movementCount);
+      const escaped = await products.searchProducts('['); assert.deepEqual(escaped,[]);
+    });
+    const admin = await User.findOne({role:'superadmin'});
+    const operator = await User.findOne({role:'operador'});
+    await t.test('real password authentication and backend permissions', async () => {
+      await assert.rejects(auth.loginUser(admin.email,'wrongpassword'));
+      const login = await auth.loginUser(admin.email,password);
+      assert.ok(login.token); assert.equal(login.user.password,undefined);
+      server = app.listen(0,'127.0.0.1'); await new Promise(r=>server.once('listening',r));
+      const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+      const headers = user=>({'Content-Type':'application/json',Authorization:`Bearer ${auth.generateToken(user)}`});
+      assert.equal((await fetch(base+'/auth/me',{headers:headers(admin)})).status,200);
+      for (const path of ['/financial/summary','/financial/pricing-intelligence','/settings']) assert.equal((await fetch(base+path,{headers:headers(operator)})).status,403);
+      assert.equal((await fetch(base+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);
+      const config = await fetch(base+'/settings',{method:'PUT',headers:headers(admin),body:JSON.stringify({storeName:'Test store',pixKey:'test@example.com'})});
+      assert.equal(config.status,200);
+      assert.equal((await fetch(base+'/payments/pix/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);
+      assert.equal((await fetch(base+'/payments/pix/config',{method:'PUT',headers:headers(operator),body:'{}'})).status,403);
+      assert.equal((await fetch(base+'/fiscal/config',{headers:headers(operator)})).status,403);
+      const pix = await fetch(base+'/payments/pix/config',{method:'PUT',headers:headers(admin),body:JSON.stringify({pixKey:'test@example.com',merchantName:'Test store',merchantCity:'BONITO',enabled:true})});
+      assert.equal(pix.status,200);
+      assert.equal((await (await fetch(base+'/payments/pix/config',{headers:headers(admin)})).json()).data.pixKey,'test@example.com');
+      assert.equal((await fetch(base+'/payments/pix/generate',{method:'POST',headers:headers(admin),body:JSON.stringify({amount:10})})).status,200);
+      assert.equal((await fetch(base+'/payments/terminal/simulate',{method:'POST',headers:headers(admin),body:'{}'})).status,501);
+      assert.equal((await (await fetch(base+'/settings',{headers:headers(admin)})).json()).data.storeName,'Test store');
+      await User.updateOne({_id:operator._id},{$set:{active:false}});
+      assert.equal((await fetch(base+'/auth/me',{headers:headers(operator)})).status,401);
+      await User.updateOne({_id:operator._id},{$set:{active:true}});
+    });
+    await t.test('sale, stock, commission and receivables commit or roll back together', async () => {
+      const product = await Product.findOne({barcode:'7891234567892'});
+      const before = product.stock;
+      const input = { productId:product._id, productName:product.name, quantity:2, unitPrice:50, paymentMethod:'cartao_credito', installments:3, paymentFeeRate:2.99, firstReceiptDate:'2027-01-31T12:00:00Z' };
+      const sale = await sales.registerSale(input,operator);
+      assert.equal(sale.financialStatus,'posted');
+      assert.equal((await Product.findById(product._id)).stock,before-2);
+      assert.equal((await Employee.findOne({email:operator.email})).totalSalesAmount,100);
+      const ledger = await Transaction.find({saleId:String(sale._id)}).sort({installment:1});
+      assert.deepEqual(ledger.map(e=>e.amount),[32.34,32.34,32.33]);
+      await sales.retrySaleFinancial(sale._id,admin._id);
+      assert.equal(await Transaction.countDocuments({saleId:String(sale._id)}),3);
+      const salesBefore = await Sale.countDocuments(), movementsBefore = await StockMovement.countDocuments();
+      const originalBulkWrite = Transaction.bulkWrite;
+      try {
+        Transaction.bulkWrite = async () => { throw new Error('Injected ledger failure'); };
+        await assert.rejects(sales.registerSale(input,operator),/Injected/);
+      } finally { Transaction.bulkWrite = originalBulkWrite; }
+      assert.equal(await Sale.countDocuments(),salesBefore);
+      assert.equal(await StockMovement.countDocuments(),movementsBefore);
+      assert.equal((await Product.findById(product._id)).stock,before-2);
+      await assert.rejects(sales.registerSale({...input,quantity:9999},operator),/estoque/);
+      await assert.rejects(sales.registerSale({...input,invoiceIssued:true},operator),/fiscal/);
+      assert.equal((await finance.getFinancialSummary()).kpis.receivable,97.01);
+      await finance.updateTransactionStatus(ledger[0]._id,'completed');
+      assert.equal((await finance.getFinancialSummary()).kpis.netIncome,32.34);
+      for (const amount of [0,-1,Infinity,'bad']) await assert.rejects(finance.createTransaction({title:'Bad',amount},admin._id));
+    });
+    await t.test('pricing persists zero values and rejects invalid deductions', async () => {
+      await pricing.updatePricingIntelligenceData({pricingRules:{taxRate:0,desiredProfitMargin:0,commissionMode:'manual',manualCommissionRate:0}});
+      assert.equal((await pricing.getPricingIntelligenceData()).pricingRules.taxRate,0);
+      await assert.rejects(pricing.updatePricingIntelligenceData({pricingRules:{taxRate:100}}));
+    });
+    await t.test('subscriptions and notifications persist, filter recipients and expire correctly', async () => {
+      const ecdh = createECDH('prime256v1');
+      const subscription = {endpoint:'https://fcm.googleapis.com/fcm/send/bansir-test',keys:{p256dh:ecdh.generateKeys().toString('base64url'),auth:randomBytes(16).toString('base64url')}};
+      await assert.rejects(push.registerOrUpdateDevice(admin._id,{deviceId:'bad',pushEnabled:true}));
+      const devices = await push.registerOrUpdateDevice(admin._id,{deviceId:'test',subscription,pushEnabled:true});
+      assert.equal(devices[0].hasSubscription,true); assert.equal(devices[0].subscription,undefined);
+      const encrypted = webpush.generateRequestDetails(subscription,JSON.stringify({title:'Test'}));
+      assert.ok(encrypted.body.length>0); assert.match(encrypted.headers.Authorization,/^vapid /i);
+      let sent = 0;
+      webpush.sendNotification = async()=>{sent++;return {statusCode:201};};
+      const notification = await push.createNotification({type:'sales',title:'Test sale',desc:'Test'});
+      assert.equal(sent,1);
+      assert.equal((await push.getNotificationsForUser(operator)).length,0);
+      await push.markNotificationAsRead(notification.id,admin._id);
+      assert.equal((await push.getNotificationsForUser(admin))[0].read,true);
+      await push.toggleDevicePush(admin._id,'test',false);
+      await push.registerOrUpdateDevice(admin._id,{deviceId:'test',browser:'Chrome'});
+      await push.createNotification({type:'sales',title:'Muted'}); assert.equal(sent,1);
+      await push.toggleDevicePush(admin._id,'test',true);
+      webpush.sendNotification = async()=>{throw Object.assign(new Error('gone'),{statusCode:410});};
+      await push.sendTestPushToDevices(admin);
+      assert.equal((await User.findById(admin._id)).devices[0].subscription,null);
+      await push.registerOrUpdateDevice(admin._id,{deviceId:'test',subscription,pushEnabled:true});
+      await push.registerOrUpdateDevice(operator._id,{deviceId:'shared',subscription,pushEnabled:true});
+      assert.equal((await User.findById(admin._id)).devices.length,0);
+      assert.equal(await Notification.countDocuments(),2);
+    });
+    await t.test('data survives another process and optional demo seed is idempotent', async () => {
+      const script = `import mongoose from 'mongoose';
+        await mongoose.connect(process.env.MONGODB_TEST_URI);
+        const settings = await mongoose.connection.db.collection('pricingconfigs').findOne({_id:'store'});
+        console.log(settings.settings.pricingRules.taxRate);
+        await mongoose.disconnect();`;
+      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module','-e',script], { env: { ...process.env, MONGODB_TEST_URI: uri } });
+      assert.equal(stdout.trim(),'0');
+      assert.equal((await pricing.getPricingIntelligenceData()).pricingRules.taxRate,0);
+      assert.equal((await User.findById(operator._id)).devices.length,1);
+      assert.ok((await push.getNotificationsForUser(admin)).some(n=>n.read));
+      const first = await seedDatabase({ accounts, demo:true });
+      assert.equal(first.demoSales,2); assert.equal(first.demoExpenses,1);
+      const stock = (await Product.find().sort({_id:1})).map(p=>p.stock);
+      const second = await seedDatabase({ accounts, demo:true });
+      assert.ok(Object.values(second).every(n=>n===0));
+      assert.deepEqual((await Product.find().sort({_id:1})).map(p=>p.stock),stock);
+    });
+    await t.test('last unit cannot be oversold concurrently or removed from empty stock', async () => {
+      const product = await products.createProduct({ name: 'Concurrency test', barcode: 'TEST-STOCK-LAST-UNIT', price: 10, costPrice: 4, stock: 1 });
+      const input = { productId: product._id, unitPrice: 10, quantity: 1, paymentMethod: 'pix', sellerName: 'Balcão Geral' };
+      const attempts = await Promise.allSettled([sales.registerSale(input, admin), sales.registerSale(input, admin)]);
+      assert.equal(attempts.filter(a => a.status === 'fulfilled').length, 1);
+      assert.equal(attempts.filter(a => a.status === 'rejected').length, 1);
+      assert.match(attempts.find(a => a.status === 'rejected').reason.message, /estoque/);
+      assert.equal((await Product.findById(product._id)).stock, 0);
+      const successfulSale = attempts.find(a => a.status === 'fulfilled').value;
+      assert.equal(await Sale.countDocuments({ productId: product._id }), 1);
+      assert.equal(await Transaction.countDocuments({ saleId: String(successfulSale._id) }), 1);
+      await assert.rejects(sales.registerSale(input, admin), /estoque/);
+      await assert.rejects(products.registerStockMovement({ productId: product._id, type: 'out', quantity: 1 }), /estoque/);
+      assert.equal(await StockMovement.countDocuments({ productId: product._id, type: 'out' }), 1);
+      assert.equal((await Product.findById(product._id)).stock, 0);
+      assert.equal(await Product.countDocuments({ stock: { $lt: 0 } }), 0);
+      const summary = await products.getStockSummary();
+      assert.equal(summary.totalStockUnits, (await products.getAllProducts()).reduce((sum, p) => sum + p.stock, 0));
+    });
+
+  } finally {
+    webpush.sendNotification = originalSend;
+    if (server) await new Promise(r=>server.close(r));
+    if (mongoose.connection.readyState === 1 && mongoose.connection.name === database && /^bansir_test_[a-f0-9]+$/.test(database)) await mongoose.connection.dropDatabase();
+    await mongoose.disconnect();
+  }
+});
