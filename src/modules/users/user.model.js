@@ -5,14 +5,16 @@ export const USER_ROLES = {
   SUPERADMIN: 'superadmin',
   ADMIN: 'admin',
   GERENTE_ARTESAO: 'gerente_artesao',
-  OPERADOR: 'operador'
+  OPERADOR: 'operador',
+  ENTREGADOR: 'entregador'
 };
 
 export const ROLE_HIERARCHY = {
-  [USER_ROLES.SUPERADMIN]: 4,
-  [USER_ROLES.ADMIN]: 3,
-  [USER_ROLES.GERENTE_ARTESAO]: 2,
-  [USER_ROLES.OPERADOR]: 1
+  [USER_ROLES.SUPERADMIN]: 5,
+  [USER_ROLES.ADMIN]: 4,
+  [USER_ROLES.GERENTE_ARTESAO]: 3,
+  [USER_ROLES.OPERADOR]: 2,
+  [USER_ROLES.ENTREGADOR]: 1
 };
 
 const userSchema = new mongoose.Schema(
@@ -55,6 +57,14 @@ const userSchema = new mongoose.Schema(
       max: 100
     },
     avatar: {
+      type: String,
+      default: ''
+    },
+    walletBalance: {
+      type: Number,
+      default: 0
+    },
+    pixKey: {
       type: String,
       default: ''
     },

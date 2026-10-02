@@ -16,7 +16,9 @@ export async function updateUserStatus(id, active) {
 }
 export async function updateUserPermissions(id, data) {
   const user = await getUserById(id);
-  for (const key of ['name','email','role','allowedRoutes','notificationPreferences','artisanSpecialty','commissionRate','phone']) if (data[key] !== undefined) user[key] = data[key];
+  for (const key of ['name','email','role','allowedRoutes','notificationPreferences','artisanSpecialty','commissionRate','phone','pixKey','password']) {
+    if (data[key] !== undefined && data[key] !== '') user[key] = data[key];
+  }
   await user.save(); return user;
 }
 export async function deleteUser(id) { requireDatabase(); const user = await User.findByIdAndDelete(id); if (!user) throw new Error('Usuário não encontrado.'); return true; }
@@ -26,7 +28,7 @@ export async function createArtisanUser(data) {
   const role = data.role || USER_ROLES.OPERADOR;
   const routes = role === USER_ROLES.OPERADOR ? ['sales'] : ['dashboard','sales','products','suppliers','financial','employees','reports'];
   const user = await User.create({ name: data.name, email: data.email, password: data.password, role,
-    artisanSpecialty: data.artisanSpecialty, commissionRate: data.commissionRate ?? 0, phone: data.phone,
+    artisanSpecialty: data.artisanSpecialty, commissionRate: data.commissionRate ?? 0, phone: data.phone, pixKey: data.pixKey,
     allowedRoutes: data.allowedRoutes || routes, notificationPreferences: data.notificationPreferences,
     active: true });
   const result = user.toObject(); delete result.password; return result;
