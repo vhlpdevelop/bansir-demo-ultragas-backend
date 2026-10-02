@@ -24,4 +24,15 @@ router.post('/:id/financial', requireMinHierarchy(3), async (req, res) => {
   }
 });
 
+import { resendDeliveryWhatsApp } from './sale.service.js';
+
+router.post('/:id/resend-whatsapp', async (req, res) => {
+  try {
+    await resendDeliveryWhatsApp(req.params.id);
+    return res.json({ success: true, message: 'Rota enviada com sucesso para o motoboy!' });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message });
+  }
+});
+
 export default router;

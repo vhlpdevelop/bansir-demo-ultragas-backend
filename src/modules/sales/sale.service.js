@@ -94,3 +94,35 @@ export async function retrySaleFinancial(id, userId) {
     return sale;
   });
 }
+export async function resendDeliveryWhatsApp(saleId) {
+  const sale = await Sale.findById(saleId);
+  if (!sale) throw new Error('Venda não encontrada');
+  if (sale.deliveryMode !== 'delivery' || !sale.deliveryEmployeePhone) {
+    throw new Error('Venda não é do tipo entrega ou entregador não possui telefone cadastrado');
+  }
+
+  const payLabelMap = {
+    pix: 'PIX Instantâneo',
+    cartao_credito: 'Cartão de Crédito',
+    cartao_debito: 'Cartão de Débito',
+    dinheiro: 'Dinheiro em Espécie',
+    vale: 'Vale Gás',
+    maquininha_cartao: 'Maquininha de Cartão',
+    pix_entrega: 'PIX na Entrega',
+    pagar_na_entrega: 'Pagar na Entrega'
+  };
+  const payLabel = payLabelMap[sale.paymentMethod] || sale.paymentMethod;
+  const isPaidSale = sale.isPaid !== false && sale.paymentStatus !== 'pagar_na_entrega';
+
+  const paymentText = isPaidSale 
+    ? `Já Pago (${payLabel})` 
+    : `Cobrar na Entrega: ${payLabel}${sale.changeAmount ? ' | Levar troco de R$ ' + sale.changeAmount.toFixed(2) : ''}`;
+
+  const msg = `🛵 *Reenvio de Rota!*\n\n*Pedido:* ${sale.saleNumber || sale._id.toString().slice(-6)}\n*Produto:* ${sale.productName} (${sale.quantity}x)\n*Cliente:* ${sale.customerName}\n*Endereço:* ${sale.deliveryAddress}\n*Horário:* ${sale.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${sale.totalAmount.toFixed(2)}\n*Pagamento:* ${paymentText}\n\n*Bom trabalho!*`;
+  
+  const success = await whatsappService.sendMessage(sale.deliveryEmployeePhone, msg);
+  if (!success) {
+    throw new Error('O Bot do WhatsApp está offline ou o número é inválido.');
+  }
+  return true;
+}
