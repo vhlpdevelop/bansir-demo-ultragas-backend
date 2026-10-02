@@ -21,6 +21,7 @@ import reportsRoutes from './modules/reports/reports.routes.js';
 import operationRoutes from './modules/operations/operation.routes.js';
 import supplierRoutes from './modules/suppliers/supplier.routes.js';
 import settingsRoutes from './modules/settings/settings.routes.js';
+import voucherRoutes from './modules/vouchers/voucher.routes.js';
 
 const app = express();
 

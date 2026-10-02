@@ -5,7 +5,7 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
   if (values.some(v => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) errors.push('Custos e percentuais devem ser números não negativos.');
   const variableTotal = taxRate + variableRate + commissionRate;
   const totalT = variableTotal + fixedExpenseRate + desiredProfitMargin;
-  if (totalT >= 100) errors.push('A soma dos percentuais deve ser menor que 100%.');
+  if (totalT >= 100) errors.push('A taxa de custos fixos (Rateio) + margens está ultrapassando 100%. Tente aumentar a Receita Mensal Prevista ou reduzir despesas.');
   if (totalT + creditCardTermRate >= 100) errors.push('A soma dos percentuais com a taxa adicional de parcelamento deve ser menor que 100%.');
   if (errors.length) return { valid: false, errors, totalT, markupDivisor: 0, markupMultiplier: 0, markupPercent: 0, contributionMarginPercent: 0, suggestedCashPrice: 0, suggestedTermPrice: 0, netProfitCash: 0 };
   const markupDivisor = 1 - totalT / 100;
