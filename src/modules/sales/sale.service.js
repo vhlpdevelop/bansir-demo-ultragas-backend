@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { Sale } from './sale.model.js';
-import { Employee } from '../employees/employee.model.js';
+import { Employee, calculateGasLevel } from '../employees/employee.model.js';
 import { buildSaleReceivables, recordSaleReceivables } from '../financial/financial.service.js';
 import { decrementStock } from '../products/product.service.js';
 import { requireDatabase } from '../../config/db.js';
@@ -65,6 +65,7 @@ export async function registerSale(data, currentUser) {
       employee.totalSalesAmount += totalAmount;
       employee.totalCommissionsEarned += round(employee.commissionType === 'percentage' ? totalAmount * employee.commissionValue / 100 : employee.commissionValue);
       employee.gamificationPoints += 10 + Math.floor(totalAmount / 10);
+      employee.gamificationLevel = calculateGasLevel(employee.gamificationPoints, employee.totalSalesCount, employee.roleTitle);
       if (!employee.badges.includes('Primeira Venda')) employee.badges.push('Primeira Venda');
       await employee.save({ session });
     }

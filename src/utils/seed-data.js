@@ -120,7 +120,7 @@ export const seedEmployees = [
     name: 'Carolina Santos',
     email: 'carolina.vendas@bansir.com',
     phone: '(11) 98112-3344',
-    roleTitle: 'Mestre Ceramista & Vendedora Sênior',
+    roleTitle: 'Supervisora de Vendas & Balcão',
     laborType: 'MOD', // Mão de Obra Direta (Produtivo)
     baseSalary: 2400.00,
     commissionType: 'percentage',
@@ -129,7 +129,7 @@ export const seedEmployees = [
     totalSalesAmount: 7650.00,
     totalCommissionsEarned: 1350.00,
     gamificationPoints: 780,
-    gamificationLevel: 'Mestre Artesão Ouro 👑',
+    gamificationLevel: 'Mestre do Gás Diamante 💎',
     badges: ['Primeira Venda', 'Meta Batida', 'Clube dos 1K', 'Craque do Caixa'],
     active: true,
     hiredAt: new Date(2025, 2, 10)
@@ -140,7 +140,7 @@ export const seedEmployees = [
     name: 'Matheus Figueira',
     email: 'matheus.caixa@bansir.com',
     phone: '(11) 97223-5566',
-    roleTitle: 'Operador de Acabamento & Balcão',
+    roleTitle: 'Entregador Rápido & Operador de Pátio',
     laborType: 'MOD', // Mão de Obra Direta (Produtivo)
     baseSalary: 1950.00,
     commissionType: 'percentage',
@@ -149,7 +149,7 @@ export const seedEmployees = [
     totalSalesAmount: 3840.00,
     totalCommissionsEarned: 336.00,
     gamificationPoints: 410,
-    gamificationLevel: 'Especialista em Vendas 🏆',
+    gamificationLevel: 'Mestre das Entregas Ouro 🥇',
     badges: ['Primeira Venda', 'Clube dos 1K', 'Agilidade no Caixa'],
     active: true,
     hiredAt: new Date(2025, 5, 18)
@@ -160,7 +160,7 @@ export const seedEmployees = [
     name: 'Juliana Prado',
     email: 'juliana.atendimento@bansir.com',
     phone: '(11) 99445-7788',
-    roleTitle: 'Artesã Têxtil / Macramê & Atendimento',
+    roleTitle: 'Atendente de Tele-Gás & Atendimento',
     laborType: 'MOD', // Mão de Obra Direta (Produtivo)
     baseSalary: 2100.00,
     commissionType: 'percentage',
@@ -169,7 +169,7 @@ export const seedEmployees = [
     totalSalesAmount: 4950.00,
     totalCommissionsEarned: 890.00,
     gamificationPoints: 520,
-    gamificationLevel: 'Mestre Artesão Ouro 👑',
+    gamificationLevel: 'Especialista Ultragas Ouro 🏆',
     badges: ['Primeira Venda', 'Meta do Dia', 'Clube dos 1K'],
     active: true,
     hiredAt: new Date(2025, 8, 1)
@@ -177,10 +177,10 @@ export const seedEmployees = [
   {
     _id: 'emp_04',
     id: 'emp_04',
-    name: 'Lucas Madeira Fina',
+    name: 'Lucas Silva (Entregador)',
     email: 'lucas@bansir.com',
     phone: '(21) 97654-3344',
-    roleTitle: 'Operador de Caixa & Marcenaria',
+    roleTitle: 'Entregador de Gás & Motorista',
     laborType: 'MOD',
     baseSalary: 2000.00,
     commissionType: 'percentage',
@@ -189,7 +189,7 @@ export const seedEmployees = [
     totalSalesAmount: 2280.00,
     totalCommissionsEarned: 114.00,
     gamificationPoints: 240,
-    gamificationLevel: 'Vendedor Destaque 🌟',
+    gamificationLevel: 'Entregador Ágil Prata 🥈',
     badges: ['Primeira Venda', 'Clube dos 1K'],
     active: true,
     hiredAt: new Date(2025, 9, 1)
@@ -209,7 +209,7 @@ export const seedEmployees = [
     totalSalesAmount: 0.0,
     totalCommissionsEarned: 0.0,
     gamificationPoints: 50,
-    gamificationLevel: 'Artesão Ativo 🎯',
+    gamificationLevel: 'Novato do Gás Bronze 🎯',
     badges: ['Guardiã das Contas'],
     active: true,
     hiredAt: new Date(2025, 1, 15)

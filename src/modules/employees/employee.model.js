@@ -80,7 +80,7 @@ const employeeSchema = new mongoose.Schema(
     },
     gamificationLevel: {
       type: String,
-      default: 'Entregador Iniciante'
+      default: 'Novato do Gás Bronze 🎯'
     },
     badges: {
       type: [String],
@@ -95,5 +95,20 @@ const employeeSchema = new mongoose.Schema(
     timestamps: true
   }
 );
+
+export function calculateGasLevel(points = 0, salesCount = 0, roleTitle = '') {
+  const isDelivery = /entregador|motorista/i.test(roleTitle || '');
+
+  if (points >= 600 || salesCount >= 50) {
+    return isDelivery ? 'Campeão das Rotas Diamante 💎' : 'Mestre do Gás Diamante 💎';
+  }
+  if (points >= 300 || salesCount >= 25) {
+    return isDelivery ? 'Mestre das Entregas Ouro 🥇' : 'Especialista Ultragas Ouro 🏆';
+  }
+  if (points >= 100 || salesCount >= 10) {
+    return isDelivery ? 'Entregador Ágil Prata 🥈' : 'Vendedor Destaque Prata 🥈';
+  }
+  return isDelivery ? 'Entregador Bronze 🛵' : 'Novato do Gás Bronze 🎯';
+}
 
 export const Employee = mongoose.model('UltragasEmployee', employeeSchema);

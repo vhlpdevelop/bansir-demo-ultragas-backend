@@ -1,4 +1,5 @@
 import { getAllEmployees, getEmployeeById, createEmployee, updateEmployee, deleteEmployee } from './employee.service.js';
+import { calculateGasLevel } from './employee.model.js';
 
 export async function list(req, res, next) {
   try {
@@ -47,7 +48,8 @@ export async function create(req, res, next) {
       roleTitle: roleTitle || 'Vendedor(a) de Balcão',
       baseSalary: Number(baseSalary) || 0,
       commissionType: commissionType || 'percentage',
-      commissionValue: Number(commissionValue) || 0
+      commissionValue: Number(commissionValue) || 0,
+      gamificationLevel: calculateGasLevel(0, 0, roleTitle)
     });
 
     return res.status(201).json({
