@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { whatsappService } from '../../services/whatsapp.service.js';
 import { randomUUID } from 'node:crypto';
 import { Sale } from './sale.model.js';
 import { Employee, calculateGasLevel } from '../employees/employee.model.js';
@@ -76,10 +77,8 @@ export async function registerSale(data, currentUser) {
   });
 
   if (payload.deliveryMode === 'delivery' && payload.deliveryEmployeePhone) {
-    import('../../services/whatsapp.service.js').then(({ whatsappService }) => {
-      const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${payload.changeAmount.toFixed(2)}\n\n*Bom trabalho!*`;
-      whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).catch(err => console.error('Erro ao notificar entregador', err));
-    }).catch(err => console.error('Erro ao importar whatsappService', err));
+    const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${payload.changeAmount.toFixed(2)}\n\n*Bom trabalho!*`;
+    whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).catch(err => console.error('Erro ao notificar entregador', err));
   }
 
   return saleResult;

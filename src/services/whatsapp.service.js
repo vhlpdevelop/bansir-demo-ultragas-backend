@@ -87,9 +87,16 @@ class WhatsAppService {
           }
         } else if (connection === 'open') {
           this.isConnecting = false;
-          this.status = 'CONNECTED';
+          this.status = 'SYNCING';
           this.qrCodeUrl = null;
-          console.log('✅ [WhatsApp Baileys] Conectado e pronto para enviar mensagens!');
+          console.log('🔄 [WhatsApp Baileys] Sessão aberta, sincronizando dados...');
+          
+          setTimeout(() => {
+            if (this.status === 'SYNCING') {
+              this.status = 'CONNECTED';
+              console.log('✅ [WhatsApp Baileys] Conectado e pronto para enviar mensagens!');
+            }
+          }, 6000); // 6 segundos de delay visual para sincronização
         }
       });
     } catch (error) {

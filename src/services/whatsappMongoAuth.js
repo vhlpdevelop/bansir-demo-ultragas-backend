@@ -65,19 +65,38 @@ export const useMongoDBAuthState = async () => {
           return data;
         },
         set: async (data) => {
+          if (!isDbReady()) return;
+          const bulkOps = [];
+          
           for (const category in data) {
             for (const id in data[category]) {
               const value = data[category][id];
               const key = `${category}-${id}`;
-              try {
-                if (value) {
-                  await writeData(value, key);
-                } else {
-                  await removeData(key);
-                }
-              } catch (err) {
-                console.error(`[Baileys Auth] Erro silencioso na chave ${key}:`, err.message);
+              
+              if (value) {
+                const serialized = JSON.stringify(value, BufferJSON.replacer);
+                bulkOps.push({
+                  updateOne: {
+                    filter: { key },
+                    update: { $set: { key, data: serialized } },
+                    upsert: true
+                  }
+                });
+              } else {
+                bulkOps.push({
+                  deleteOne: {
+                    filter: { key }
+                  }
+                });
               }
+            }
+          }
+
+          if (bulkOps.length > 0) {
+            try {
+              await WhatsAppSession.bulkWrite(bulkOps, { ordered: false });
+            } catch (err) {
+              console.error('[Baileys Auth] Erro no bulkWrite:', err.message);
             }
           }
         }
