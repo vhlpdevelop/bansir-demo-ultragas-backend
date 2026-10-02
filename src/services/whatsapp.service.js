@@ -146,9 +146,19 @@ class WhatsAppService {
       if (cleanPhone.length === 10 || cleanPhone.length === 11) {
         cleanPhone = '55' + cleanPhone;
       }
-      const jid = `${cleanPhone}@s.whatsapp.net`;
-      await this.sock.sendMessage(jid, { text: message });
-      console.log(`📤 [WhatsApp] Mensagem de texto enviada com sucesso para ${cleanPhone}`);
+      
+      const rawJid = `${cleanPhone}@s.whatsapp.net`;
+      
+      // Verifica se o número existe e pega o JID correto (resolve o problema do 9º dígito no Brasil)
+      const [result] = await this.sock.onWhatsApp(rawJid);
+      
+      if (!result || !result.exists) {
+        console.error(`❌ [WhatsApp] O número ${cleanPhone} não possui WhatsApp ativo.`);
+        return false;
+      }
+
+      await this.sock.sendMessage(result.jid, { text: message });
+      console.log(`📤 [WhatsApp] Mensagem de texto enviada com sucesso para ${result.jid}`);
       return true;
     } catch (error) {
       console.error('❌ [WhatsApp] Erro ao enviar mensagem:', error.message);
