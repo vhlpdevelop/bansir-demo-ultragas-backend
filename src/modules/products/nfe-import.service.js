@@ -328,7 +328,7 @@ export async function confirmNFeImport(importData, operatorUser) {
         unit,
         sku,
         ncm,
-        artisan: targetSupplier?.name || 'Fornecedor Externo',
+        brand: targetSupplier?.name || 'Fornecedor Externo',
         supplierId: targetSupplier ? targetSupplier._id : null,
         specs: `Importado via NF-e nº ${invoice?.nNF || 'S/N'} - Série ${invoice?.serie || '1'}`
       });

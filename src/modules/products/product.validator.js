@@ -8,7 +8,7 @@ export const createProductSchema = z.object({
   stock: z.number().int().min(0, 'Estoque deve ser maior ou igual a zero').optional(),
   minStock: z.number().int().min(0).optional(),
   category: z.string().optional(),
-  artisan: z.string().optional(),
+  brand: z.string().optional(),
   description: z.string().optional()
 });
 
@@ -20,7 +20,7 @@ export const updateProductSchema = z.object({
   stock: z.number().int().min(0).optional(),
   minStock: z.number().int().min(0).optional(),
   category: z.string().optional(),
-  artisan: z.string().optional(),
+  brand: z.string().optional(),
   description: z.string().optional()
 });
 

@@ -68,7 +68,7 @@ export async function getByBarcode(req, res, next) {
 
 export async function create(req, res, next) {
   try {
-    const { name, barcode, price, category, stock, costPrice, artisan, specs, sku } = req.body;
+    const { name, barcode, price, category, stock, costPrice, brand, specs, sku } = req.body;
     if (!name || !barcode || !price) {
       return res.status(400).json({
         success: false,
@@ -83,7 +83,7 @@ export async function create(req, res, next) {
       category: category || 'Cerâmica & Barro',
       stock: Number(stock) || 1,
       costPrice: Number(costPrice) || 0,
-      artisan: artisan || 'Ateliê Bansir Bonito',
+      brand: brand || 'Ultragaz',
       specs: specs || '',
       sku: sku || ''
     });

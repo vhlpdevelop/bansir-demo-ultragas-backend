@@ -41,7 +41,7 @@ const productSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      default: 'Cerâmica & Barro'
+      default: 'Gás de Cozinha'
     },
     price: {
       type: Number,
@@ -67,9 +67,9 @@ const productSchema = new mongoose.Schema(
       type: String,
       default: 'UN'
     },
-    artisan: {
+    brand: {
       type: String,
-      default: 'Ateliê Bansir'
+      default: 'Ultragaz'
     },
     specs: {
       type: String,

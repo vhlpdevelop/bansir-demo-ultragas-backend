@@ -19,7 +19,7 @@ export async function getProductByBarcode(barcode) {
   requireDatabase();
   return Product.findOne({ barcode: String(barcode).trim(), active: true });
 }
-const fields = ['name', 'barcode', 'category', 'price', 'costPrice', 'stock', 'sku', 'unit', 'artisan', 'specs', 'ncm', 'supplierId', 'active'];
+const fields = ['name', 'barcode', 'category', 'price', 'costPrice', 'stock', 'sku', 'unit', 'brand', 'specs', 'ncm', 'supplierId', 'active'];
 function productFields(data) {
   const result = Object.fromEntries(fields.filter(k => data[k] !== undefined).map(k => [k, data[k]]));
   if (result.stock !== undefined && (!Number.isInteger(Number(result.stock)) || Number(result.stock) < 0)) throw new Error('Estoque deve ser um inteiro não negativo.');
