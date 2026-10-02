@@ -21,5 +21,15 @@ export const createSaleSchema = z.object({
   deliveryAddress: z.string().optional(),
   deliveryEmployeeId: z.string().optional(),
   deliveryEmployeeName: z.string().optional(),
-  deliveryEmployeePhone: z.string().optional()
+  deliveryEmployeePhone: z.string().optional(),
+  customerPhone: z.string().optional(),
+  emitVoucherForSale: z.boolean().optional(),
+  isPaid: z.boolean().optional(),
+  paymentStatus: z.string().optional(),
+  deliveryFee: z.number().optional(),
+  deliveryTime: z.string().optional(),
+  receivedAmount: z.number().optional(),
+  changeAmount: z.number().optional(),
+  orderNumber: z.string().optional(),
+  orderDate: z.string().optional()
 });

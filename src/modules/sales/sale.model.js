@@ -158,6 +158,10 @@ const saleSchema = new mongoose.Schema(
     date: {
       type: Date,
       default: Date.now
+    },
+    voucherCode: {
+      type: String,
+      default: ''
     }
   },
   {

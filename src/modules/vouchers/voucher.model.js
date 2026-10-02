@@ -15,7 +15,9 @@ const voucherSchema = new mongoose.Schema({
   totalAmount: { type: Number, required: true, min: 0 },
   status: { type: String, enum: ['ACTIVE', 'REDEEMED', 'CANCELLED'], default: 'ACTIVE' },
   issuedAt: { type: Date, default: Date.now },
-  redeemedAt: { type: Date }
+  redeemedAt: { type: Date },
+  redeemedBy: { type: String, default: '' },
+  redeemedByName: { type: String, default: '' }
 }, {
   timestamps: true
 });

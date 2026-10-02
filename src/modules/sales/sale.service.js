@@ -6,6 +6,9 @@ import { Employee, calculateGasLevel } from '../employees/employee.model.js';
 import { buildSaleReceivables, recordSaleReceivables } from '../financial/financial.service.js';
 import { decrementStock } from '../products/product.service.js';
 import { requireDatabase } from '../../config/db.js';
+import { Voucher } from '../vouchers/voucher.model.js';
+import { Customer } from '../customers/customer.model.js';
+import qrcode from 'qrcode';
 
 export async function getAllSales() { requireDatabase(); return Sale.find().sort({ date: -1 }); }
 export async function registerSale(data, currentUser) {
@@ -83,6 +86,35 @@ export async function registerSale(data, currentUser) {
         await Sale.findByIdAndUpdate(saleResult._id || saleResult.id, { deliveryRouteSent: true });
       }
     }).catch(err => console.error('Erro ao notificar entregador', err));
+  }
+
+  if (data.emitVoucherForSale && data.customerPhone) {
+    try {
+      const voucher = new Voucher({
+        customerName: payload.customerName || 'Cliente PDV',
+        customerPhone: data.customerPhone,
+        totalAmount: payload.totalAmount,
+        items: [{
+          product: data.productId,
+          productName: data.productName,
+          quantity: quantity,
+          price: unitPrice
+        }]
+      });
+      await voucher.save();
+      
+      const cleanPhone = data.customerPhone.replace(/\D/g, '');
+      const qrBase64 = await qrcode.toDataURL(voucher.code);
+      let itemsList = `${quantity}x ${data.productName}`;
+      const msg = `🔥 *Seu Vale Gás Chegou!*\n\nOlá ${voucher.customerName}, seu vale foi emitido com sucesso!\n\n*Produtos:*\n${itemsList}\n*Total:* R$ ${Number(payload.totalAmount).toFixed(2)}\n*Código:* ${voucher.code}\n\n⚠️ *ATENÇÃO:* O QR Code acima é de uso exclusivo para a retirada. *NÃO COMPARTILHE COM NINGUÉM*, pois quem tiver acesso a ele poderá retirar o seu botijão.`;
+      
+      whatsappService.sendMessageWithImage(cleanPhone, msg, qrBase64).catch(err => console.error('Erro enviando WA voucher PDV', err));
+      
+      // Save voucher code back to the sale
+      await Sale.findByIdAndUpdate(saleResult._id || saleResult.id, { voucherCode: voucher.code });
+    } catch (err) {
+      console.error('Erro ao emitir voucher via PDV:', err);
+    }
   }
 
   return saleResult;
