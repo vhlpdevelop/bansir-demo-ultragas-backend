@@ -7,7 +7,7 @@ test('pricing: formula parity, correct contribution and term fee, invalid inputs
   const serverSource = await readFile(new URL('../src/modules/financial/pricing-calculator.js', import.meta.url), 'utf8');
   // The frontend is a separate repository; compare when both checkouts are available.
   try {
-    const clientSource = await readFile(new URL('../../bansir-demo-caroline-app/src/utils/pricingCalculator.js', import.meta.url), 'utf8');
+    const clientSource = await readFile(new URL('../../bansir-demo-ultragas-app/src/utils/pricingCalculator.js', import.meta.url), 'utf8');
     assert.equal(serverSource, clientSource);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const input = { taxRate: 6, variableRate: 7.2, commissionRate: 4.63, fixedExpenseRate: 16.5, desiredProfitMargin: 18, creditCardTermRate: 4.8, cost: 45 };
@@ -20,6 +20,12 @@ test('pricing: formula parity, correct contribution and term fee, invalid inputs
   assert.equal(calculatePricing({ ...input, cost: Infinity }).valid, false);
   assert.equal(calculatePricing({ ...input, creditCardTermRate: 60 }).valid, false);
   assert.equal(calculatePricing({ ...input, cost: -1 }).valid, false);
+
+  // Intelligent rateio under low revenue (e.g. fixed rate 120%) does not break mathematics
+  const lowRevResult = calculatePricing({ ...input, fixedExpenseRate: 120, cost: 75 });
+  assert.equal(lowRevResult.valid, true);
+  assert.equal(lowRevResult.isRateioAdjusted, true);
+  assert.ok(lowRevResult.suggestedCashPrice > 75 && Number.isFinite(lowRevResult.suggestedCashPrice));
 });
 
 
