@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { list, getOne, create, update } from './employee.controller.js';
+import { list, getOne, create, update, remove } from './employee.controller.js';
 import { protect } from '../../middlewares/auth.middleware.js';
 import { requireMinHierarchy } from '../../middlewares/role.middleware.js';
 
@@ -13,5 +13,6 @@ router.get('/', list);
 router.get('/:id', getOne);
 router.post('/', create);
 router.put('/:id', update);
+router.delete('/:id', remove);
 
 export default router;

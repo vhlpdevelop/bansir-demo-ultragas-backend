@@ -16,7 +16,7 @@ export async function updateUserStatus(id, active) {
 }
 export async function updateUserPermissions(id, data) {
   const user = await getUserById(id);
-  for (const key of ['name','email','role','allowedRoutes','notificationPreferences','artisanSpecialty','commissionRate','phone','pixKey','password']) {
+  for (const key of ['name','email','role','allowedRoutes','notificationPreferences','artisanSpecialty','commissionRate','phone','pixKey','password','employeeId']) {
     if (data[key] !== undefined && data[key] !== '') user[key] = data[key];
   }
   await user.save(); return user;
@@ -28,7 +28,7 @@ export async function createArtisanUser(data) {
   const role = data.role || USER_ROLES.OPERADOR;
   const routes = role === USER_ROLES.OPERADOR ? ['sales'] : ['dashboard','sales','products','suppliers','financial','employees','reports'];
   const user = await User.create({ name: data.name, email: data.email, password: data.password, role,
-    artisanSpecialty: data.artisanSpecialty, commissionRate: data.commissionRate ?? 0, phone: data.phone, pixKey: data.pixKey,
+    artisanSpecialty: data.artisanSpecialty, commissionRate: data.commissionRate ?? 0, phone: data.phone, pixKey: data.pixKey, employeeId: data.employeeId,
     allowedRoutes: data.allowedRoutes || routes, notificationPreferences: data.notificationPreferences,
     active: true });
   const result = user.toObject(); delete result.password; return result;

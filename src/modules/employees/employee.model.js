@@ -27,6 +27,10 @@ const employeeSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    pixKey: {
+      type: String,
+      default: ''
+    },
     roleTitle: {
       type: String,
       required: [true, 'Cargo é obrigatório'],
@@ -76,7 +80,7 @@ const employeeSchema = new mongoose.Schema(
     },
     gamificationLevel: {
       type: String,
-      default: 'Artesão Iniciante'
+      default: 'Entregador Iniciante'
     },
     badges: {
       type: [String],

@@ -1,4 +1,4 @@
-import { getAllEmployees, getEmployeeById, createEmployee, updateEmployee } from './employee.service.js';
+import { getAllEmployees, getEmployeeById, createEmployee, updateEmployee, deleteEmployee } from './employee.service.js';
 
 export async function list(req, res, next) {
   try {
@@ -70,6 +70,21 @@ export async function update(req, res, next) {
       success: true,
       message: 'Dados do funcionário atualizados!',
       data: updated
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message
+    });
+  }
+}
+
+export async function remove(req, res, next) {
+  try {
+    await deleteEmployee(req.params.id);
+    return res.json({
+      success: true,
+      message: 'Funcionário removido com sucesso.'
     });
   } catch (err) {
     return res.status(400).json({

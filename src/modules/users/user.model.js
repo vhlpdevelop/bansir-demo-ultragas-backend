@@ -60,6 +60,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: ''
     },
+    employeeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'UltragasEmployee',
+      default: null
+    },
     walletBalance: {
       type: Number,
       default: 0
