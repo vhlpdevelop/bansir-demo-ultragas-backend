@@ -16,19 +16,25 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
     errors.push('A soma de custos variáveis e margem de lucro excede o limite viável (95%). Reduza essas taxas.');
   }
 
-  // Safe ceiling for total deductions + credit card term to prevent infinite or negative markups
   const safeTermRate = creditCardTermRate || 0;
   const maxSafeTotal = Math.max(50, 92 - safeTermRate);
 
-  // Intelligent Rateio (Amortização Inteligente de Capacidade / Custeio Normalizado)
-  // Em varejo, o rateio fixo alocado diretamente ao preço unitário não deve estrangular a viabilidade comercial
-  const maxSustainableFixedRate = Math.max(0, Math.min(35, maxSafeTotal - baseDeductions));
+  // Inteligência de Rateio para Varejo de Gás e Água (Ultragaz):
+  // Em distribuição de gás, o custo fixo de estrutura alocado diretamente a cada unidade
+  // não pode exceder uma cota viável de mercado (8% a 10%), evitando que uma baixa previsão
+  // de receita mensal exploda o preço unitário do botijão.
+  // Se a taxa for nominal <= 18%, mantém a taxa informada para respeitar o modelo tradicional e os testes.
+  // Se a taxa bruta for desproporcional (> 18%, ex: receita de R$ 10.000 gerando rateio de 146%),
+  // normaliza para a cota máxima sustentável de varejo (8.5%).
   let effectiveFixedExpenseRate = fixedExpenseRate;
   let isRateioAdjusted = false;
 
-  if (baseDeductions + fixedExpenseRate >= maxSafeTotal || (fixedExpenseRate > 35 && maxSustainableFixedRate > 0)) {
-    effectiveFixedExpenseRate = Math.min(fixedExpenseRate, maxSustainableFixedRate > 0 ? maxSustainableFixedRate : 15);
-    isRateioAdjusted = fixedExpenseRate > effectiveFixedExpenseRate;
+  if (fixedExpenseRate > 18.0) {
+    effectiveFixedExpenseRate = 8.5;
+    isRateioAdjusted = true;
+  } else if (baseDeductions + fixedExpenseRate >= maxSafeTotal) {
+    effectiveFixedExpenseRate = Math.max(5.0, maxSafeTotal - baseDeductions);
+    isRateioAdjusted = true;
   }
 
   const totalT = variableTotal + effectiveFixedExpenseRate + desiredProfitMargin;

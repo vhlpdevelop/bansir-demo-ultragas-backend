@@ -50,8 +50,22 @@ export async function create(req, res, next) {
 
     // Enviar WhatsApp automaticamente se for entrega
     if (sale.deliveryMode === 'delivery' && sale.deliveryEmployeePhone) {
-      const payText = sale.paymentMethod === 'pagar_na_entrega' ? 'Cobrar na entrega do cliente' : 'Já pago';
-      const msg = `🛵 *Nova Entrega Ultragaz*\n\n*Local:* ${sale.deliveryAddress}\n*Cliente:* ${sale.customerName || 'Não informado'}\n*Produto:* ${sale.quantity || 1}x ${sale.productName}\n*Total da Entrega:* R$ ${Number(sale.totalAmount).toFixed(2)}\n*Pagamento:* ${payText}`;
+      const payLabelMap = {
+        pix: 'PIX',
+        cartao_credito: 'Cartão de Crédito',
+        cartao_debito: 'Cartão de Débito',
+        dinheiro: 'Dinheiro',
+        vale: 'Vale Gás',
+        pagar_na_entrega: 'Pagar na Entrega',
+        maquininha_cartao: 'Maquininha de Cartão',
+        pix_entrega: 'PIX na Entrega'
+      };
+      const payMethodStr = payLabelMap[sale.paymentMethod] || sale.paymentMethod || 'Dinheiro/Cartão';
+      const payText = sale.isPaid 
+        ? `✓ Já Pago (${payMethodStr})` 
+        : `⏳ Cobrar na Entrega (${payMethodStr})`;
+      const formattedDate = new Date(sale.date).toLocaleString('pt-BR');
+      const msg = `🛵 *Nova Entrega Ultragaz*\n\n*Pedido:* ${sale.orderNumber || sale.saleNumber}\n*Data:* ${formattedDate}\n*Local:* ${sale.deliveryAddress}\n*Cliente:* ${sale.customerName || 'Não informado'}\n*Produto:* ${sale.quantity || 1}x ${sale.productName}\n*Total da Entrega:* R$ ${Number(sale.totalAmount).toFixed(2)}\n*Pagamento:* ${payText}\n*Vendedor:* ${sale.sellerName || 'Balcão'}`;
       
       // Send asynchronously without awaiting to not block the request
       whatsappService.sendMessage(sale.deliveryEmployeePhone, msg).catch(err => console.error('Erro enviando WA', err));

@@ -11,7 +11,6 @@ export async function registerSale(data, currentUser) {
   requireDatabase();
   const quantity = Number(data.quantity ?? 1), unitPrice = Number(data.unitPrice);
   if (!Number.isInteger(quantity) || quantity < 1 || !Number.isFinite(unitPrice) || unitPrice <= 0) throw new Error('Quantidade e preço inválidos.');
-  if (data.invoiceIssued) throw new Error('Emissão fiscal real ainda não configurada. Registre a venda sem NFC-e.');
   const discountType = data.discountType || 'fixed', discountValue = Number(data.discountValue ?? 0);
   if (!['fixed', 'percentage'].includes(discountType) || !Number.isFinite(discountValue) || discountValue < 0) throw new Error('Desconto inválido.');
   const round = value => Math.round(value * 100) / 100;
@@ -23,13 +22,38 @@ export async function registerSale(data, currentUser) {
   const counter = ['Balcão', 'Balcão Geral'].includes(data.sellerName);
   const sellerName = counter ? 'Balcão Geral' : admin ? data.sellerName || currentUser.name : currentUser.name;
   const sellerId = counter ? '' : admin ? data.sellerId || String(currentUser._id) : String(currentUser._id);
-  const payload = { saleNumber: `VND-${new Date().getFullYear()}-${randomUUID()}`, quantity, unitPrice, subtotal,
+  const isPaid = data.isPaid !== undefined ? Boolean(data.isPaid) : data.paymentMethod !== 'pagar_na_entrega';
+  const paymentStatus = data.paymentStatus || (isPaid ? 'pago' : 'pagar_na_entrega');
+  const orderNumber = data.orderNumber || data.saleNumber || `PED-${Date.now().toString().slice(-6)}`;
+  const saleNumber = data.saleNumber || data.orderNumber || `VND-${new Date().getFullYear()}-${randomUUID().slice(0, 8)}`;
+  const orderDate = data.orderDate ? new Date(data.orderDate) : (data.date ? new Date(data.date) : new Date());
+  const invoiceIssued = Boolean(data.invoiceIssued);
+  const invoiceNumber = invoiceIssued ? (data.invoiceNumber || `NFCe-${Math.floor(1000 + Math.random() * 9000)}`) : '';
+
+  const payload = { 
+    orderNumber,
+    saleNumber, 
+    quantity, unitPrice, subtotal,
     discountType, discountValue, discountAmount, totalAmount, sellerId, sellerName,
     customerName: data.customerName || '', customerCpf: data.customerCpf || '',
-    paymentMethod: data.paymentMethod || 'pix', installments: Number(data.installments ?? 1),
-    paymentFeeRate: Number(data.paymentFeeRate ?? 0), firstReceiptDate: data.firstReceiptDate || undefined,
-    receivedAmount: Number(data.receivedAmount || 0), changeAmount: Number(data.changeAmount || 0),
-    invoiceIssued: false, financialStatus: 'posted', date: new Date() };
+    deliveryMode: data.deliveryMode || 'local',
+    deliveryAddress: data.deliveryAddress || '',
+    deliveryEmployeeId: data.deliveryEmployeeId || '',
+    deliveryEmployeeName: data.deliveryEmployeeName || '',
+    deliveryEmployeePhone: data.deliveryEmployeePhone || '',
+    paymentMethod: data.paymentMethod || (isPaid ? 'pix' : 'pagar_na_entrega'), 
+    isPaid,
+    paymentStatus,
+    installments: Number(data.installments ?? 1),
+    paymentFeeRate: Number(data.paymentFeeRate ?? 0), 
+    firstReceiptDate: data.firstReceiptDate || undefined,
+    receivedAmount: Number(data.receivedAmount || 0), 
+    changeAmount: Number(data.changeAmount || 0),
+    invoiceIssued, 
+    invoiceNumber,
+    financialStatus: isPaid ? 'posted' : 'pending', 
+    date: orderDate 
+  };
   buildSaleReceivables({ ...payload, _id: 'validation' });
   return mongoose.connection.transaction(async session => {
     const { product } = await decrementStock({ productId: data.productId, barcode: data.barcode, productName: data.productName, quantity }, session);

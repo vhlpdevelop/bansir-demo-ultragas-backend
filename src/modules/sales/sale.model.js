@@ -7,6 +7,10 @@ const saleSchema = new mongoose.Schema(
       required: true,
       unique: true
     },
+    orderNumber: {
+      type: String,
+      default: ''
+    },
     barcode: {
       type: String,
       default: ''
@@ -94,6 +98,15 @@ const saleSchema = new mongoose.Schema(
       type: String,
       enum: ['pix', 'cartao_credito', 'cartao_debito', 'dinheiro', 'vale', 'outro', 'pagar_na_entrega'],
       default: 'pix'
+    },
+    isPaid: {
+      type: Boolean,
+      default: true
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['pago', 'pagar_na_entrega', 'pendente'],
+      default: 'pago'
     },
     installments: { type: Number, default: 1 },
     paymentFeeRate: { type: Number, default: 0 },
