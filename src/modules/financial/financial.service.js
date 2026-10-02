@@ -68,9 +68,11 @@ export async function getFinancialSummary() {
     const month = months.get(key);
     if (month) month[tx.type === 'income' ? 'receita' : 'despesa'] += value;
   }
+  const { indicators, pricingRules } = await import('./pricing-intelligence.service.js').then(m => m.getPricingIntelligenceData()).catch(() => ({ pricingRules: { expectedMonthlyRevenue: 0 } }));
   return { kpis: { totalRevenue: money(income), totalExpenses: money(expenses), netIncome: money(income - expenses),
     profitMargin: income ? Number(((income - expenses) / income * 100).toFixed(1)) : 0,
-    totalTransactions: transactions.length, receivable: money(receivable), payable: money(payable) },
+    totalTransactions: transactions.length, receivable: money(receivable), payable: money(payable),
+    expectedMonthlyRevenue: pricingRules?.expectedMonthlyRevenue || 0 },
     monthlyFlow: [...months.values()].map(m => ({ ...m, receita: money(m.receita), despesa: money(m.despesa), lucro: money(m.receita - m.despesa) })),
     categoryTotals: Object.fromEntries(Object.entries(categoryCents).map(([k, v]) => [k, money(v)])), recentTransactions: transactions.slice(0, 8) };
 }
