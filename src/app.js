@@ -97,6 +97,7 @@ app.use(['/api/v1', '/api/reports', '/api/suppliers'], (req, res, next) => {
 
 // Mount domain modules
 app.use('/api/v1/settings', settingsRoutes);
+app.use('/api/v1/vouchers', voucherRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/financial', financialRoutes);
