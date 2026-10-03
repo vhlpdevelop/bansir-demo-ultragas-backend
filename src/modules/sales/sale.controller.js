@@ -65,7 +65,7 @@ export async function create(req, res, next) {
         ? `✓ Já Pago (${payMethodStr})` 
         : `⏳ Cobrar na Entrega (${payMethodStr})`;
       const formattedDate = new Date(sale.date).toLocaleString('pt-BR');
-      const msg = `🛵 *Nova Entrega Ultragas*\n\n*Pedido:* ${sale.orderNumber || sale.saleNumber}\n*Data:* ${formattedDate}\n*Local:* ${sale.deliveryAddress}\n*Cliente:* ${sale.customerName || 'Não informado'}\n*Produto:* ${sale.quantity || 1}x ${sale.productName}\n*Total da Entrega:* R$ ${Number(sale.totalAmount).toFixed(2)}\n*Pagamento:* ${payText}\n*Vendedor:* ${sale.sellerName || 'Balcão'}`;
+      const msg = `🛵 *Nova Entrega Bansir PDV*\n\n*Pedido:* ${sale.orderNumber || sale.saleNumber}\n*Data:* ${formattedDate}\n*Local:* ${sale.deliveryAddress}\n*Cliente:* ${sale.customerName || 'Não informado'}\n*Produto:* ${sale.quantity || 1}x ${sale.productName}\n*Total da Entrega:* R$ ${Number(sale.totalAmount).toFixed(2)}\n*Pagamento:* ${payText}\n*Vendedor:* ${sale.sellerName || 'Balcão'}`;
       
       // Send asynchronously without awaiting to not block the request
       whatsappService.sendMessage(sale.deliveryEmployeePhone, msg).catch(err => console.error('Erro enviando WA', err));

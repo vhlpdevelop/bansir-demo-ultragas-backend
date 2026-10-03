@@ -9,6 +9,8 @@ import { requireDatabase } from '../../config/db.js';
 import { Voucher } from '../vouchers/voucher.model.js';
 import { Customer } from '../customers/customer.model.js';
 import qrcode from 'qrcode';
+import { StoreSettings } from '../settings/settings.model.js';
+import { receiptPaymentValues } from './receipt-values.js';
 
 export async function getAllSales() { requireDatabase(); return Sale.find().sort({ date: -1 }); }
 export async function registerSale(data, currentUser) {
@@ -20,15 +22,18 @@ export async function registerSale(data, currentUser) {
   const round = value => Math.round(value * 100) / 100;
   const subtotal = round(unitPrice * quantity);
   const discountAmount = round(discountType === 'percentage' ? subtotal * discountValue / 100 : discountValue);
-  const deliveryFee = Number(data.deliveryFee ?? 0);
+  const deliveryFee = round(Number(data.deliveryFee ?? 0));
+  if (!Number.isFinite(deliveryFee) || deliveryFee < 0) throw new Error('Taxa de entrega inválida.');
   const totalAmount = round(subtotal - discountAmount + deliveryFee);
   if (totalAmount <= 0) throw new Error('Desconto deve ser menor que o valor da venda.');
   const admin = ['admin', 'superadmin'].includes(currentUser?.role);
   const counter = ['Balcão', 'Balcão Geral'].includes(data.sellerName);
   const sellerName = counter ? 'Balcão Geral' : admin ? data.sellerName || currentUser.name : currentUser.name;
   const sellerId = counter ? '' : admin ? data.sellerId || String(currentUser._id) : String(currentUser._id);
-  const isPaid = data.isPaid !== undefined ? Boolean(data.isPaid) : data.paymentMethod !== 'pagar_na_entrega';
+  const isPaid = data.isPaid !== undefined ? Boolean(data.isPaid) : !['pagar_na_entrega', 'pendente'].includes(data.paymentStatus) && data.paymentMethod !== 'pagar_na_entrega';
   const paymentStatus = data.paymentStatus || (isPaid ? 'pago' : 'pagar_na_entrega');
+  if (isPaid !== (paymentStatus === 'pago')) throw new Error('Status de pagamento inconsistente.');
+  const receiptPayment = receiptPaymentValues(data, totalAmount, isPaid);
   const orderNumber = data.orderNumber || data.saleNumber || `PED-${Date.now().toString().slice(-6)}`;
   const saleNumber = data.saleNumber || data.orderNumber || `VND-${new Date().getFullYear()}-${randomUUID().slice(0, 8)}`;
   const orderDate = data.orderDate ? new Date(data.orderDate) : (data.date ? new Date(data.date) : new Date());
@@ -41,6 +46,8 @@ export async function registerSale(data, currentUser) {
     quantity, unitPrice, subtotal,
     discountType, discountValue, discountAmount, totalAmount, sellerId, sellerName,
     customerName: data.customerName || '', customerCpf: data.customerCpf || '',
+    customerPhone: data.customerPhone || '', customerAddress: data.customerAddress || data.deliveryAddress || '',
+    customerNeighborhood: data.customerNeighborhood || '', customerNotes: data.customerNotes || '',
     deliveryMode: data.deliveryMode || 'local',
     deliveryAddress: data.deliveryAddress || '',
     deliveryFee,
@@ -54,8 +61,7 @@ export async function registerSale(data, currentUser) {
     installments: Number(data.installments ?? 1),
     paymentFeeRate: Number(data.paymentFeeRate ?? 0), 
     firstReceiptDate: data.firstReceiptDate || undefined,
-    receivedAmount: Number(data.receivedAmount || 0), 
-    changeAmount: Number(data.changeAmount || 0),
+    ...receiptPayment,
     invoiceIssued, 
     invoiceNumber,
     financialStatus: isPaid ? 'posted' : 'pending', 
@@ -64,8 +70,10 @@ export async function registerSale(data, currentUser) {
   };
   buildSaleReceivables({ ...payload, _id: 'validation' });
   const saleResult = await mongoose.connection.transaction(async session => {
+    const store = await StoreSettings.findById('store').session(session).lean();
+    const receiptStore = { name: store?.storeName || '', documentId: store?.documentId || '', contact: store?.contact || '', address: store?.address || '', city: store?.merchantCity || '' };
     const { product } = await decrementStock({ productId: data.productId, barcode: data.barcode, productName: data.productName, quantity }, session);
-    const [sale] = await Sale.create([{ ...payload, productId: product._id, barcode: product.barcode, productName: product.name }], { session });
+    const [sale] = await Sale.create([{ ...payload, receiptStore, productId: product._id, barcode: product.barcode, productName: product.name }], { session });
     await recordSaleReceivables(sale, currentUser._id || currentUser.id, session);
     const employee = counter ? null : await Employee.findOne({ name: sellerName, active: true }).session(session);
     if (employee) {
@@ -81,7 +89,7 @@ export async function registerSale(data, currentUser) {
   });
 
   if (payload.deliveryMode === 'delivery' && payload.deliveryEmployeePhone) {
-    const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${payload.changeAmount.toFixed(2)}\n\n*Bom trabalho!*`;
+    const msg = `🛵 *Nova Entrega!*\n\n*Pedido:* ${payload.saleNumber}\n*Produto:* ${data.productName} (${quantity}x)\n*Cliente:* ${payload.customerName}\n*Endereço:* ${payload.deliveryAddress}\n*Horário:* ${payload.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${payload.totalAmount.toFixed(2)}\n*Pagamento:* ${payload.paymentMethod}\n*Troco:* R$ ${(payload.plannedChangeAmount || payload.changeAmount).toFixed(2)}\n\n*Bom trabalho!*`;
     whatsappService.sendMessage(payload.deliveryEmployeePhone, msg).then(async success => {
       if (success && saleResult) {
         await Sale.findByIdAndUpdate(saleResult._id || saleResult.id, { deliveryRouteSent: true });
@@ -156,7 +164,7 @@ export async function resendDeliveryWhatsApp(saleId) {
 
   const paymentText = isPaidSale 
     ? `Já Pago (${payLabel})` 
-    : `Cobrar na Entrega: ${payLabel}${sale.changeAmount ? ' | Levar troco de R$ ' + sale.changeAmount.toFixed(2) : ''}`;
+    : `Cobrar na Entrega: ${payLabel}${(sale.plannedChangeAmount || sale.changeAmount) ? ' | Levar troco de R$ ' + (sale.plannedChangeAmount || sale.changeAmount).toFixed(2) : ''}`;
 
   const msg = `🛵 *Reenvio de Rota!*\n\n*Pedido:* ${sale.saleNumber || sale._id.toString().slice(-6)}\n*Produto:* ${sale.productName} (${sale.quantity}x)\n*Cliente:* ${sale.customerName}\n*Endereço:* ${sale.deliveryAddress}\n*Horário:* ${sale.deliveryTime || 'Não informado'}\n*Cobrar:* R$ ${sale.totalAmount.toFixed(2)}\n*Pagamento:* ${paymentText}\n\n*Bom trabalho!*`;
   

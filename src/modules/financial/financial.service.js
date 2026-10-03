@@ -86,10 +86,11 @@ export function buildSaleReceivables(sale) {
   const fee = Math.round(gross * feeRate / 100);
   const net = gross - fee;
   if (!Number.isSafeInteger(net) || net < count) throw new Error('Valor líquido insuficiente para as parcelas.');
-  const pending = ['cartao_credito', 'cartao_debito', 'boleto'].includes(sale.paymentMethod);
+  const awaitingSettlement = ['cartao_credito', 'cartao_debito', 'boleto'].includes(sale.paymentMethod);
+  const pending = awaitingSettlement || sale.isPaid === false || ['pagar_na_entrega', 'pendente'].includes(sale.paymentStatus);
   const baseDate = dateValue(sale.date ?? Date.now(), 'Data da venda');
   if (sale.firstReceiptDate) baseDate.setTime(dateValue(sale.firstReceiptDate, 'Primeiro recebimento').getTime());
-  else if (pending) baseDate.setUTCDate(baseDate.getUTCDate() + (sale.paymentMethod === 'cartao_debito' ? 1 : 30));
+  else if (awaitingSettlement) baseDate.setUTCDate(baseDate.getUTCDate() + (sale.paymentMethod === 'cartao_debito' ? 1 : 30));
   return Array.from({ length: count }, (_, i) => {
     // Clamp to the last day of the month, preserving Jan 31 -> Feb 28 -> Mar 31.
     const due = new Date(baseDate);

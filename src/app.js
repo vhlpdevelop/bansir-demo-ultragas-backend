@@ -25,6 +25,7 @@ import voucherRoutes from './modules/vouchers/voucher.routes.js';
 import customerRoutes from './modules/customers/customer.routes.js';
 import whatsappRoutes from './modules/whatsapp/whatsapp.routes.js';
 import vehicleRoutes from './modules/fleet/vehicle.routes.js';
+import bridgeRoutes from './modules/bridge/bridge.routes.js';
 
 const app = express();
 
@@ -57,7 +58,7 @@ app.use(express.urlencoded({ extended: true, limit: config.bodyLimitGeneral }));
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'online',
-    service: 'bansir-retail-craft-monolith',
+    service: 'bansir-pdv-api',
     version: '1.2.0',
     dbConnected: isDbConnected(),
     timestamp: new Date().toISOString(),
@@ -118,6 +119,7 @@ app.use('/api/v1/suppliers', supplierRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/fleet/vehicles', vehicleRoutes);
+app.use('/api/v1/bridge', bridgeRoutes);
 
 // Error handlers
 app.use(notFound);

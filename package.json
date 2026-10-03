@@ -15,7 +15,8 @@
     "db:check": "node scripts/check-mongo.js",
     "seed:plan": "node src/utils/seed.js --dry-run",
     "seed:demo": "node src/utils/seed.js --demo",
-    "test:mongo": "node scripts/check-mongo-integration.js"
+    "test:mongo": "node scripts/check-mongo-integration.js",
+    "test:bridge-live": "node scripts/check-bridge-live.js"
   },
   "dependencies": {
     "@nfewizard/danfe": "1.0.7",
@@ -35,6 +36,7 @@
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
     "web-push": "^3.6.7",
+    "ws": "8.18.3",
     "zod": "^4.6.5"
   },
   "devDependencies": {

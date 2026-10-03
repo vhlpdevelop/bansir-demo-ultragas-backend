@@ -1,6 +1,8 @@
 import { config } from './config/env.js';
 import { connectDB } from './config/db.js';
 import { initRenderKeepAlive } from './utils/renderKeepAlive.js';
+import { createServer } from 'node:http';
+import { attachBridgeGateway } from './modules/bridge/bridge.gateway.js';
 
 const PORT = config.port || 5000;
 
@@ -14,7 +16,9 @@ async function startServer() {
     const { startOperationsWorker } = await import('./modules/operations/operation.service.js');
     await startOperationsWorker();
 
-    app.listen(PORT, () => {
+    const server = createServer(app);
+    attachBridgeGateway(server);
+    server.listen(PORT, () => {
       console.log(`====================================================`);
       console.log(`🏺 Bansir SaaS API Rodando com Sucesso!`);
       console.log(`📡 Porta: http://localhost:${PORT}`);

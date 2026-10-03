@@ -10,7 +10,7 @@ router.get('/', async (req, res, next) => {
 });
 router.put('/', async (req, res, next) => {
   try {
-    const data = Object.fromEntries(['storeName', 'pixKey', 'documentId', 'address', 'merchantCity'].filter(k => typeof req.body[k] === 'string').map(k => [k, req.body[k]]));
+    const data = Object.fromEntries(['storeName', 'pixKey', 'documentId', 'address', 'merchantCity', 'contact'].filter(k => typeof req.body[k] === 'string').map(k => [k, req.body[k]]));
     res.json({ success: true, data: await StoreSettings.findByIdAndUpdate('store', { $set: data }, { upsert: true, new: true, runValidators: true }) });
   } catch (e) { next(e); }
 });

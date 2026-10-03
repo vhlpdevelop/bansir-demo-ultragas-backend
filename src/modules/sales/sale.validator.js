@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 export const createSaleSchema = z.object({
+  customerAddress: z.string().trim().max(300).optional(),
+  customerNeighborhood: z.string().trim().max(120).optional(),
+  customerNotes: z.string().trim().max(1000).optional(),
+  changeFor: z.number().finite().min(0).optional(),
   productName: z.string({ required_error: 'Nome do produto é obrigatório' }).trim().min(1, 'Nome do produto é obrigatório'),
   unitPrice: z.number({ required_error: 'Preço unitário é obrigatório' }).positive('Preço unitário deve ser maior que zero'),
   quantity: z.number().int().min(1, 'Quantidade mínima é 1').optional(),
@@ -22,13 +26,13 @@ export const createSaleSchema = z.object({
   deliveryEmployeeId: z.string().optional(),
   deliveryEmployeeName: z.string().optional(),
   deliveryEmployeePhone: z.string().optional(),
-  customerPhone: z.string().optional(),
+  customerPhone: z.string().trim().max(40).optional(),
   emitVoucherForSale: z.boolean().optional(),
   isPaid: z.boolean().optional(),
   paymentStatus: z.string().optional(),
-  deliveryFee: z.number().optional(),
+  deliveryFee: z.number().finite().min(0).optional(),
   deliveryTime: z.string().optional(),
-  receivedAmount: z.number().optional(),
+  receivedAmount: z.number().finite().min(0).optional(),
   changeAmount: z.number().optional(),
   orderNumber: z.string().optional(),
   orderDate: z.string().optional()
