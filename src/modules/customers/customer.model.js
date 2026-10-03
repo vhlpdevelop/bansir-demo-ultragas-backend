@@ -21,7 +21,19 @@ const customerSchema = new mongoose.Schema({
     type: String,
     default: '',
     trim: true
+  },
+  ordersCompleted: {
+    type: Number,
+    default: 0
+  },
+  issuedVouchersCount: {
+    type: Number,
+    default: 0
+  },
+  debtBalance: {
+    type: Number,
+    default: 0
   }
-}, { timestamps: true });
+}, { timestamps: true, collection: 'ultragas_customers' });
 
-export const Customer = mongoose.model('Customer', customerSchema);
+export const Customer = mongoose.model('UltragasCustomer', customerSchema);
