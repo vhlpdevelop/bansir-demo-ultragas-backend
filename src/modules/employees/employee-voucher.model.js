@@ -25,6 +25,14 @@ const employeeVoucherSchema = new mongoose.Schema(
       enum: ['EMITIDO', 'DESCONTADO', 'CANCELADO'],
       default: 'EMITIDO'
     },
+    issuedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'UltragasUser'
+    },
+    issuedByName: {
+      type: String,
+      default: ''
+    },
     notes: {
       type: String
     }
