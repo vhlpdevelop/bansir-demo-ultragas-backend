@@ -3,13 +3,14 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { attachBridgeGateway, closeBridgeGateway, listBridgeConnections, pingBridge } from '../src/modules/bridge/bridge.gateway.js';
+import { attachBridgeGateway, closeBridgeGateway, getTerminalStatuses, listBridgeConnections, pingBridge } from '../src/modules/bridge/bridge.gateway.js';
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeDirectory = path.resolve(backendRoot, '..', 'bansir-bridge', 'publish', 'win-x64');
 const bridgeExecutable = path.join(bridgeDirectory, 'Bansir.Bridge.exe');
 const server = createServer();
-attachBridgeGateway(server, { authenticate: async token => token === 'live-test-token' ? { id: 'live-test-credential', tenantKey: 'test' } : null });
+const terminalId = '507f1f77bcf86cd799439011';
+attachBridgeGateway(server, { authenticate: async token => token === 'live-test-token' ? { id: 'live-test-credential', tenantKey: 'test' } : null, loadTerminals: async () => [{ _id: terminalId, name: 'PagBank teste', provider: 'pagbank', model: 'Teste', connectionType: 'usb', enabled: true }] });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const websocketPort = server.address().port;
 const localPort = 17329;
@@ -36,6 +37,8 @@ try {
   assert.equal(connection?.credentialId, 'live-test-credential');
   const pong = await pingBridge(connection.id, 2000);
   assert.equal(pong.connectionId, connection.id);
+  for (let attempt = 0; attempt < 20 && !getTerminalStatuses().has(terminalId); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(getTerminalStatuses().get(terminalId)?.status, 'not_supported');
   console.log(`Bansir PDV ${health.version}: WebSocket autenticado e diagnóstico bidirecional confirmados.`);
 } finally {
   child.kill();

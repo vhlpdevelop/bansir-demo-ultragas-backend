@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { authenticateBridgeToken } from './bridge-credential.service.js';
+import { StoreSettings } from '../settings/settings.model.js';
 
 const connections = new Map();
 const pendingPings = new Map();
@@ -10,7 +11,9 @@ function send(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-export function attachBridgeGateway(server, { authenticate = authenticateBridgeToken } = {}) {
+const loadConfiguredTerminals = async () => (await StoreSettings.findById('store').select('paymentTerminals').lean())?.paymentTerminals || [];
+
+export function attachBridgeGateway(server, { authenticate = authenticateBridgeToken, loadTerminals = loadConfiguredTerminals } = {}) {
   if (gateway) return gateway;
   gateway = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
   server.on('upgrade', async (request, socket, head) => {
@@ -33,11 +36,11 @@ export function attachBridgeGateway(server, { authenticate = authenticateBridgeT
   });
   gateway.on('connection', (socket, request) => {
     const id = randomUUID();
-    const connection = { id, socket, credentialId: String(request.bridgeCredential?._id || request.bridgeCredential?.id || ''), tenantKey: request.bridgeCredential?.tenantKey || 'default', installationId: '', machine: '', version: '', connectedAt: new Date(), lastSeenAt: new Date(), alive: true, paired: true };
+    const connection = { id, socket, credentialId: String(request.bridgeCredential?._id || request.bridgeCredential?.id || ''), tenantKey: request.bridgeCredential?.tenantKey || 'default', installationId: '', machine: '', version: '', connectedAt: new Date(), lastSeenAt: new Date(), alive: true, paired: true, terminalStatuses: new Map() };
     connections.set(id, connection);
     send(socket, { type: 'server.hello', connectionId: id, protocolVersion: 1, heartbeatSeconds: 20, capabilities: ['diagnostics'] });
     socket.on('pong', () => { connection.alive = true; connection.lastSeenAt = new Date(); });
-    socket.on('message', raw => {
+    socket.on('message', async raw => {
       try {
         const message = JSON.parse(raw.toString());
         connection.lastSeenAt = new Date();
@@ -46,9 +49,18 @@ export function attachBridgeGateway(server, { authenticate = authenticateBridgeT
           connection.machine = String(message.machine || '').slice(0, 100);
           connection.version = String(message.version || '').slice(0, 30);
           send(socket, { type: 'bridge.accepted', connectionId: id, paired: true, capabilities: ['diagnostics'] });
+          sendTerminalConfiguration(socket, await loadTerminals());
         } else if (message.type === 'diagnostics.pong' && pendingPings.has(message.correlationId)) {
           pendingPings.get(message.correlationId).resolve({ connectionId: id, receivedAt: new Date(), bridgeTimestamp: message.timestamp });
           pendingPings.delete(message.correlationId);
+        } else if (message.type === 'terminal.status' && Array.isArray(message.terminals)) {
+          connection.terminalStatuses.clear();
+          for (const terminal of message.terminals.slice(0, 20)) {
+            const terminalId = String(terminal.terminalId || '');
+            const status = String(terminal.status || 'disconnected');
+            if (/^[a-f\d]{24}$/i.test(terminalId) && ['connected', 'ready', 'busy', 'disconnected', 'error', 'not_supported'].includes(status))
+              connection.terminalStatuses.set(terminalId, { status, lastSeenAt: new Date() });
+          }
         }
       } catch { send(socket, { type: 'error', code: 'INVALID_MESSAGE' }); }
     });
@@ -66,7 +78,24 @@ export function attachBridgeGateway(server, { authenticate = authenticateBridgeT
 }
 
 export function listBridgeConnections() {
-  return [...connections.values()].map(({ socket, alive, ...connection }) => ({ ...connection, status: socket.readyState === WebSocket.OPEN ? 'online' : 'offline' }));
+  return [...connections.values()].map(({ socket, alive, terminalStatuses, ...connection }) => ({ ...connection, status: socket.readyState === WebSocket.OPEN ? 'online' : 'offline' }));
+}
+
+function sendTerminalConfiguration(socket, terminals) {
+  send(socket, { type: 'configuration.terminals', terminals: terminals.filter(item => item.enabled !== false).map(item => ({ terminalId: String(item._id), name: item.name, provider: item.provider, model: item.model, connectionType: item.connectionType, deviceIdentifier: item.deviceIdentifier || '' })) });
+}
+
+export function broadcastTerminalConfiguration(terminals) {
+  for (const connection of connections.values()) sendTerminalConfiguration(connection.socket, terminals);
+}
+
+export function getTerminalStatuses() {
+  const result = new Map();
+  for (const connection of connections.values()) for (const [terminalId, current] of connection.terminalStatuses) {
+    const previous = result.get(terminalId);
+    if (!previous || ['connected', 'ready', 'busy'].includes(current.status)) result.set(terminalId, current);
+  }
+  return result;
 }
 
 export function pingBridge(connectionId, timeoutMs = 5000) {

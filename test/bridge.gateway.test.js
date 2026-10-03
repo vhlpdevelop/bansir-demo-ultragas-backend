@@ -5,7 +5,7 @@ import { WebSocket } from 'ws';
 import { attachBridgeGateway, closeBridgeGateway, listBridgeConnections, pingBridge } from '../src/modules/bridge/bridge.gateway.js';
 
 test('Bridge WebSocket handshake, heartbeat metadata and diagnostic round trip', async t => {
-  const server = createServer(); attachBridgeGateway(server, { authenticate: async token => token === 'test-token' ? { id: 'credential-test', tenantKey: 'test' } : null });
+  const server = createServer(); attachBridgeGateway(server, { authenticate: async token => token === 'test-token' ? { id: 'credential-test', tenantKey: 'test' } : null, loadTerminals: async () => [] });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { await closeBridgeGateway(); await new Promise(resolve => server.close(resolve)); });
   const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/v1/bridge/ws`, { headers: { Authorization: 'Bearer test-token' } });
@@ -20,7 +20,7 @@ test('Bridge WebSocket handshake, heartbeat metadata and diagnostic round trip',
 });
 
 test('Bridge WebSocket rejects missing API token', async t => {
-  const server = createServer(); attachBridgeGateway(server, { authenticate: async () => null });
+  const server = createServer(); attachBridgeGateway(server, { authenticate: async () => null, loadTerminals: async () => [] });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { await closeBridgeGateway(); await new Promise(resolve => server.close(resolve)); });
   const status = await new Promise(resolve => {
