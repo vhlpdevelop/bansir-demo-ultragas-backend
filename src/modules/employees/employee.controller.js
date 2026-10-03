@@ -95,3 +95,47 @@ export async function remove(req, res, next) {
     });
   }
 }
+
+import { EmployeeVoucher } from './employee-voucher.model.js';
+import { Vehicle } from '../fleet/vehicle.model.js';
+
+export async function createVoucher(req, res, next) {
+  try {
+    const { employeeId, amount, justification, notes, vehicleId, vehicleKm } = req.body;
+    
+    if (!employeeId || !amount || !justification) {
+      return res.status(400).json({ success: false, message: 'Funcionário, valor e justificativa são obrigatórios' });
+    }
+
+    const voucher = await EmployeeVoucher.create({
+      employee: employeeId,
+      amount,
+      justification,
+      notes,
+      vehicle: vehicleId || null,
+      vehicleKm: vehicleKm || null,
+      issuedBy: req.user?._id,
+      issuedByName: req.user?.name || 'Admin'
+    });
+
+    if (vehicleId && vehicleKm) {
+      await Vehicle.findByIdAndUpdate(vehicleId, {
+        currentKm: vehicleKm,
+        lastKmUpdate: new Date()
+      });
+    }
+
+    return res.status(201).json({ success: true, data: voucher });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+export async function listVouchers(req, res, next) {
+  try {
+    const vouchers = await EmployeeVoucher.find().populate('employee', 'name').sort({ createdAt: -1 });
+    return res.status(200).json({ success: true, data: vouchers });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}

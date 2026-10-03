@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { list, getOne, create, update, remove } from './employee.controller.js';
+import { list, getOne, create, update, remove, createVoucher, listVouchers } from './employee.controller.js';
 import { protect } from '../../middlewares/auth.middleware.js';
 import { requireMinHierarchy } from '../../middlewares/role.middleware.js';
 
@@ -9,6 +9,8 @@ const router = Router();
 router.use(protect);
 router.use(requireMinHierarchy(3));
 
+router.get('/vouchers', listVouchers);
+router.post('/vouchers', createVoucher);
 router.get('/', list);
 router.get('/:id', getOne);
 router.post('/', create);

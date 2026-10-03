@@ -18,7 +18,16 @@ const vehicleSchema = new mongoose.Schema(
       default: 'ATIVO'
     },
     purchaseValue: { type: Number, default: 0 },
-    notes: { type: String }
+    notes: { type: String },
+    currentKm: { type: Number, default: 0 },
+    lastKmUpdate: { type: Date },
+    maintenanceRules: [
+      {
+        name: { type: String, required: true },
+        intervalKm: { type: Number, required: true },
+        lastServiceKm: { type: Number, default: 0 }
+      }
+    ]
   },
   { timestamps: true, collection: 'ultragas_vehicles' }
 );

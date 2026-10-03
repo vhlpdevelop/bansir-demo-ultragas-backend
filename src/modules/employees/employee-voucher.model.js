@@ -35,6 +35,13 @@ const employeeVoucherSchema = new mongoose.Schema(
     },
     notes: {
       type: String
+    },
+    vehicle: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'UltragasVehicle'
+    },
+    vehicleKm: {
+      type: Number
     }
   },
   { timestamps: true, collection: 'ultragas_employee_vouchers' }
