@@ -59,7 +59,8 @@ export async function registerSale(data, currentUser) {
     invoiceIssued, 
     invoiceNumber,
     financialStatus: isPaid ? 'posted' : 'pending', 
-    date: orderDate 
+    date: orderDate,
+    isGasDoPovo: Boolean(data.isGasDoPovo)
   };
   buildSaleReceivables({ ...payload, _id: 'validation' });
   const saleResult = await mongoose.connection.transaction(async session => {

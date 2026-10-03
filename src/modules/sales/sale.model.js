@@ -162,6 +162,10 @@ const saleSchema = new mongoose.Schema(
     voucherCode: {
       type: String,
       default: ''
+    },
+    isGasDoPovo: {
+      type: Boolean,
+      default: false
     }
   },
   {
