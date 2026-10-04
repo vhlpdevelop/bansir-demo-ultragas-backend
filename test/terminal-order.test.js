@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTerminalOrder } from '../src/modules/terminal/terminal.service.js';
+import { protectTerminal } from '../src/modules/terminal/terminal.auth.js';
 
 test('terminal order groups items and keeps any number of partial payments auditable', () => {
   const sales = [
@@ -24,4 +25,24 @@ test('terminal order groups items and keeps any number of partial payments audit
   assert.equal(order.status, 'paid');
   assert.equal(order.items.length, 2);
   assert.equal(order.payments.length, 5);
+});
+
+test('terminal authentication restores UTF-8 operator names from ASCII-safe headers', () => {
+  const previous = process.env.TERMINAL_API_TOKEN;
+  process.env.TERMINAL_API_TOKEN = 'a'.repeat(64);
+  try {
+    const req = { headers: {
+      authorization: `Bearer ${'a'.repeat(64)}`,
+      'x-terminal-id': 'terminal-1',
+      'x-operator-id': 'operator-1',
+      'x-operator-name': 'Jo%C3%A3o%20da%20Silva'
+    } };
+    let nextCalled = false;
+    protectTerminal(req, { status: () => ({ json: value => value }) }, () => { nextCalled = true; });
+    assert.equal(nextCalled, true);
+    assert.equal(req.terminalAudit.operatorName, 'João da Silva');
+  } finally {
+    if (previous === undefined) delete process.env.TERMINAL_API_TOKEN;
+    else process.env.TERMINAL_API_TOKEN = previous;
+  }
 });

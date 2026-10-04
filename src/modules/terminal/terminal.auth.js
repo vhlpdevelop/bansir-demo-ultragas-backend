@@ -6,6 +6,12 @@ function safeEquals(left, right) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function decodeAuditValue(value) {
+  const raw = String(value || '').trim();
+  try { return decodeURIComponent(raw); }
+  catch { return raw; }
+}
+
 export function protectTerminal(req, res, next) {
   const expected = process.env.TERMINAL_API_TOKEN?.trim();
   if (!expected) {
@@ -32,7 +38,7 @@ export function protectTerminal(req, res, next) {
   req.terminalAudit = {
     terminalId: String(req.headers['x-terminal-id'] || '').trim(),
     operatorId: String(req.headers['x-operator-id'] || '').trim(),
-    operatorName: String(req.headers['x-operator-name'] || '').trim()
+    operatorName: decodeAuditValue(req.headers['x-operator-name'])
   };
   if (!req.terminalAudit.terminalId || !req.terminalAudit.operatorId || !req.terminalAudit.operatorName) {
     return res.status(400).json({ success: false, code: 'MISSING_AUDIT_HEADERS', message: 'Identificação do terminal e do operador é obrigatória.' });
