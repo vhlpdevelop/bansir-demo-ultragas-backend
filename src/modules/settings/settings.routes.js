@@ -7,18 +7,21 @@ import { broadcastTerminalConfiguration, getTerminalStatuses } from '../bridge/b
 const router = Router();
 router.use(protect);
 
-const providers = new Set(['pagbank', 'caixa', 'itau_rede']);
+const providers = new Set(['pagbank', 'caixa', 'itau_rede', 'sicredi', 'mercado_pago', 'other']);
 const connections = new Set(['usb', 'network', 'bluetooth', 'tef', 'cloud']);
 function terminalInput(body = {}) {
   const terminal = {
     name: String(body.name || '').trim(), provider: String(body.provider || ''), model: String(body.model || '').trim(),
-    connectionType: String(body.connectionType || 'usb'), deviceIdentifier: String(body.deviceIdentifier || '').trim(), enabled: body.enabled !== false
+    connectionType: String(body.connectionType || 'usb'), deviceIdentifier: String(body.deviceIdentifier || '').trim(),
+    serialNumber: String(body.serialNumber || '').trim(), partNumber: String(body.partNumber || '').trim(), enabled: body.enabled !== false
   };
   if (!terminal.name || terminal.name.length > 80) throw Object.assign(new Error('Informe um nome de até 80 caracteres para a maquininha.'), { status: 400 });
   if (!providers.has(terminal.provider)) throw Object.assign(new Error('Operadora de maquininha inválida.'), { status: 400 });
   if (!terminal.model || terminal.model.length > 100) throw Object.assign(new Error('Informe o modelo da maquininha.'), { status: 400 });
   if (!connections.has(terminal.connectionType)) throw Object.assign(new Error('Tipo de conexão inválido.'), { status: 400 });
   if (terminal.deviceIdentifier.length > 160) throw Object.assign(new Error('Identificador do equipamento muito longo.'), { status: 400 });
+  if (terminal.serialNumber.length > 100) throw Object.assign(new Error('Número de série muito longo.'), { status: 400 });
+  if (terminal.partNumber.length > 100) throw Object.assign(new Error('Part number muito longo.'), { status: 400 });
   return terminal;
 }
 function hardwareResponse(settings) {

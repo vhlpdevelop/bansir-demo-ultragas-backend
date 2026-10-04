@@ -3,15 +3,28 @@ import { BridgeCredential } from './bridge-credential.model.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-export async function createBridgeCredential({ label, createdBy, tenantKey = 'default' }) {
+export function createBridgeSetupCode(apiToken, publicApiUrl) {
+  if (!apiToken?.startsWith('bpdv_')) throw new Error('Token interno do Bansir PDV inválido.');
+  const parsed = new URL(publicApiUrl);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) throw new Error('A URL pública do Bansir PDV deve usar HTTPS.');
+  const cleanPath = parsed.pathname.replace(/\/+$/, '');
+  const apiBaseUrl = `${parsed.origin}${cleanPath.endsWith('/api/v1') ? cleanPath : `${cleanPath}/api/v1`}`;
+  const webSocketUrl = `${parsed.protocol === 'https:' ? 'wss:' : 'ws:'}//${parsed.host}${new URL(apiBaseUrl).pathname}/bridge/ws`;
+  const profile = Buffer.from(JSON.stringify({ version: 1, apiBaseUrl, webSocketUrl, apiToken }), 'utf8').toString('base64url');
+  return `bpdv1_${profile}`;
+}
+
+export async function createBridgeCredential({ label, createdBy, tenantKey = 'default', publicApiUrl }) {
   const cleanLabel = String(label || '').trim();
   if (!cleanLabel) throw Object.assign(new Error('Informe um nome para o computador do caixa.'), { status: 400 });
   const tokenId = randomBytes(9).toString('base64url');
   const secret = randomBytes(32).toString('base64url');
   const rawToken = `bpdv_${tokenId}.${secret}`;
+  const setupCode = createBridgeSetupCode(rawToken, publicApiUrl);
   const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
   const credential = await BridgeCredential.create({ tokenId, tokenHash: hash(rawToken), label: cleanLabel, tenantKey, createdBy, expiresAt });
-  return { id: credential.id, label: credential.label, token: rawToken, expiresAt, warning: 'Copie agora. O token não será exibido novamente.' };
+  return { id: credential.id, label: credential.label, token: setupCode, expiresAt, warning: 'Copie agora. O código de conexão não será exibido novamente.' };
 }
 
 export async function authenticateBridgeToken(rawToken) {

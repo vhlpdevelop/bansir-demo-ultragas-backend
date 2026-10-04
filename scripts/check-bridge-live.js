@@ -4,20 +4,23 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { attachBridgeGateway, closeBridgeGateway, getTerminalStatuses, listBridgeConnections, pingBridge } from '../src/modules/bridge/bridge.gateway.js';
+import { createBridgeSetupCode } from '../src/modules/bridge/bridge-credential.service.js';
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bridgeDirectory = path.resolve(backendRoot, '..', 'bansir-bridge', 'publish', 'win-x64');
 const bridgeExecutable = path.join(bridgeDirectory, 'Bansir.Bridge.exe');
 const server = createServer();
 const terminalId = '507f1f77bcf86cd799439011';
-attachBridgeGateway(server, { authenticate: async token => token === 'live-test-token' ? { id: 'live-test-credential', tenantKey: 'test' } : null, loadTerminals: async () => [{ _id: terminalId, name: 'PagBank teste', provider: 'pagbank', model: 'Teste', connectionType: 'usb', enabled: true }] });
+const apiToken = 'bpdv_live.test-secret';
+attachBridgeGateway(server, { authenticate: async token => token === apiToken ? { id: 'live-test-credential', tenantKey: 'test' } : null, loadTerminals: async () => [{ _id: terminalId, name: 'PagBank teste', provider: 'pagbank', model: 'Teste', connectionType: 'usb', enabled: true }] });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const websocketPort = server.address().port;
 const localPort = 17329;
+const connectionCode = createBridgeSetupCode(apiToken, `http://127.0.0.1:${websocketPort}`);
 const child = spawn(bridgeExecutable, [], {
   cwd: bridgeDirectory,
   windowsHide: true,
-  env: { ...process.env, BANSIR_PDV_API_TOKEN: 'live-test-token', Bridge__Port: String(localPort), Bridge__BackendWebSocketUrl: `ws://127.0.0.1:${websocketPort}/api/v1/bridge/ws` },
+  env: { ...process.env, BANSIR_PDV_CONNECTION_CODE: connectionCode, Bridge__Port: String(localPort) },
   stdio: ['ignore', 'pipe', 'pipe']
 });
 

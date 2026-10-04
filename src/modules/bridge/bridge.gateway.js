@@ -82,7 +82,7 @@ export function listBridgeConnections() {
 }
 
 function sendTerminalConfiguration(socket, terminals) {
-  send(socket, { type: 'configuration.terminals', terminals: terminals.filter(item => item.enabled !== false).map(item => ({ terminalId: String(item._id), name: item.name, provider: item.provider, model: item.model, connectionType: item.connectionType, deviceIdentifier: item.deviceIdentifier || '' })) });
+  send(socket, { type: 'configuration.terminals', terminals: terminals.filter(item => item.enabled !== false).map(item => ({ terminalId: String(item._id), name: item.name, provider: item.provider, model: item.model, connectionType: item.connectionType, deviceIdentifier: item.deviceIdentifier || '', serialNumber: item.serialNumber || '', partNumber: item.partNumber || '' })) });
 }
 
 export function broadcastTerminalConfiguration(terminals) {

@@ -3,6 +3,7 @@ import { protect } from '../../middlewares/auth.middleware.js';
 import { requireMinHierarchy } from '../../middlewares/role.middleware.js';
 import { disconnectBridgeCredential, listBridgeConnections, pingBridge } from './bridge.gateway.js';
 import { createBridgeCredential, listBridgeCredentials, revokeBridgeCredential } from './bridge-credential.service.js';
+import { config } from '../../config/env.js';
 
 const router = Router();
 router.use(protect, requireMinHierarchy(3));
@@ -10,7 +11,10 @@ router.get('/tokens', async (req, res, next) => {
   try { res.json({ success: true, data: await listBridgeCredentials() }); } catch (error) { next(error); }
 });
 router.post('/tokens', async (req, res, next) => {
-  try { res.status(201).json({ success: true, data: await createBridgeCredential({ label: req.body.label, createdBy: req.user._id }) }); } catch (error) { next(error); }
+  try {
+    const publicApiUrl = config.bridgePublicUrl || `${req.protocol}://${req.get('host')}`;
+    res.status(201).json({ success: true, data: await createBridgeCredential({ label: req.body.label, createdBy: req.user._id, tenantKey: req.user.tenantKey || 'default', publicApiUrl }) });
+  } catch (error) { next(error); }
 });
 router.delete('/tokens/:id', async (req, res, next) => {
   try {

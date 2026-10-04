@@ -30,7 +30,8 @@ export const config = {
   authRateLimitMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20', 10),
   bodyLimitGeneral: process.env.BODY_LIMIT_GENERAL || '500kb',
   bodyLimitXml: process.env.BODY_LIMIT_XML || '15mb',
-  renderExternalUrl: process.env.RENDER_EXTERNAL_URL || process.env.KEEP_ALIVE_URL || (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' ? 'https://bansir-demo-caroline-backend.onrender.com' : null),
+  renderExternalUrl: process.env.RENDER_EXTERNAL_URL || process.env.KEEP_ALIVE_URL || null,
+  bridgePublicUrl: process.env.BANSIR_BRIDGE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
   keepAliveIntervalMinutes: parseInt(process.env.KEEP_ALIVE_INTERVAL_MINUTES || '14', 10),
   loadedEnvPath: loadedPath
 };
