@@ -26,6 +26,7 @@ import customerRoutes from './modules/customers/customer.routes.js';
 import whatsappRoutes from './modules/whatsapp/whatsapp.routes.js';
 import vehicleRoutes from './modules/fleet/vehicle.routes.js';
 import bridgeRoutes from './modules/bridge/bridge.routes.js';
+import terminalRoutes from './modules/terminal/terminal.routes.js';
 
 const app = express();
 
@@ -120,6 +121,7 @@ app.use('/api/suppliers', supplierRoutes);
 app.use('/api/v1/whatsapp', whatsappRoutes);
 app.use('/api/v1/fleet/vehicles', vehicleRoutes);
 app.use('/api/v1/bridge', bridgeRoutes);
+app.use('/api/v1/terminal', terminalRoutes);
 
 // Error handlers
 app.use(notFound);
