@@ -9,6 +9,7 @@ import {mountFiscal} from './fiscal.js';
 import {mountNotifications} from './notifications.js';
 import {mountSales} from './sales.js';
 import {mountCustomers} from './customers.js';
+import {mountCustomerProfile} from './customer-profile.js';
 import {mountProductImport} from './product-import.js';
 import {mountPublicStorefront,mountStorefrontAdmin} from './storefront.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
@@ -139,6 +140,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountFiscal(app,{scoped});
   mountSales(app,{scoped});
   mountCustomers(app,{scoped});
+  mountCustomerProfile(app,{scoped});
   mountProductImport(app,{scoped});
   mountStorefrontAdmin(app,{scoped});
   // Never mount legacy MongoDB business routers in the multi-tenant process.

@@ -4,18 +4,18 @@ import {normalizePhone,customersForPhone} from './phone.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {readPdfTable,pdfLine,customerReportRows} from './pdf-import.js';
 
-export const customerInput=z.object({name:z.string().trim().min(2).max(200),phone:z.string().max(40).default('').transform(v=>normalizePhone(v,{optional:true})),document:z.string().max(25).default('').transform(v=>v.replace(/\D/g,'')).refine(v=>!v||[11,14].includes(v.length),'Documento deve ter 11 ou 14 dígitos.'),address:z.string().trim().max(1000).default('')}).strict();
+export const customerInput=z.object({name:z.string().trim().min(2).max(200),phone:z.string().max(40).default('').transform(v=>normalizePhone(v,{optional:true})),document:z.string().max(25).default('').transform(v=>v.replace(/\D/g,'')).refine(v=>!v||[11,14].includes(v.length),'Documento deve ter 11 ou 14 dígitos.'),address:z.string().trim().max(1000).default(''),email:z.union([z.email(),z.literal('')]).default(''),birthDate:z.union([z.iso.date(),z.literal('')]).default(''),notes:z.string().trim().max(3000).default('')}).strict();
 export async function createCustomer(c,identity,body,{useExisting=false}={}){
  const data=customerInput.parse(body);
  if(data.phone){await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`customer:${identity.tenantId}:${identity.establishmentId}:${data.phone}`]);const found=await customersForPhone(c,data.phone);
   if(found.length>1)throw httpError(409,'Há cadastros duplicados para este telefone. Revise os clientes ativos.','DUPLICATE_PHONE');
   if(found.length){if(useExisting)return found[0];throw httpError(409,'Este telefone já está cadastrado. Busque e selecione o cliente existente.','CUSTOMER_EXISTS');}
  }
- return (await c.query('INSERT INTO bansir.customers(tenant_id,establishment_id,name,document,phone,address) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,document,phone,address',[identity.tenantId,identity.establishmentId,data.name,data.document,data.phone,data.address])).rows[0];
+ return (await c.query('INSERT INTO bansir.customers(tenant_id,establishment_id,name,document,phone,address,email,birth_date,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,name,document,phone,address',[identity.tenantId,identity.establishmentId,data.name,data.document,data.phone,data.address,data.email,data.birthDate,data.notes])).rows[0];
 }
 
 export function rowsFromPdfLines(lines){
- const rows=[];const phonePattern=/(?<!\d)(?:\+?55[ .-]*)?\(?[1-9]\d\)?[ .-]*(?:9[ .-]*\d{4}|[2-5]\d{3})[ .-]*\d{4}(?!\d)/g;
+ const rows=[];const phonePattern=/(?<!\d)(?:\+?55[ .-]*)?\(?[1-9]\d\)?[ .-]*(?:9[ .-]*\d{4}|[2-9]\d{3})[ .-]*\d{4}(?!\d)/g;
  for(const line of lines){const matches=[...line.matchAll(phonePattern)];if(!matches.length)continue;
   const distinct=[...new Set(matches.map(m=>{try{return normalizePhone(m[0]);}catch{return null;}}).filter(Boolean))];
   if(!distinct.length)continue;
@@ -36,7 +36,7 @@ export async function extractCustomerPdf(base64){
  const reportRows=customerReportRows(file.pages,normalizePhone),rows=reportRows??rowsFromPdfLines(lines);
  return {fileHash:file.fileHash,pages:file.pages.length,layout:reportRows?'jasley-clientes':'generic',repeatedLines:reportRows?rows.reduce((n,r)=>n+(r.sourceMetadata.occurrences||1)-1,0):0,rows,textPreview:lines.slice(0,20).join('\n'),warning:reportRows?'Relatório por colunas: confira telefones antigos, duplicados e endereços incompletos. Datas são preservadas como origem, sem validar sua veracidade. Consumidor final e telefones duplicados ficam desmarcados.':'Confira cada linha antes de importar. PDFs sem texto precisam de OCR.'};
 }
-const importCustomerInput=customerInput.extend({sourceCode:z.string().regex(/^\d{1,30}$/).optional(),sourceMetadata:z.object({telephone:z.string().max(200),mobile:z.string().max(200),lastOrder:z.string().max(40),birthDate:z.string().max(40),email:z.string().max(254),page:z.number().int().min(1).max(250),occurrences:z.number().int().min(1).max(25000).optional(),pages:z.array(z.number().int().min(1).max(250)).max(250).optional()}).strict().optional()}).refine(r=>!!r.phone||!!r.sourceCode,'Informe telefone válido ou código de origem.');
+const importCustomerInput=customerInput.omit({email:true,birthDate:true,notes:true}).extend({sourceCode:z.string().regex(/^\d{1,30}$/).optional(),sourceMetadata:z.object({telephone:z.string().max(200),mobile:z.string().max(200),lastOrder:z.string().max(40),birthDate:z.string().max(40),email:z.string().max(254),page:z.number().int().min(1).max(250),occurrences:z.number().int().min(1).max(25000).optional(),pages:z.array(z.number().int().min(1).max(250)).max(250).optional()}).strict().optional()}).refine(r=>!!r.phone||!!r.sourceCode,'Informe telefone válido ou código de origem.');
 export async function importCustomers(c,i,body){
  const data=z.object({requestKey:z.uuid(),fileHash:z.string().regex(/^[a-f0-9]{64}$/),mode:z.enum(['skip-existing','update-existing']).default('skip-existing'),rows:z.array(importCustomerInput).min(1).max(8000)}).strict().parse(body),fingerprint=fiscalDraftHash(data);
  if(new Set(data.rows.filter(r=>r.phone).map(r=>r.phone)).size!==data.rows.filter(r=>r.phone).length)throw httpError(400,'Há telefones repetidos na prévia. Selecione um cadastro por telefone.','DUPLICATE_PHONE');
@@ -48,9 +48,9 @@ export async function importCustomers(c,i,body){
  // Acquire all phone locks in a stable order, then match once; thousands of PDF rows
  // must not require thousands of network round trips while holding the transaction.
  await c.query("SELECT pg_advisory_xact_lock(hashtextextended(key,0)) FROM (SELECT key FROM unnest($1::text[]) AS key ORDER BY key) sorted",[phones.map(phone=>`customer:${i.tenantId}:${i.establishmentId}:${phone}`)]);
- const existing=(await c.query(`SELECT id,phone,source_code,active FROM bansir.customers WHERE source_code=ANY($1::text[]) OR (active AND
-  (CASE WHEN length(regexp_replace(phone,'[^0-9]','','g')) IN(10,11) THEN '55'||regexp_replace(phone,'[^0-9]','','g') ELSE regexp_replace(phone,'[^0-9]','','g') END)=ANY($2::text[]))`,[codes,phones])).rows;
- const byCode=new Map(),byPhone=new Map();for(const row of existing){if(row.source_code)byCode.set(row.source_code,row);if(row.active&&row.phone){let phone;try{phone=normalizePhone(row.phone);}catch{continue;}if(!byPhone.has(phone))byPhone.set(phone,[]);byPhone.get(phone).push(row);}}
+ const existing=(await c.query(`SELECT id,phone,source_code,active,bansir.customer_lookup_phone(phone,import_metadata) AS lookup_phone FROM bansir.customers WHERE source_code=ANY($1::text[]) OR (active AND
+  bansir.customer_lookup_phone(phone,import_metadata)=ANY($2::text[]))`,[codes,phones])).rows;
+ const byCode=new Map(),byPhone=new Map();for(const row of existing){if(row.source_code)byCode.set(row.source_code,row);if(row.active&&row.lookup_phone){const phone=row.lookup_phone;if(!byPhone.has(phone))byPhone.set(phone,[]);byPhone.get(phone).push(row);}}
  const inserts=[],updates=[];
  for(const row of data.rows){
   const matchedCode=byCode.get(row.sourceCode),matchedPhone=byPhone.get(row.phone)||[],ids=[...new Set([...(matchedCode?[matchedCode]:[]),...matchedPhone].map(r=>r.id))];
@@ -70,13 +70,18 @@ export async function importCustomers(c,i,body){
 export function mountCustomers(app,{scoped}){
  app.get('/api/v1/customers',scoped('settings',true,async(c,req)=>{
   const q=z.string().trim().max(200).default('').parse(req.query.q);
-  return {data:(await c.query("SELECT id,name,document,phone,address,active,source_code,import_metadata FROM bansir.customers WHERE ($1='' OR strpos(lower(name||' '||document||' '||phone||' '||address||' '||source_code),lower($1))>0) ORDER BY name LIMIT 1000",[q])).rows};
+  const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page),pageSize=z.coerce.number().int().min(1).max(1000).default(1000).parse(req.query.pageSize);
+  let lookup='';try{lookup=normalizePhone(q);}catch{}
+  const where="($1='' OR strpos(lower(name||' '||document||' '||phone||' '||address||' '||source_code||' '||email),lower($1))>0 OR ($2<>'' AND bansir.customer_lookup_phone(phone,import_metadata)=$2))";
+  const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.customers WHERE ${where}`,[q,lookup])).rows[0].total;
+  return {data:(await c.query(`SELECT id,name,document,phone,address,active,source_code,import_metadata,email,birth_date,notes FROM bansir.customers WHERE ${where} ORDER BY name,id LIMIT $3 OFFSET $4`,[q,lookup,pageSize,page*pageSize])).rows,meta:{total,page,pageSize}};
  }));
+ app.post('/api/v1/customers',scoped('settings',false,async(c,req)=>({status:201,data:await createCustomer(c,req.identity,req.body)})));
  app.put('/api/v1/customers/:id',scoped('settings',false,async(c,req)=>{
   const data=customerInput.extend({active:z.boolean().default(true)}).parse(req.body),id=z.uuid().parse(req.params.id);
   if(data.phone)await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`customer:${req.identity.tenantId}:${req.identity.establishmentId}:${data.phone}`]);
   if(data.phone&&data.active){const found=await customersForPhone(c,data.phone);if(found.some(row=>row.id!==id))throw httpError(409,'Telefone já vinculado a outro cliente ativo.','CUSTOMER_EXISTS');}
-  const row=(await c.query('UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,active=$6 WHERE id=$1 RETURNING id,name,phone,document,address,active',[id,data.name,data.phone,data.document,data.address,data.active])).rows[0];if(!row)throw httpError(404,'Cliente não encontrado.','NOT_FOUND');return {data:row};
+  const row=(await c.query('UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,active=$6,email=$7,birth_date=$8,notes=$9 WHERE id=$1 RETURNING id,name,phone,document,address,active',[id,data.name,data.phone,data.document,data.address,data.active,data.email,data.birthDate,data.notes])).rows[0];if(!row)throw httpError(404,'Cliente não encontrado.','NOT_FOUND');return {data:row};
  }));
  app.post('/api/v1/customers/import/pdf',scoped('settings',false,async(c,req)=>({data:await extractCustomerPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64)})));
  app.post('/api/v1/customers/import/confirm',scoped('settings',false,async(c,req)=>({status:201,data:await importCustomers(c,req.identity,req.body)})));

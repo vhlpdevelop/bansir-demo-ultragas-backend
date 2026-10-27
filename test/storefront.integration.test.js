@@ -70,6 +70,9 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    assert.equal((await db.pool.query('SELECT * FROM bansir.products')).rowCount,0);assert.equal((await db.pool.query('SELECT current_user AS role')).rows[0].role,'bansir_test_app');
   });
   await t.test('phone is first and linked internally; neither known nor unknown phones expose customer identity',async()=>{
+   assert.equal(normalizePhone('6599991111'),'5565999991111');assert.equal(normalizePhone('6533334444'),'556533334444');
+   const legacy=(await send('/customers')).body.data.find(r=>r.phone==='5565999991111');
+   await admin.query("UPDATE bansir.customers SET phone='6599991111' WHERE id=$1",[legacy.id]);
    const known=await publicSend('/start','POST',{phone:'(65) 99999-1111'});const unknown=await publicSend('/start','POST',{phone:'(65) 99999-5555'});assert.equal(known.status,201,JSON.stringify(known.body));assert.equal(unknown.status,201);
    assert.deepEqual(Object.keys(known.body.data).sort(),['phone','token']);assert.deepEqual(Object.keys(unknown.body.data).sort(),['phone','token']);checkoutA=known.body.data;checkoutB=unknown.body.data;
    const internal=(await admin.query('SELECT customer_id FROM bansir.checkout_sessions WHERE phone=$1 ORDER BY created_at DESC LIMIT 1',[checkoutA.phone])).rows[0];assert.ok(internal.customer_id);
@@ -95,6 +98,13 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const sale=results[0].body.data;assert.equal(sale.status,'pending');assert.equal(sale.outstanding_cents,24790);assert.equal(sale.delivery_fee_cents,700);assert.equal(sale.delivery_employee_id,deliverer.id);assert.equal(sale.customer_name,'Maria de Teste');assert.equal(sale.delivery_address,'Rua de entrega informada 200');assert.equal(sale.payments.length,0);assert.equal(sale.invoiceIssued,false);
    assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before-2);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).body.data.status,'accepted');
    assert.equal((await send(`/storefront/orders/${order.id}/reject`,'POST',{reason:'Cannot reject accepted'})).status,409);
+  });
+  await t.test('customer profile shows scoped sale and order history, contact data and balances',async()=>{
+   const customer=(await send('/customers')).body.data.find(r=>r.name==='Maria de Teste');
+   const updated=await send(`/customers/${customer.id}`,'PUT',{name:customer.name,phone:customer.phone,document:customer.document,address:customer.address,active:true,email:'cliente@example.invalid',birthDate:'1990-01-02',notes:'Preferencia de entrega de teste'});assert.equal(updated.status,200);
+   const result=await send(`/customers/${customer.id}/profile`);assert.equal(result.status,200);assert.equal(result.body.data.customer.email,'cliente@example.invalid');assert.equal(result.body.data.customer.birth_date,'1990-01-02');assert.ok(result.body.data.summary.sales_count>0);assert.ok(result.body.data.summary.outstanding_cents>0);assert.ok(result.body.data.orders.length>0);assert.ok(result.body.data.sales[0].delivery_employee_name);
+   assert.equal((await send(`/customers/${customer.id}/profile`,'GET',undefined,{token:s2.token})).status,404);
+   assert.equal((await send(`/customers/${customer.id}/profile`,'GET',undefined,{token:null})).status,401);
   });
   await t.test('closed pages and rejected orders cannot create sales or leak private status to another checkout',async()=>{
    const body={requestKey:randomUUID(),customerName:'New order customer',fulfillment:'pickup',zoneId:'',expectedShippingCents:0,items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}]};

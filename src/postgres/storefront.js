@@ -95,7 +95,7 @@ export function mountStorefrontAdmin(app,{scoped}){
   if(order.sale_id)return {data:await saleView(c,order.sale_id)};if(order.status!=='new')throw httpError(409,'Pedido já encerrado.','ORDER_CLOSED');
   const customer=await createCustomer(c,i,{name:order.customer_name,phone:order.phone,document:'',address:order.delivery_address},{useExisting:true});
   const sale=await registerSale(c,i,member,{requestKey:order.id,items:order.items.map(item=>({productId:item.productId,quantity:item.quantity,expectedUnitPriceCents:item.priceCents})),customerId:customer.id,deliveryMode:order.fulfillment,deliveryAddress:order.delivery_address,deliveryFeeCents:Number(order.shipping_cents),payment:{method:'pending',term:order.fulfillment==='delivery'?'delivery':'pickup'},...(input.deliveryEmployeeId?{deliveryEmployeeId:input.deliveryEmployeeId}:{})});
-  await c.query("UPDATE bansir.storefront_orders SET status='accepted',sale_id=$2,accepted_by=$3,updated_at=now() WHERE id=$1",[id,sale.id,i.userId]);return {status:201,data:sale};
+  await c.query("UPDATE bansir.storefront_orders SET status='accepted',sale_id=$2,accepted_by=$3,customer_id=$4,updated_at=now() WHERE id=$1",[id,sale.id,i.userId,customer.id]);return {status:201,data:sale};
  }));
  app.post('/api/v1/storefront/orders/:id/reject',scoped('sales',false,async(c,req)=>{
   const {reason}=z.object({reason:text.min(3).max(500)}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;
