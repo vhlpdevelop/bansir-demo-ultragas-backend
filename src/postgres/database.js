@@ -13,7 +13,7 @@ export function createDatabase({ connectionString, max = 10 }) {
   // A network failure on an idle client must not terminate the process.
   pool.on('error', () => console.error('[postgres] Conexão ociosa interrompida.'));
 
-  async function transaction({ userId, tenantId, establishmentId, sessionId }, callback) {
+  async function transaction({ userId, tenantId, establishmentId, sessionId, allowPasswordChange=false }, callback) {
     if (!validId(userId) || (tenantId !== undefined && !validId(tenantId)) ||
         (establishmentId !== undefined && (!tenantId || !validId(establishmentId))) ||
         (sessionId !== undefined && !validId(sessionId))) {
@@ -48,6 +48,10 @@ export function createDatabase({ connectionString, max = 10 }) {
           AND tenant_id=$3 AND establishment_id=$4 AND revoked_at IS NULL AND expires_at>now()`,
         [sessionId,userId,tenantId,establishmentId]);
         if (!rowCount) throw httpError(401,'Sessão encerrada. Selecione o estabelecimento novamente.','SESSION_REVOKED');
+      }
+      if(tenantId&&!allowPasswordChange){
+        const user=(await client.query('SELECT must_change_password FROM bansir.users WHERE id=$1',[userId])).rows[0];
+        if(user?.must_change_password)throw httpError(403,'Altere sua senha temporária antes de continuar.','PASSWORD_CHANGE_REQUIRED');
       }
       const result = await callback(client, membership);
       await client.query('COMMIT');

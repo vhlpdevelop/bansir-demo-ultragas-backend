@@ -49,6 +49,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountPublicStorefront(app,{database,route});
   app.use('/api/v1', auth.protect);
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));
+  app.post('/api/v1/auth/change-password',rateLimit({windowMs:900000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.changePassword(req.identity,req.body)})));
   app.post('/api/v1/auth/return-to-selection', route(async req => ({data: await auth.returnToSelection(req.identity)})));
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
   const scoped = (module, read, fn) => route(async req => database.transaction(req.identity, async (client, member) => {

@@ -33,19 +33,21 @@ async function adminTransaction(connectionString, callback) {
 export async function provisionTenant(connectionString, input) {
   const data = z.object({ slug: foundationSnapshot.shape.tenant.shape.slug, name: z.string().trim().min(1).max(200),
     adminName: z.string().trim().min(1).max(200), email: z.string().trim().toLowerCase().email(),
-    password: z.string().min(12).max(72),planCode:z.string().min(1).default('migration-single') }).strict().parse(input);
+    password: z.string().min(12).max(72),planCode:z.string().min(1).default('migration-single'),
+    legalName:z.string().trim().max(200).default(''),tradeName:z.string().trim().max(200).default(''),
+    documentId:z.string().regex(/^(\d{14})?$/).default(''),mustChangePassword:z.boolean().default(false) }).strict().parse(input);
   const hash = await bcrypt.hash(data.password, 12);
   return adminTransaction(connectionString, async client => {
     const existing = await client.query('SELECT 1 FROM bansir.users WHERE email=$1', [data.email]);
     if (existing.rowCount) throw new Error('A identidade já existe. Vincule-a em um fluxo administrativo próprio; não redefina sua senha pelo bootstrap.');
-    const { rows: [tenant] } = await client.query('INSERT INTO bansir.tenants(slug,name,plan_code) VALUES($1,$2,$3) RETURNING id,slug,name', [data.slug, data.name,data.planCode]);
-    const { rows: [user] } = await client.query('INSERT INTO bansir.users(email,name,password_hash) VALUES($1,$2,$3) RETURNING id', [data.email, data.adminName, hash]);
+    const { rows: [tenant] } = await client.query('INSERT INTO bansir.tenants(slug,name,plan_code,legal_name) VALUES($1,$2,$3,$4) RETURNING id,slug,name', [data.slug, data.name,data.planCode,data.legalName]);
+    const { rows: [user] } = await client.query('INSERT INTO bansir.users(email,name,password_hash,must_change_password) VALUES($1,$2,$3,$4) RETURNING id', [data.email, data.adminName, hash,data.mustChangePassword]);
     await client.query(`INSERT INTO bansir.tenant_memberships(tenant_id,user_id,role,allowed_routes) VALUES($1,$2,'admin',ARRAY['products','settings'])`, [tenant.id, user.id]);
-    const {rows:[establishment]}=await client.query('INSERT INTO bansir.establishments(tenant_id,name) VALUES($1,$2) RETURNING id', [tenant.id, data.name]);
+    const {rows:[establishment]}=await client.query('INSERT INTO bansir.establishments(tenant_id,name,document_id,legal_name) VALUES($1,$2,$3,$4) RETURNING id', [tenant.id, data.tradeName||data.name,data.documentId,data.legalName]);
     await client.query(`INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes)
       VALUES($1,$2,$3,'admin',ARRAY['products','settings'])`,[tenant.id,establishment.id,user.id]);
     await client.query('UPDATE bansir.establishments SET owner_user_id=$2 WHERE id=$1 AND tenant_id=$3',[establishment.id,user.id,tenant.id]);
-    await client.query('INSERT INTO bansir.store_settings(tenant_id,store_name,establishment_id) VALUES($1,$2,$3)', [tenant.id, data.name,establishment.id]);
+    await client.query('INSERT INTO bansir.store_settings(tenant_id,store_name,establishment_id,document_id) VALUES($1,$2,$3,$4)', [tenant.id, data.tradeName||data.name,establishment.id,data.documentId]);
     return {...tenant,establishmentId:establishment.id};
   });
 }

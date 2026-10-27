@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { httpError,validId } from './database.js';
+import {z} from 'zod';
 
 const audience='bansir-ultragas-postgres';
 export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
@@ -28,15 +29,19 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
   };
   const establishments=userId=>database.transaction({userId},client=>available(client,userId));
   async function profile(client,member,userId) {
-    const { rows:[user] }=await client.query('SELECT id,name,email,phone FROM bansir.users WHERE id=$1 AND active',[userId]);
+    const { rows:[user] }=await client.query('SELECT id,name,email,phone,must_change_password AS "mustChangePassword" FROM bansir.users WHERE id=$1 AND active',[userId]);
     if (!user) throw httpError(401,'Conta inativa.','USER_INACTIVE');
     const tenant={id:member.id,slug:member.slug,name:member.name};
     const establishment={id:member.establishment_id,name:member.establishment_name};
     return {user:{...user,_id:user.id,role:member.role,isEstablishmentOwner:member.owner_user_id===userId,allowedRoutes:member.allowed_routes,tenant,establishment,
       notificationPreferences:{},devices:[]},tenant,establishment};
   }
-  async function issue(userId,tenantId,establishmentId,selectionId) {
-    return database.transaction({userId,tenantId,establishmentId},async (client,member)=>{
+  async function verifyLoginHash(client,userId,expectedHash){
+    if(expectedHash){const row=(await client.query('SELECT bansir.lock_own_password() AS password_hash')).rows[0];if(row?.password_hash!==expectedHash)throw httpError(401,'Credenciais alteradas. Entre novamente.','INVALID_CREDENTIALS');}
+  }
+  async function issue(userId,tenantId,establishmentId,selectionId,expectedHash) {
+    return database.transaction({userId,tenantId,establishmentId,allowPasswordChange:true},async (client,member)=>{
+      await verifyLoginHash(client,userId,expectedHash);
       if (selectionId) {
         const { rowCount }=await client.query(`UPDATE bansir.selection_requests SET consumed_at=now()
           WHERE id=$1 AND user_id=$2 AND consumed_at IS NULL AND expires_at>now() RETURNING id`,[selectionId,userId]);
@@ -50,8 +55,9 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
       return {...data,token};
     });
   }
-  async function selection(userId,sessionId) {
+  async function selection(userId,sessionId,expectedHash) {
     return database.transaction({userId},async client=>{
+      await verifyLoginHash(client,userId,expectedHash);
       const choices=await available(client,userId);
       if (!choices.length) throw httpError(403,'Sua conta não possui estabelecimento ativo.','NO_ESTABLISHMENTS');
       if (sessionId) {
@@ -68,7 +74,19 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
   }
   return {
     establishments,
-    session:context=>database.transaction(context,(client,member)=>profile(client,member,context.userId)),
+    session:context=>database.transaction({...context,allowPasswordChange:true},(client,member)=>profile(client,member,context.userId)),
+    async changePassword(context,body){
+      const data=z.object({currentPassword:z.string().min(1).max(200),newPassword:z.string().min(8).max(72).refine(v=>Buffer.byteLength(v,'utf8')<=72,'Use no máximo 72 bytes na senha.')}).strict().parse(body);
+      if(data.currentPassword===data.newPassword)throw httpError(400,'Escolha uma senha diferente da atual.','PASSWORD_UNCHANGED');
+      return database.transaction({...context,allowPasswordChange:true},async client=>{
+        const row=(await client.query('SELECT bansir.lock_own_password() AS password_hash')).rows[0];
+        if(!row||!await bcrypt.compare(data.currentPassword,row.password_hash))throw httpError(400,'Senha atual incorreta.','INVALID_CURRENT_PASSWORD');
+        const hash=await bcrypt.hash(data.newPassword,12);
+        const result=(await client.query('SELECT bansir.change_own_password($1,$2) AS changed',[row.password_hash,hash])).rows[0];
+        if(!result.changed)throw httpError(409,'Credenciais alteradas. Entre novamente.','PASSWORD_CHANGED');
+        return {changed:true,requiresLogin:true};
+      });
+    },
     async login({email,password}) {
       if (typeof email!=='string' || typeof password!=='string' || email.length>254 || password.length>200) throw httpError(400,'Informe e-mail e senha válidos.','INVALID_INPUT');
       const { rows:[user] }=await database.pool.query('SELECT id,password_hash,active FROM bansir.users WHERE email=$1',[email.trim().toLowerCase()]);
@@ -77,8 +95,8 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
       if (!user?.active || !matches) throw httpError(401,'E-mail ou senha incorretos.','INVALID_CREDENTIALS');
       const choices=await establishments(user.id);
       if (!choices.length) throw httpError(403,'Sua conta não possui estabelecimento ativo.','NO_ESTABLISHMENTS');
-      if (choices.length===1) return issue(user.id,choices[0].tenant.id,choices[0].id);
-      return selection(user.id);
+      if (choices.length===1) return issue(user.id,choices[0].tenant.id,choices[0].id,undefined,hash);
+      return selection(user.id,undefined,hash);
     },
     async select({selectionToken,tenantId,establishmentId}) {
       const payload=verify(selectionToken,'establishment_selection');
