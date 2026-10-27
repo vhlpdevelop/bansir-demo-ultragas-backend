@@ -40,9 +40,9 @@ services:
     command: [node, scripts/worker-postgres.js, fiscal]
   whatsapp:
     <<: *service
-    env_file: [deploy/whatsapp.env]
-    environment: {NODE_ENV: production, WHATSAPP_AUTH_DIR: /var/lib/bansir/whatsapp}
+    profiles: [meta]
+    env_file:
+      - path: deploy/whatsapp.env
+        required: false
+    environment: {NODE_ENV: production}
     command: [node, src/postgres/whatsapp.worker.js]
-    volumes: [whatsapp-auth:/var/lib/bansir/whatsapp]
-volumes:
-  whatsapp-auth:

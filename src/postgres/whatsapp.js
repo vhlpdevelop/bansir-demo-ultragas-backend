@@ -1,34 +1,28 @@
-import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {enqueue} from './queue.js';
 import {httpError} from './database.js';
-
+import {seal,secretContext} from './secrets.js';
+import {normalizePhone} from './phone.js';
+export async function queueWhatsapp(c,i,{key,payload}){
+ const account=(await c.query('SELECT enabled,phone_number_id,waba_id FROM bansir.meta_accounts')).rows[0];if(!account?.enabled)return false;
+ const data={...payload,userId:i.userId,metaPhoneId:account.phone_number_id,metaWabaId:account.waba_id};
+ const existing=(await c.query("SELECT payload FROM bansir.jobs WHERE kind='whatsapp' AND dedupe_key=$1",[key])).rows[0];
+ if(existing){if(existing.payload.userId!==i.userId||existing.payload.phone!==payload.phone||existing.payload.message!==payload.message)throw httpError(409,'Tentativa já usada com outra mensagem.','IDEMPOTENCY_CONFLICT');return true;}
+ await enqueue(c,i,{kind:'whatsapp',key,payload:data,maxAttempts:5});return true;
+}
 export function mountWhatsapp(app,{scoped}){
- app.get('/api/v1/whatsapp/status',scoped('settings',true,async(c,req)=>{
-  const row=(await c.query('SELECT status,qr_code_url,phone FROM bansir.whatsapp_sessions WHERE tenant_id=$1 AND establishment_id=$2',[req.identity.tenantId,req.identity.establishmentId])).rows[0];
-  return {data:{status:row?.status||'DISCONNECTED',qrCodeUrl:row?.qr_code_url||null,phone:row?.phone||''}};
+ app.get('/api/v1/whatsapp/status',scoped('settings',true,async c=>{const account=(await c.query('SELECT phone_number_id,waba_id,display_phone,enabled,template_language,voucher_template,delivery_template FROM bansir.meta_accounts')).rows[0];return {data:{provider:'meta',status:account?.enabled?'CONFIGURED':'NOT_CONFIGURED',account:account||null,webhookConfigured:!!(process.env.META_APP_SECRET&&process.env.META_VERIFY_TOKEN)}};}));
+ app.put('/api/v1/whatsapp/meta',scoped('settings',false,async(c,req,m)=>{
+  if(!['admin','superadmin'].includes(m.role))throw httpError(403,'Somente administrador pode configurar a conta Meta.','FORBIDDEN');
+  const d=z.object({phoneNumberId:z.string().regex(/^\d{5,30}$/),wabaId:z.string().regex(/^\d{5,30}$/),accessToken:z.string().min(20).max(4096).optional(),displayPhone:z.string().max(40).default(''),language:z.string().regex(/^[a-z]{2}(_[A-Z]{2})?$/).default('pt_BR'),voucherTemplate:z.string().regex(/^[a-z0-9_]*$/).max(200).default(''),deliveryTemplate:z.string().regex(/^[a-z0-9_]*$/).max(200).default('')}).strict().parse(req.body),i=req.identity;
+  const old=(await c.query('SELECT * FROM bansir.meta_accounts FOR UPDATE')).rows[0];if(!d.accessToken&&(!old||old.phone_number_id!==d.phoneNumberId||old.waba_id!==d.wabaId))throw httpError(400,'Informe o token da conta Meta.','TOKEN_REQUIRED');
+  const token=d.accessToken?seal(d.accessToken,secretContext(i,'whatsapp-meta')):old.encrypted_token;
+  await c.query(`INSERT INTO bansir.meta_accounts(tenant_id,establishment_id,phone_number_id,waba_id,encrypted_token,display_phone,template_language,voucher_template,delivery_template) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET phone_number_id=EXCLUDED.phone_number_id,waba_id=EXCLUDED.waba_id,encrypted_token=EXCLUDED.encrypted_token,display_phone=EXCLUDED.display_phone,template_language=EXCLUDED.template_language,voucher_template=EXCLUDED.voucher_template,delivery_template=EXCLUDED.delivery_template,enabled=true,updated_at=now()`,[i.tenantId,i.establishmentId,d.phoneNumberId,d.wabaId,token,d.displayPhone,d.language,d.voucherTemplate,d.deliveryTemplate]);return {data:{configured:true,provider:'meta'}};
  }));
- app.post('/api/v1/whatsapp/start',scoped('settings',false,async(c,req)=>{
-  const i=req.identity;
-  await c.query(`INSERT INTO bansir.whatsapp_sessions(tenant_id,establishment_id,requested,status)
-   VALUES($1,$2,true,'SYNCING') ON CONFLICT(tenant_id,establishment_id)
-   DO UPDATE SET requested=true,status=CASE WHEN bansir.whatsapp_sessions.status='CONNECTED' THEN 'CONNECTED' ELSE 'SYNCING' END,updated_at=now()`,[i.tenantId,i.establishmentId]);
-  await enqueue(c,i,{kind:'whatsapp',key:`connect:${randomUUID()}`,payload:{action:'sync'}});
-  return {data:{started:true}};
- }));
- app.post('/api/v1/whatsapp/logout',scoped('settings',false,async(c,req)=>{
-  const i=req.identity;
-  await c.query(`INSERT INTO bansir.whatsapp_sessions(tenant_id,establishment_id,requested,status)
-   VALUES($1,$2,false,'DISCONNECTED') ON CONFLICT(tenant_id,establishment_id)
-   DO UPDATE SET requested=false,status='DISCONNECTED',qr_code_url=NULL,phone='',updated_at=now()`,[i.tenantId,i.establishmentId]);
-  await enqueue(c,i,{kind:'whatsapp',key:`logout:${randomUUID()}`,payload:{action:'logout'}});
-  return {data:{loggedOut:true}};
- }));
- app.post('/api/v1/whatsapp/messages',scoped('settings',false,async(c,req)=>{
-  const body=z.object({phone:z.string().regex(/^\+?[0-9]{10,15}$/),message:z.string().trim().min(1).max(4000)}).strict().parse(req.body),i=req.identity;
-  const row=(await c.query('SELECT requested,status FROM bansir.whatsapp_sessions WHERE tenant_id=$1 AND establishment_id=$2',[i.tenantId,i.establishmentId])).rows[0];
-  if(!row?.requested)throw httpError(409,'Conecte o WhatsApp deste estabelecimento antes de enviar mensagens.','WHATSAPP_DISCONNECTED');
-  const id=await enqueue(c,i,{kind:'whatsapp',key:`message:${randomUUID()}`,payload:{action:'send-text',phone:body.phone,message:body.message}});
-  return {status:202,data:{queued:Boolean(id)}};
- }));
+ app.post('/api/v1/whatsapp/start',scoped('settings',false,async()=>{throw httpError(409,'Configure WhatsApp Business Platform / Meta. Pareamento Baileys foi removido.','META_SETUP_REQUIRED');}));
+ app.post('/api/v1/whatsapp/logout',scoped('settings',false,async c=>{await c.query('DELETE FROM bansir.meta_accounts');return {data:{disconnected:true}};}));
+ app.post('/api/v1/whatsapp/contacts',scoped('settings',false,async(c,req)=>{const d=z.object({phone:z.string().max(40),optIn:z.boolean()}).strict().parse(req.body),i=req.identity,phone=normalizePhone(d.phone);await c.query('INSERT INTO bansir.meta_contacts(tenant_id,establishment_id,phone,opt_in,consent_by) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,establishment_id,phone) DO UPDATE SET opt_in=EXCLUDED.opt_in,consent_by=EXCLUDED.consent_by,consent_at=now()',[i.tenantId,i.establishmentId,phone,d.optIn,i.userId]);return {data:{phone,optIn:d.optIn}};}));
+ app.get('/api/v1/whatsapp/messages',scoped('settings',true,async c=>({data:(await c.query("SELECT message_id,direction,phone,body,status,received_at FROM bansir.meta_messages WHERE message_id NOT LIKE 'attempt:%' ORDER BY received_at DESC LIMIT 50")).rows})));
+ app.get('/api/v1/whatsapp/jobs',scoped('settings',true,async c=>({data:(await c.query("SELECT id,state,last_error,created_at FROM bansir.jobs WHERE kind='whatsapp' ORDER BY created_at DESC LIMIT 50")).rows})));
+ app.post('/api/v1/whatsapp/messages',scoped('settings',false,async(c,req)=>{const d=z.object({requestKey:z.uuid(),phone:z.string().max(40),message:z.string().trim().min(1).max(1024)}).strict().parse(req.body);const queued=await queueWhatsapp(c,req.identity,{key:'manual:'+d.requestKey,payload:{permission:'settings',action:'send-text',phone:normalizePhone(d.phone),message:d.message}});if(!queued)throw httpError(409,'Configure a conta Meta antes de enviar.','META_SETUP_REQUIRED');return {status:202,data:{queued:true}};}));
 }

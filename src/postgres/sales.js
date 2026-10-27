@@ -6,7 +6,7 @@ import {enqueueNotification} from './notifications.js';
 import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
 import {pixCode} from './pix.js';
 import {createCustomer} from './customers.js';
-import {enqueue} from './queue.js';
+import {queueWhatsapp} from './whatsapp.js';
 
 const cents=z.number().int().min(0).max(1000000000),text=z.string().trim().max(200),uuid=z.uuid();
 const hash=fiscalDraftHash;
@@ -56,7 +56,7 @@ async function recordPayment(c,i,sale,cash,input){
  if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
 }
-export async function registerSale(c,i,member,body,{quotedItems}={}){
+export async function registerSale(c,i,member,body,{quotedItems,voucherReservation=false}={}){
  const input=saleInput.parse(body),requestHash=hash({input,userId:i.userId});
  await lock(c,`${unitKey(i)}:request:${input.requestKey}`);
  const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
@@ -91,13 +91,13 @@ export async function registerSale(c,i,member,body,{quotedItems}={}){
   await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[i.tenantId,i.establishmentId,sale.id,item.productId,item.position,item.product.name,item.product.barcode,item.product.unit,item.product.ncm,item.quantity,item.unitPrice,item.gross,item.discount,item.product.cost_cents]);
   await c.query('UPDATE bansir.products SET stock=stock-$2,updated_at=now() WHERE id=$1',[item.productId,item.quantity]);
-  await stockMovement(c,i,item.product,item.quantity,'out',`Venda ${sale.id}`);
+  await stockMovement(c,i,item.product,item.quantity,'out',voucherReservation?`Reserva vale ${sale.id}`:`Venda ${sale.id}`);
   if(item.product.stock-item.quantity<=5)await enqueueNotification(c,i,{key:`stock-sale:${sale.id}:${item.productId}`,title:'Estoque baixo',body:`${item.product.name}: ${item.product.stock-item.quantity} unidades.`});
  }
  if(input.payment.method!=='pending')await recordPayment(c,i,sale,cash,{...input.payment,requestKey:input.requestKey,amountCents:total});
  if(input.deliveryMode==='delivery'&&deliverer?.phone){
   const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
-  await enqueue(c,i,{kind:'whatsapp',key:`delivery-route:${sale.id}`,payload:{action:'send-text',phone:deliverer.phone,message}});
+  await queueWhatsapp(c,i,{key:`delivery-route:${sale.id}`,payload:{permission:'sales',action:'send-text',phone:deliverer.phone,message}});
  }
  await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.id.slice(0,8)} registrada com estoque e recebíveis.`});
  return saleView(c,sale.id);
@@ -138,8 +138,8 @@ export function mountSales(app,{scoped}){
   const sale=await ownedSale(c,req.identity,member,req.params.id);
   if(sale.delivery_mode!=='delivery'||!sale.delivery_employee_phone)fail('Esta venda não possui entregador com telefone cadastrado.','DELIVERY_PHONE_MISSING',409);
   const message=`🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents)/100).toFixed(2)}`;
-  await enqueue(c,req.identity,{kind:'whatsapp',key:`delivery-route-resend:${sale.id}:${randomUUID()}`,payload:{action:'send-text',phone:sale.delivery_employee_phone,message}});
-  return {status:202,data:{queued:true}};
+  const queued=await queueWhatsapp(c,req.identity,{key:`delivery-route-resend:${sale.id}:${randomUUID()}`,payload:{permission:'sales',action:'send-text',phone:sale.delivery_employee_phone,message}});
+  return {status:202,data:{queued}};
  }));
  app.get('/api/v1/sales/:id',scoped('sales',true,async(c,req,member)=>{await ownedSale(c,req.identity,member,req.params.id);return {data:await saleView(c,req.params.id)};}));
  app.post('/api/v1/sales/:id/payments',scoped('sales',false,async(c,req,member)=>{

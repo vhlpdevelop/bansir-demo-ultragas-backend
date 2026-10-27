@@ -24,7 +24,7 @@ flowchart LR
   Child --> SEFAZ[SEFAZ: ambiente 1 ou 2]
   Fiscal --> XML[S3 privado de documentos]
   PG --> WhatsApp[Container whatsapp]
-  WhatsApp --> WA[WhatsApp via Baileys]
+  WhatsApp --> WA[WhatsApp Business Platform / Meta]
 ```
 
 O Compose em `compose.production.yml` cria a API e os três workers (notificações, fiscal e WhatsApp). PostgreSQL permanece instalado diretamente na EC2. CloudFront, buckets, domínio, certificado HTTPS e EC2 devem ser provisionados na conta AWS; este repositório não aplica alterações à conta automaticamente. Não usar o Compose antigo da raiz, que atende outro backend.
@@ -32,7 +32,7 @@ O Compose em `compose.production.yml` cria a API e os três workers (notificaç�
 ## Preparação do banco e credenciais
 
 1. Instalar PostgreSQL 17 na EC2, com volume EBS persistente e backup externo com teste de restauração. A porta 5432 não deve estar acessível pela Internet. Permitir em `listen_addresses`/`pg_hba.conf` apenas os endereços privados necessários ao bridge Docker. `host.docker.internal` resolve para o host Linux por `host-gateway`; não resolve um PostgreSQL configurado para escutar somente em 127.0.0.1.
-2. Aplicar `npm run db:migrate` por um processo administrativo separado, com `DATABASE_ADMIN_URL`. As migrações 003–006 criam filas, certificados, cadastro fiscal, documentos, numeração e funções de lease, incluindo unicidade de emitente/modelo/série/número entre unidades. As migrações adicionais 016–017 criam estado/outbox do WhatsApp, vales digitais e frota sem editar as migrações anteriores. A credencial administrativa nunca entra na API ou nos workers.
+2. Aplicar `npm run db:migrate` por um processo administrativo separado, com `DATABASE_ADMIN_URL`. As migrações 003–006 criam filas, certificados, cadastro fiscal, documentos, numeração e funções de lease, incluindo unicidade de emitente/modelo/série/número entre unidades. As migrações adicionais 016–018 criam estado/outbox do WhatsApp, vales digitais e frota sem editar as migrações anteriores. A credencial administrativa nunca entra na API ou nos workers.
 3. Criar logins individuais, com senhas aleatórias, sem propriedade de tabelas, superuser ou BYPASSRLS. Conceder `bansir_runtime` ao login da API e `bansir_worker` aos logins dos dois workers. Os grupos são NOLOGIN. Exemplo de concessões, após criar os logins via administrador:
 
 ```sql
@@ -56,7 +56,7 @@ docker compose -f compose.production.yml logs --tail=100 api notifications fisca
 
 Imagem Node 24, usuário `node`, filesystem somente leitura, capabilities removidas e `/tmp` em memória. O certificado é materializado em diretório temporário privado apenas no subprocesso fiscal, com arquivo modo 0600. O processo pai também remove o diretório ao concluir ou interromper o subprocesso; se o próprio container for morto abruptamente, o tmpfs é descartado ao recriá-lo. Nunca montar o certificado em bucket público. A API expõe somente 127.0.0.1:5000; instalar proxy HTTPS no host (exemplo em `deploy/nginx-api.conf.example`). Configurar `TRUST_PROXY_HOPS` conforme o caminho real até a API. O limite do proxy permite o upload base64 de até 1 MB de PFX. Workers não publicam portas e encerram após o trabalho atual.
 
-`DATABASE_ENGINE=postgres` é obrigatório na API. Iniciar workers manualmente, se necessário, com `npm run worker:notifications`, `npm run worker:fiscal` e `npm run worker:whatsapp`. Todos usam `WORKER_DATABASE_URL`; nunca `DATABASE_ADMIN_URL`. O worker Baileys grava credenciais de pareamento no volume persistente `whatsapp-auth`; proteja esse volume como credencial de acesso à conta WhatsApp e inclua-o em backup criptografado.
+`DATABASE_ENGINE=postgres` é obrigatório na API. Iniciar workers manualmente, se necessário, com `npm run worker:notifications`, `npm run worker:fiscal` e `npm run worker:whatsapp`. Todos usam `WORKER_DATABASE_URL`; nunca `DATABASE_ADMIN_URL`. O worker Meta é opcional (profile `meta`); configure-o conforme [Meta, vales e frota](META-VALES-FROTA.md). Não utiliza QR Code nem volume de pareamento. API, fiscal e Meta compartilham a chave de criptografia, sem compartilhá-la com o worker de notificações.
 
 ## App, imagens e XML na AWS
 
@@ -100,4 +100,4 @@ O worker usa os SDKs reais `nfewizard-io`/`@nfewizard/nfce`, em subprocesso excl
 
 `npm run test:postgres` sobe um PostgreSQL descartável, reaplica as migrações e valida RLS/RBAC, certificado, senha incorreta, isolamento, idempotência, concorrência, perda de lease, retry, assinatura expirada, revogação de acesso, ambiente de produção, consulta após timeout e persistência antes do S3. Chamadas SEFAZ, provedor push e S3 são substituídas por adapters de teste; nenhuma nota real é emitida e nenhum dado de produção é usado. O build Docker e o carregamento dos SDKs na imagem são verificações adicionais. Validar a emissão homologada com o certificado real e tributação aprovada antes da liberação operacional.
 
-Resultado local: 19 testes PostgreSQL/filas aprovados; 5 testes de sessão/push do app aprovados; build do app, Compose e carregamento dos SDKs na imagem Docker aprovados. Cadastro conferido em navegador com respostas simuladas, incluindo progressão após upload e viewport móvel. `npm audit` após correções não apontou vulnerabilidades. O lint global do app continua bloqueado por erros anteriores em `CheckoutInvoiceModal.jsx` (Hooks condicionais), além de avisos existentes; os três novos componentes passaram no lint isolado. O build ainda informa chunk maior que 500 kB.
+Resultado local: 19 testes PostgreSQL/filas aprovados; 5 testes de sessão/push do app aprovados; build do app, Compose e carregamento dos SDKs na imagem Docker aprovados. Cadastro conferido em navegador com respostas simuladas, incluindo progressão após upload e viewport móvel. A auditoria atual aponta sete alertas baixos na cadeia NFeWizard/xsd-assembler/deepmerge, sem atualização compatível disponível; não aplicar downgrade automático do SDK fiscal. O lint global do app continua bloqueado por erros anteriores em `CheckoutInvoiceModal.jsx` (Hooks condicionais), além de avisos existentes; os três novos componentes passaram no lint isolado. O build ainda informa chunk maior que 500 kB.

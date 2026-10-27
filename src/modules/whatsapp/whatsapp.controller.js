@@ -10,11 +10,4 @@ export async function logout(req, res) {
   return res.json({ success: true, message: 'Desconectado com sucesso' });
 }
 
-export function start(req, res) {
-  try {
-    whatsappService.initialize();
-  } catch (e) {
-    console.error('Error starting whatsapp', e);
-  }
-  return res.json({ success: true, message: 'WhatsApp Client inicializado' });
-}
+export function start(req,res){return res.status(410).json({success:false,code:'META_SETUP_REQUIRED',message:'Pareamento Baileys removido. Configure a Meta API no ambiente PostgreSQL.'});}

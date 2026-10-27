@@ -1,4 +1,5 @@
 import express from 'express';
+import {mountMetaWebhook} from './meta-webhook.js';
 import {mountQzSigning} from './qz-signing.js';
 import {mountPrinting} from './printing.js';
 import cors from 'cors';
@@ -34,6 +35,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
     const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
     cb(null, !origin || allowed.includes(origin) || (nodeEnv !== 'production' && local));
   }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token'], exposedHeaders: ['Content-Disposition'] }));
+  mountMetaWebhook(app,{database});
   const uploads=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
   app.use('/api/v1/customers/import',uploads,auth.protect,express.json({limit:'8mb'}));

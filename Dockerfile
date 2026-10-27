@@ -27,9 +27,6 @@ ENV PORT=5000
 # Copy node_modules and code
 COPY --from=builder /usr/src/app ./
 
-# The WhatsApp worker mounts a persistent named volume here as the unprivileged node user.
-RUN mkdir -p /var/lib/bansir/whatsapp && chown node:node /var/lib/bansir/whatsapp
-
 # Non-root user for security
 USER node
 
