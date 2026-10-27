@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash,createVerify} from 'node:crypto';
+import forge from 'node-forge';
+import {grantPrint,signingConfig,signQz} from '../src/postgres/qz-signing.js';
+test('QZ signs only fresh allowed commands and PDFs released to the selected user/unit',()=>{
+ const keys=forge.pki.rsa.generateKeyPair(2048),cert=forge.pki.createCertificate();cert.publicKey=keys.publicKey;cert.serialNumber='1';cert.validity.notBefore=new Date(Date.now()-60000);cert.validity.notAfter=new Date(Date.now()+86400000);cert.setSubject([{name:'commonName',value:'TEST ONLY'}]);cert.setIssuer(cert.subject.attributes);cert.sign(keys.privateKey,forge.md.sha256.create());
+ const config=signingConfig({QZ_SIGNING_CERTIFICATE_BASE64:Buffer.from(forge.pki.certificateToPem(cert)).toString('base64'),QZ_SIGNING_PRIVATE_KEY_BASE64:Buffer.from(forge.pki.privateKeyToPem(keys.privateKey)).toString('base64')});
+ const identity={tenantId:'tenant-A',establishmentId:'unit-A',userId:'user-A'},pdf=Buffer.from('%PDF-TEST'),body=command=>{const message=JSON.stringify(command);return {message,digest:createHash('sha256').update(message).digest('hex')};};
+ const command={call:'print',timestamp:Date.now(),params:{printer:{name:'Epson'},options:{copies:1},data:[{type:'pixel',format:'pdf',flavor:'base64',data:pdf.toString('base64')}]}};
+ assert.throws(()=>signQz(identity,body(command),config),e=>e.code==='PRINT_DENIED');grantPrint(identity,pdf);
+ const b=body(command),signature=signQz(identity,b,config),verify=createVerify('RSA-SHA512');verify.update(b.digest);assert.equal(verify.verify(forge.pki.publicKeyToPem(keys.publicKey),signature,'base64'),true);
+ assert.throws(()=>signQz({...identity,establishmentId:'unit-B'},b,config),e=>e.code==='PRINT_DENIED');
+ assert.throws(()=>signQz(identity,{...b,digest:'0'.repeat(64)},config),e=>e.code==='INVALID_PRINT');
+ assert.throws(()=>signQz(identity,body({...command,timestamp:1}),config),e=>e.code==='PRINT_EXPIRED');
+ assert.throws(()=>signQz(identity,body({call:'file.write',timestamp:Date.now()}),config),e=>e.code==='PRINT_DENIED');
+ assert.throws(()=>signQz(identity,body({...command,params:{...command.params,printer:{file:'/tmp/test'}}}),config),e=>e.code==='PRINT_DENIED');
+ assert.throws(()=>signQz(identity,b,null),e=>e.code==='QZ_NOT_READY');
+ assert.ok(signQz(identity,body({call:'printers.find',timestamp:Date.now(),params:{}}),config));
+});

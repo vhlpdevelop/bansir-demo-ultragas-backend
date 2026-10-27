@@ -16,3 +16,15 @@ Sem QZ, o PDF continua disponível para impressão pelo navegador. Não há inst
 Envio à fila não comprova saída física. Conferir papel/fila antes de repetir; nunca refazer a venda por falha de impressão. Impressão automática após vender não foi habilitada.
 
 Validação: PDFs reais com 58 e 80 mm, autorização/QR obrigatórios, layout renderizado e testes HTTP de acesso por estabelecimento e largura inválida. Suítes PDV e pedidos passaram. XML fiscal de sucesso é sintético, não representa emissão real ou homologação do equipamento. O ambiente fiscal real continua com os requisitos operacionais anteriormente documentados.
+
+## Atualização: modo automático e assinatura
+
+Botão Impressão: manual/automática no PDV e comprovante, salvo por navegador/computador. Padrão manual. Para ativar automático, selecionar impressora e configurar assinatura QZ válida no servidor. Disparo apenas para a venda recém-registrada no caixa atual; recibo inicial e DANFE quando autorizado enquanto o comprovante estiver aberto. Histórico não imprime sozinho. Tentativas são marcadas antes do envio, serializadas e protegidas por Web Locks quando disponíveis. Falhas/incerteza exigem conferência e reimpressão manual. Não altera venda/pagamento nem reenvia emissão.
+
+Servidor: QZ_SIGNING_CERTIFICATE_BASE64 e QZ_SIGNING_PRIVATE_KEY_BASE64, chave RSA >=2048 bits e certificado correspondente dentro da validade. Arquivos/variáveis reais somente no ambiente privado da API. A chave de assinatura nunca vai ao navegador ou ao bucket do app. Não usar o A1 fiscal para este fim.
+
+A API assina SHA512 do resumo SHA256 usado pelo QZ 2.x, verificando mensagem original, carimbo de tempo, comandos permitidos e documento PDF previamente gerado para o mesmo usuário/empresa/estabelecimento (validade cinco minutos). Não é um assinador genérico de comandos QZ: impressão raw, arquivos, conexões arbitrárias e documentos não liberados são recusados. Cache de liberação é local à instância da API; múltiplas instâncias exigem armazenamento compartilhado/afinidade antes de escalar.
+
+Retirada dos avisos depende de certificado oficial QZ ou raiz própria instalada como confiança nos caixas. A escolha foi solicitada ao dono e está pendente; nenhuma raiz foi instalada e nenhum certificado oficial foi comprado. Sem isso, o automático permanece bloqueado e impressão manual pode pedir autorização. O navegador ainda pode solicitar permissão de rede local uma vez; o app não pode suprimir essa decisão.
+
+Referências: https://qz.io/docs/signing e https://qz.io/docs/faq . A escolha de certificado é independente de automático/manual. Modo manual significa clique do operador; envio direto assinado pelo QZ pode ser usado nos dois modos.

@@ -1,4 +1,5 @@
 import express from 'express';
+import {mountQzSigning} from './qz-signing.js';
 import {mountPrinting} from './printing.js';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -143,6 +144,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountFiscal(app,{scoped});
   mountSales(app,{scoped});
   mountPrinting(app,{scoped});
+  mountQzSigning(app,{scoped});
   mountCustomers(app,{scoped});
   mountSuppliers(app,{scoped});
   mountFiscalMonitor(app,{scoped});

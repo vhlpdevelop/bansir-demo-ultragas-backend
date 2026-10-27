@@ -1,4 +1,5 @@
 import QRCode from 'qrcode';
+import {grantPrint} from './qz-signing.js';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
 import PDFDocument from 'pdfkit';
 import {z} from 'zod';
@@ -37,6 +38,6 @@ export async function receiptPdf(sale,store,width=80){
  line('Recebido: '+money(sale.paid_cents));line('Saldo: '+money(sale.outstanding_cents));if(sale.cancelled_at)line('VENDA CANCELADA: '+sale.cancellation_reason);doc.moveDown();line('Não substitui documento fiscal autorizado.');doc.page.dictionary.data.MediaBox=[0,Math.max(0,doc.page.height-doc.y-18),doc.page.width,doc.page.height];doc.end();return result;
 }
 export function mountPrinting(app,{scoped}){
- app.get('/api/v1/sales/:id/receipt',scoped('sales',true,async(c,req)=>{const id=z.uuid().parse(req.params.id);if(!(await c.query('SELECT id FROM bansir.sales WHERE id=$1',[id])).rowCount)throw httpError(404,'Venda não encontrada.','NOT_FOUND');const sale=await saleView(c,id),store=(await c.query('SELECT store_name,document_id,address FROM bansir.store_settings')).rows[0]||{};const pdf=await receiptPdf(sale,store,widthOf(req));return {data:{base64:pdf.toString('base64'),filename:'recibo-'+sale.saleNumber+'.pdf'}};}));
- app.get('/api/v1/fiscal/documents/:id/danfe',scoped('fiscal',true,async(c,req)=>{const doc=(await c.query('SELECT status,xml,access_key,environment FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');const pdf=await danfePdf(doc,widthOf(req));return {data:{base64:pdf.toString('base64'),filename:'nfce-'+doc.access_key+'.pdf'}};}));
+ app.get('/api/v1/sales/:id/receipt',scoped('sales',true,async(c,req)=>{const id=z.uuid().parse(req.params.id);if(!(await c.query('SELECT id FROM bansir.sales WHERE id=$1',[id])).rowCount)throw httpError(404,'Venda não encontrada.','NOT_FOUND');const sale=await saleView(c,id),store=(await c.query('SELECT store_name,document_id,address FROM bansir.store_settings')).rows[0]||{};const pdf=await receiptPdf(sale,store,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'recibo-'+sale.saleNumber+'.pdf'}};}));
+ app.get('/api/v1/fiscal/documents/:id/danfe',scoped('fiscal',true,async(c,req)=>{const doc=(await c.query('SELECT status,xml,access_key,environment FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');const pdf=await danfePdf(doc,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'nfce-'+doc.access_key+'.pdf'}};}));
 }
