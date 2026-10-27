@@ -1,13 +1,14 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID,randomBytes,createHash } from 'node:crypto';
 import { httpError,validId } from './database.js';
 import {z} from 'zod';
 
+const tokenHash=v=>createHash('sha256').update(v).digest('hex');
 const audience='bansir-ultragas-postgres';
-export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
+export function createAuth(database,{ jwtSecret,expiresIn='10m' }) {
   if (!jwtSecret || jwtSecret.length<32) throw new Error('PostgreSQL exige JWT_SECRET com pelo menos 32 caracteres.');
-  const sign=(payload,lifetime) => jwt.sign(payload,jwtSecret,{algorithm:'HS256',issuer:'bansir',audience,expiresIn:lifetime});
+  const sign=(payload,lifetime) => jwt.sign(payload,jwtSecret,{algorithm:'HS256',issuer:'bansir',audience,...(lifetime===undefined?{}:{expiresIn:lifetime})});
   function verify(token,purpose) {
     try {
       const payload=jwt.verify(token,jwtSecret,{algorithms:['HS256'],issuer:'bansir',audience});
@@ -51,9 +52,9 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
       const data=await profile(client,member,userId);
       const jti=randomUUID();
       const token=sign({id:userId,tenantId,establishmentId,jti,purpose:'access'},expiresIn);
-      await client.query(`INSERT INTO bansir.access_sessions(id,user_id,tenant_id,establishment_id,expires_at)
-        VALUES($1,$2,$3,$4,$5)`,[jti,userId,tenantId,establishmentId,new Date(jwt.decode(token).exp*1000)]);
-      return {...data,token};
+      const refreshToken=sign({id:userId,tenantId,establishmentId,jti,purpose:'refresh',nonce:randomBytes(32).toString('hex')},'12h');
+      await client.query(`INSERT INTO bansir.access_sessions(id,user_id,tenant_id,establishment_id,expires_at,refresh_hash) VALUES($1,$2,$3,$4,$5,$6)`,[jti,userId,tenantId,establishmentId,new Date(jwt.decode(refreshToken).exp*1000),tokenHash(refreshToken)]);
+      return {...data,token,refreshToken};
     });
   }
   async function selection(userId,sessionId,expectedHash) {
@@ -75,6 +76,22 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
   }
   return {
     establishments,
+    async refresh(body){
+      const {refreshToken}=z.object({refreshToken:z.string().max(4096)}).strict().parse(body),p=verify(refreshToken,'refresh');
+      if(!validId(p.tenantId)||!validId(p.establishmentId))throw httpError(401,'Sessão inválida.','INVALID_SESSION');
+      const result=await database.transaction({userId:p.id,tenantId:p.tenantId,establishmentId:p.establishmentId,allowPasswordChange:true},async(c,member)=>{
+        await verifyLoginHash(c,p.id);
+        const row=(await c.query('SELECT * FROM bansir.access_sessions WHERE id=$1 AND user_id=$2 AND tenant_id=$3 AND establishment_id=$4 FOR UPDATE',[p.jti,p.id,p.tenantId,p.establishmentId])).rows[0];
+        if(!row||row.revoked_at||new Date(row.expires_at)<=new Date())return null;
+        if(row.refresh_hash!==tokenHash(refreshToken)){await c.query('UPDATE bansir.access_sessions SET revoked_at=now() WHERE id=$1',[p.jti]);return null;}
+        const remaining=Math.floor((new Date(row.expires_at)-Date.now())/1000);if(remaining<1)return null;
+        const next=sign({id:p.id,tenantId:p.tenantId,establishmentId:p.establishmentId,jti:p.jti,purpose:'refresh',nonce:randomBytes(32).toString('hex'),exp:Math.floor(new Date(row.expires_at).getTime()/1000)},undefined);
+        await c.query('UPDATE bansir.access_sessions SET refresh_hash=$2 WHERE id=$1',[p.jti,tokenHash(next)]);
+        return {...await profile(c,member,p.id),token:sign({id:p.id,tenantId:p.tenantId,establishmentId:p.establishmentId,jti:p.jti,purpose:'access'},Math.min(600,remaining)),refreshToken:next};
+      });
+      if(!result)throw httpError(401,'Sessão encerrada. Entre novamente.','SESSION_REVOKED');return result;
+    },
+    logout:i=>database.transaction({...i,allowPasswordChange:true},async c=>{await c.query('UPDATE bansir.access_sessions SET revoked_at=now() WHERE id=$1',[i.sessionId]);return {loggedOut:true};}),
     session:context=>database.transaction({...context,allowPasswordChange:true},(client,member)=>profile(client,member,context.userId)),
     async changePassword(context,body){
       const data=z.object({currentPassword:z.string().min(1).max(200),newPassword:z.string().min(8).max(72).refine(v=>Buffer.byteLength(v,'utf8')<=72,'Use no máximo 72 bytes na senha.')}).strict().parse(body);

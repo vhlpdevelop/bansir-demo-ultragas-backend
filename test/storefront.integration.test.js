@@ -62,6 +62,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    config={slug:'shop-public',enabled:true,config:{...defaultStorefront,name:'Shop Test',productIds:[p.id],zones:[{id:'centro',name:'Centro',feeCents:700}],allowPickup:true}};
    assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,productIds:[foreignProduct.id]}})).status,400);
    const save=await send('/storefront/settings','PUT',config);assert.equal(save.status,200,JSON.stringify(save.body));
+   assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,location:{address:'Loja teste',latitude:95,longitude:0,showMap:true}}})).status,400);
    const page=await publicSend('');assert.equal(page.status,200);assert.equal(page.body.data.products.length,1);assert.equal(page.body.data.products[0].id,p.id);assert.equal(page.body.data.products[0].priceCents,12045);assert.equal(page.body.data.products[0].costPrice,undefined);assert.equal(JSON.stringify(page.body).includes(hidden.id),false);
    assert.equal((await send('/storefront/settings', 'GET',undefined,{token:s2.token})).body.data.slug,'');
    assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,productIds:[foreignProduct.id]}},{token:s2.token})).status,403);

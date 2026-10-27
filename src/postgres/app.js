@@ -19,7 +19,7 @@ import {mountPublicStorefront,mountStorefrontAdmin} from './storefront.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '1h',clock=()=>new Date(),onError }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -51,8 +51,10 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use('/api/v1', rateLimit({ windowMs: 900000, limit: 1500, standardHeaders: 'draft-7', legacyHeaders: false }));
   app.post('/api/v1/auth/login', loginLimit, route(async req => ({ data: await auth.login(req.body) })));
   app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => ({ data: await auth.select(req.body) })));
+  app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.refresh(req.body)})));
   mountPublicStorefront(app,{database,route,clock});
   app.use('/api/v1', auth.protect);
+  app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));
   app.post('/api/v1/auth/change-password',rateLimit({windowMs:900000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.changePassword(req.identity,req.body)})));
   app.post('/api/v1/auth/return-to-selection', route(async req => ({data: await auth.returnToSelection(req.identity)})));

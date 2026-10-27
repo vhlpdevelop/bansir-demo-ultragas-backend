@@ -10,7 +10,7 @@ export async function startPostgresServer() {
   try {
     await database.ready();
     const app = createPostgresApp({ database, jwtSecret: config.jwtSecret, corsOrigin: config.corsOrigin,
-      nodeEnv: config.nodeEnv, expiresIn: process.env.POSTGRES_JWT_EXPIRES_IN || '1h' });
+      nodeEnv: config.nodeEnv, expiresIn: process.env.POSTGRES_JWT_EXPIRES_IN || '10m' });
     const server = app.listen(config.port, () => console.log(`[Bansir] PostgreSQL multi-tenant, porta ${config.port}. PDV, caixa, recebimentos, catálogo e filas de notificações/fiscal.`));
     let stopping = false;
     const stop = () => {
