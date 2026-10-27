@@ -2,6 +2,14 @@ import mongoose from 'mongoose';
 
 const saleSchema = new mongoose.Schema(
   {
+    receiptStore: { name: String, documentId: String, contact: String, address: String, city: String },
+    customerPhone: { type: String, maxlength: 40, default: '' },
+    customerAddress: { type: String, maxlength: 300, default: '' },
+    customerNeighborhood: { type: String, maxlength: 120, default: '' },
+    customerNotes: { type: String, maxlength: 1000, default: '' },
+    outstandingAmount: { type: Number, min: 0, default: null },
+    changeFor: { type: Number, min: 0, default: 0 },
+    plannedChangeAmount: { type: Number, min: 0, default: 0 },
     saleNumber: {
       type: String,
       required: true,

@@ -16,10 +16,7 @@
 export function initRenderKeepAlive(customUrl = null, intervalMinutes = 14) {
   const url = customUrl || 
               process.env.RENDER_EXTERNAL_URL || 
-              process.env.KEEP_ALIVE_URL || 
-              (process.env.RENDER === 'true' || process.env.NODE_ENV === 'production' 
-                ? 'https://bansir-demo-caroline-backend.onrender.com' 
-                : null);
+              process.env.KEEP_ALIVE_URL || null;
   const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
 
   // Se estiver em ambiente local e sem URL de produção definida, não precisa auto-pingar

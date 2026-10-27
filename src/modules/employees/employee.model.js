@@ -103,7 +103,7 @@ export function calculateGasLevel(points = 0, salesCount = 0, roleTitle = '') {
     return isDelivery ? 'Campeão das Rotas Diamante 💎' : 'Mestre do Gás Diamante 💎';
   }
   if (points >= 300 || salesCount >= 25) {
-    return isDelivery ? 'Mestre das Entregas Ouro 🥇' : 'Especialista Ultragas Ouro 🏆';
+    return isDelivery ? 'Mestre das Entregas Ouro 🥇' : 'Especialista Bansir Ouro 🏆';
   }
   if (points >= 100 || salesCount >= 10) {
     return isDelivery ? 'Entregador Ágil Prata 🥈' : 'Vendedor Destaque Prata 🥈';

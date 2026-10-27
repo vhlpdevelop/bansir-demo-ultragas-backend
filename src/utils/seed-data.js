@@ -169,7 +169,7 @@ export const seedEmployees = [
     totalSalesAmount: 4950.00,
     totalCommissionsEarned: 890.00,
     gamificationPoints: 520,
-    gamificationLevel: 'Especialista Ultragas Ouro 🏆',
+    gamificationLevel: 'Especialista Bansir Ouro 🏆',
     badges: ['Primeira Venda', 'Meta do Dia', 'Clube dos 1K'],
     active: true,
     hiredAt: new Date(2025, 8, 1)
