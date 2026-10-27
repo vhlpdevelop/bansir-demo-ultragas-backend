@@ -23,24 +23,26 @@ flowchart LR
   Fiscal --> Child[NFeWizard isolado por trabalho]
   Child --> SEFAZ[SEFAZ: ambiente 1 ou 2]
   Fiscal --> XML[S3 privado de documentos]
+  PG --> WhatsApp[Container whatsapp]
+  WhatsApp --> WA[WhatsApp via Baileys]
 ```
 
-O Compose em `compose.production.yml` cria **somente os três containers**. PostgreSQL permanece instalado diretamente na EC2. CloudFront, buckets, domínio, certificado HTTPS e EC2 devem ser provisionados na conta AWS; este repositório não aplica alterações à conta automaticamente. Não usar o Compose antigo da raiz, que atende outro backend.
+O Compose em `compose.production.yml` cria a API e os três workers (notificações, fiscal e WhatsApp). PostgreSQL permanece instalado diretamente na EC2. CloudFront, buckets, domínio, certificado HTTPS e EC2 devem ser provisionados na conta AWS; este repositório não aplica alterações à conta automaticamente. Não usar o Compose antigo da raiz, que atende outro backend.
 
 ## Preparação do banco e credenciais
 
 1. Instalar PostgreSQL 17 na EC2, com volume EBS persistente e backup externo com teste de restauração. A porta 5432 não deve estar acessível pela Internet. Permitir em `listen_addresses`/`pg_hba.conf` apenas os endereços privados necessários ao bridge Docker. `host.docker.internal` resolve para o host Linux por `host-gateway`; não resolve um PostgreSQL configurado para escutar somente em 127.0.0.1.
-2. Aplicar `npm run db:migrate` por um processo administrativo separado, com `DATABASE_ADMIN_URL`. As migrações 003–006 criam filas, certificados, cadastro fiscal, documentos, numeração e funções de lease, incluindo unicidade de emitente/modelo/série/número entre unidades. A credencial administrativa nunca entra na API ou nos workers.
+2. Aplicar `npm run db:migrate` por um processo administrativo separado, com `DATABASE_ADMIN_URL`. As migrações 003–006 criam filas, certificados, cadastro fiscal, documentos, numeração e funções de lease, incluindo unicidade de emitente/modelo/série/número entre unidades. As migrações adicionais 016–017 criam estado/outbox do WhatsApp, vales digitais e frota sem editar as migrações anteriores. A credencial administrativa nunca entra na API ou nos workers.
 3. Criar logins individuais, com senhas aleatórias, sem propriedade de tabelas, superuser ou BYPASSRLS. Conceder `bansir_runtime` ao login da API e `bansir_worker` aos logins dos dois workers. Os grupos são NOLOGIN. Exemplo de concessões, após criar os logins via administrador:
 
 ```sql
 GRANT bansir_runtime TO bansir_api;
-GRANT bansir_worker TO bansir_notifications, bansir_fiscal;
+GRANT bansir_worker TO bansir_notifications, bansir_fiscal, bansir_whatsapp;
 ```
 
 Os workers usam logins próprios, mas compartilham o grupo técnico `bansir_worker`. Ele permite claim global por funções controladas; leituras e gravações de dados exigem o contexto da unidade do job. O worker de notificações não recebe a chave que descriptografa certificados. Restringir o acesso aos arquivos de ambiente na EC2 e usar volumes/backup criptografados.
 
-4. Copiar `deploy/api.env.example`, `deploy/notifications.env.example` e `deploy/fiscal.env.example` para arquivos com os mesmos nomes sem `.example`. Os arquivos reais são ignorados pelo Git e pelo build Docker. Gerar `FISCAL_ENCRYPTION_KEY` com `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. Guardar essa chave em cofre externo e manter backup: perder a chave impede a recuperação do certificado e do CSC. API e worker fiscal usam a mesma chave; não a trocar sem um procedimento de recriptografia. A cifra identifica a versão `v1` e autentica o contexto empresa/unidade/tipo com AES-256-GCM.
+4. Copiar `deploy/api.env.example`, `deploy/notifications.env.example`, `deploy/fiscal.env.example` e `deploy/whatsapp.env.example` para arquivos com os mesmos nomes sem `.example`. Os arquivos reais são ignorados pelo Git e pelo build Docker. Gerar `FISCAL_ENCRYPTION_KEY` com `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. Guardar essa chave em cofre externo e manter backup: perder a chave impede a recuperação do certificado e do CSC. API e worker fiscal usam a mesma chave; não a trocar sem um procedimento de recriptografia. A cifra identifica a versão `v1` e autentica o contexto empresa/unidade/tipo com AES-256-GCM.
 5. Gerar VAPID com `npm run push:keys`, configurar o mesmo par na API e no worker de notificações. O endereço público da API deve estar no app por `VITE_API_URL` no **build**. CORS deve conter a origem HTTPS exata do app.
 
 ## Containers e proxy
@@ -54,7 +56,7 @@ docker compose -f compose.production.yml logs --tail=100 api notifications fisca
 
 Imagem Node 24, usuário `node`, filesystem somente leitura, capabilities removidas e `/tmp` em memória. O certificado é materializado em diretório temporário privado apenas no subprocesso fiscal, com arquivo modo 0600. O processo pai também remove o diretório ao concluir ou interromper o subprocesso; se o próprio container for morto abruptamente, o tmpfs é descartado ao recriá-lo. Nunca montar o certificado em bucket público. A API expõe somente 127.0.0.1:5000; instalar proxy HTTPS no host (exemplo em `deploy/nginx-api.conf.example`). Configurar `TRUST_PROXY_HOPS` conforme o caminho real até a API. O limite do proxy permite o upload base64 de até 1 MB de PFX. Workers não publicam portas e encerram após o trabalho atual.
 
-`DATABASE_ENGINE=postgres` é obrigatório na API. Iniciar workers manualmente, se necessário, com `npm run worker:notifications` e `npm run worker:fiscal`. Ambos usam `WORKER_DATABASE_URL`; nunca `DATABASE_ADMIN_URL`.
+`DATABASE_ENGINE=postgres` é obrigatório na API. Iniciar workers manualmente, se necessário, com `npm run worker:notifications`, `npm run worker:fiscal` e `npm run worker:whatsapp`. Todos usam `WORKER_DATABASE_URL`; nunca `DATABASE_ADMIN_URL`. O worker Baileys grava credenciais de pareamento no volume persistente `whatsapp-auth`; proteja esse volume como credencial de acesso à conta WhatsApp e inclua-o em backup criptografado.
 
 ## App, imagens e XML na AWS
 

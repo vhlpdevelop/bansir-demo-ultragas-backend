@@ -9,6 +9,7 @@
     "start:postgres": "node scripts/start-postgres.js",
     "worker:notifications": "node scripts/worker-postgres.js notification",
     "worker:fiscal": "node scripts/worker-postgres.js fiscal",
+    "worker:whatsapp": "node src/postgres/whatsapp.worker.js",
     "db:migrate": "node scripts/migrate-postgres.js",
     "db:provision": "node scripts/provision-postgres.js",
     "db:establishment:create": "node scripts/manage-establishments.js create",

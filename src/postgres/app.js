@@ -16,9 +16,11 @@ import {mountFiscalMonitor} from './fiscal-monitor.js';
 import {mountCustomerProfile} from './customer-profile.js';
 import {mountProductImport} from './product-import.js';
 import {mountPublicStorefront,mountStorefrontAdmin} from './storefront.js';
+import {mountWhatsapp} from './whatsapp.js';
+import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
-export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor'];
+export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet'];
 export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -153,6 +155,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountCustomerProfile(app,{scoped});
   mountProductImport(app,{scoped});
   mountStorefrontAdmin(app,{scoped});
+  mountWhatsapp(app,{scoped});
+  mountVouchersFleet(app,{database});
   // Never mount legacy MongoDB business routers in the multi-tenant process.
   app.use('/api/v1', (req, res) => res.status(503).json({ success: false, code: 'MODULE_MIGRATION_PENDING',
     message: 'Este módulo ainda não está disponível no novo ambiente.', migratedModules }));

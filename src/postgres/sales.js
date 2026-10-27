@@ -6,6 +6,7 @@ import {enqueueNotification} from './notifications.js';
 import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
 import {pixCode} from './pix.js';
 import {createCustomer} from './customers.js';
+import {enqueue} from './queue.js';
 
 const cents=z.number().int().min(0).max(1000000000),text=z.string().trim().max(200),uuid=z.uuid();
 const hash=fiscalDraftHash;
@@ -94,6 +95,10 @@ export async function registerSale(c,i,member,body,{quotedItems}={}){
   if(item.product.stock-item.quantity<=5)await enqueueNotification(c,i,{key:`stock-sale:${sale.id}:${item.productId}`,title:'Estoque baixo',body:`${item.product.name}: ${item.product.stock-item.quantity} unidades.`});
  }
  if(input.payment.method!=='pending')await recordPayment(c,i,sale,cash,{...input.payment,requestKey:input.requestKey,amountCents:total});
+ if(input.deliveryMode==='delivery'&&deliverer?.phone){
+  const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
+  await enqueue(c,i,{kind:'whatsapp',key:`delivery-route:${sale.id}`,payload:{action:'send-text',phone:deliverer.phone,message}});
+ }
  await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.id.slice(0,8)} registrada com estoque e recebíveis.`});
  return saleView(c,sale.id);
 }
@@ -129,6 +134,13 @@ export function mountSales(app,{scoped}){
   return {data:await Promise.all(ids.map(row=>saleView(c,row.id)))};
  }));
  app.post('/api/v1/sales',scoped('sales',false,async(c,req,member)=>({status:201,data:await registerSale(c,req.identity,member,req.body)})));
+ app.post('/api/v1/sales/:id/resend-whatsapp',scoped('sales',false,async(c,req,member)=>{
+  const sale=await ownedSale(c,req.identity,member,req.params.id);
+  if(sale.delivery_mode!=='delivery'||!sale.delivery_employee_phone)fail('Esta venda não possui entregador com telefone cadastrado.','DELIVERY_PHONE_MISSING',409);
+  const message=`🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents)/100).toFixed(2)}`;
+  await enqueue(c,req.identity,{kind:'whatsapp',key:`delivery-route-resend:${sale.id}:${randomUUID()}`,payload:{action:'send-text',phone:sale.delivery_employee_phone,message}});
+  return {status:202,data:{queued:true}};
+ }));
  app.get('/api/v1/sales/:id',scoped('sales',true,async(c,req,member)=>{await ownedSale(c,req.identity,member,req.params.id);return {data:await saleView(c,req.params.id)};}));
  app.post('/api/v1/sales/:id/payments',scoped('sales',false,async(c,req,member)=>{
   const input=externalPayment.extend({requestKey:uuid,amountCents:cents.refine(n=>n>0)}).parse(req.body),i=req.identity;
