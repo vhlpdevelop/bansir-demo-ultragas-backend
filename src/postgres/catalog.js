@@ -7,6 +7,8 @@ const amount = z.number().finite().min(0).max(10000000)
 export const productInput = z.object({
   name: text.min(1), barcode: text.min(1), price: amount.refine(n => n > 0),
   costPrice: amount.optional(), stock: z.number().int().min(0).max(100000000).optional(),
+  fulfillmentPricing:z.object({deliveryPrice:amount.positive().optional(),saturdayPickupPrice:amount.positive().optional(),saturdayDeliveryPrice:amount.positive().optional()}).strict().optional(),
+  gasDoPovo:z.boolean().optional(),gasDoPovoDelivery:z.boolean().optional(),
   category: text.optional(), sku: text.optional(), unit: text.optional(), brand: text.optional(),
   specs: z.string().max(5000).optional(), ncm: z.string().regex(/^(\d{8})?$/).optional(), active: z.boolean().optional()
 }).strict();
@@ -18,6 +20,7 @@ export const settingsInput = z.object({ storeName: text, pixKey: text, documentI
 export const presentProduct = row => ({ _id: row.id, id: row.id, name: row.name, barcode: row.barcode,
   price: Number(row.price_cents) / 100, costPrice: Number(row.cost_cents) / 100, stock: row.stock,
   category: row.category, sku: row.sku, unit: row.unit, brand: row.brand, specs: row.specs, ncm: row.ncm,
+  fulfillmentPricing:row.fulfillment_pricing||{},gasDoPovo:!!row.gas_do_povo,gasDoPovoDelivery:!!row.gas_do_povo_delivery,
   active: row.active, createdAt: row.created_at, updatedAt: row.updated_at });
 export function catalogView(row,member) {
   const result=presentProduct(row);
@@ -42,19 +45,23 @@ export async function stockMovement(client, { tenantId, userId, establishmentId 
 }
 export async function createProduct(client, context, input) {
   const data = productInput.parse(input);
+  await deliveryOwner(client,context,{},data);
   const { rows: [product] } = await client.query(`INSERT INTO bansir.products
     (tenant_id,name,barcode,price_cents,cost_cents,stock,category,sku,unit,brand,specs,ncm,active,establishment_id)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
   [context.tenantId, data.name, data.barcode, Math.round(data.price * 100), Math.round((data.costPrice || 0) * 100),
     data.stock || 0, data.category || 'Gás de Cozinha', data.sku || '', data.unit || 'UN', data.brand || '', data.specs || '', data.ncm || '', data.active ?? true,context.establishmentId]);
   await stockMovement(client, context, product, product.stock, 'in', 'Estoque inicial');
+  if(data.fulfillmentPricing||data.gasDoPovo!==undefined||data.gasDoPovoDelivery!==undefined){const updated=(await client.query('UPDATE bansir.products SET fulfillment_pricing=$2,gas_do_povo=$3,gas_do_povo_delivery=$4 WHERE id=$1 RETURNING *',[product.id,data.fulfillmentPricing||{},data.gasDoPovo||false,data.gasDoPovoDelivery||false])).rows[0];return presentProduct(updated);}
   return presentProduct(product);
 }
 export async function updateProduct(client, context, id, input) {
   const data = productInput.partial().parse(input);
   const { rows: [before] } = await client.query('SELECT * FROM bansir.products WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [context.tenantId, resourceId(id)]);
   if (!before) throw httpError(404, 'Produto não encontrado.', 'NOT_FOUND');
+  await deliveryOwner(client,context,before,data);
   const fields = { name: 'name', barcode: 'barcode', category: 'category', sku: 'sku', unit: 'unit', brand: 'brand', specs: 'specs', ncm: 'ncm', stock: 'stock', active: 'active', price: 'price_cents', costPrice: 'cost_cents' };
+  Object.assign(fields,{fulfillmentPricing:'fulfillment_pricing',gasDoPovo:'gas_do_povo',gasDoPovoDelivery:'gas_do_povo_delivery'});
   const entries = Object.entries(data);
   if (!entries.length) return presentProduct(before);
   const values = entries.map(([key, value]) => ['price', 'costPrice'].includes(key) ? Math.round(value * 100) : value);
@@ -63,6 +70,11 @@ export async function updateProduct(client, context, id, input) {
   const delta = product.stock - before.stock;
   await stockMovement(client, context, product, Math.abs(delta), delta > 0 ? 'in' : 'out', 'Ajuste de cadastro');
   return presentProduct(product);
+}
+async function deliveryOwner(client,context,before,data){
+ const pricing=p=>JSON.stringify(p||{},['deliveryPrice','saturdayPickupPrice','saturdayDeliveryPrice']);
+ const changed=(data.fulfillmentPricing!==undefined&&pricing(data.fulfillmentPricing)!==pricing(before.fulfillment_pricing))||(data.gasDoPovo!==undefined&&data.gasDoPovo!==!!before.gas_do_povo)||(data.gasDoPovoDelivery!==undefined&&data.gasDoPovoDelivery!==!!before.gas_do_povo_delivery);
+ if(changed&&!(await client.query('SELECT 1 FROM bansir.establishments WHERE tenant_id=$1 AND id=$2 AND owner_user_id=$3',[context.tenantId,context.establishmentId,context.userId])).rowCount)throw httpError(403,'Somente o dono pode configurar preços por modalidade e Gás do Povo.','OWNER_REQUIRED');
 }
 export async function moveStock(client, context, input) {
   const data = movementInput.parse(input);

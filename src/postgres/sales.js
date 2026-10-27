@@ -55,7 +55,7 @@ async function recordPayment(c,i,sale,cash,input){
  if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
 }
-export async function registerSale(c,i,member,body){
+export async function registerSale(c,i,member,body,{quotedItems}={}){
  const input=saleInput.parse(body),requestHash=hash({input,userId:i.userId});
  await lock(c,`${unitKey(i)}:request:${input.requestKey}`);
  const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
@@ -77,7 +77,7 @@ export async function registerSale(c,i,member,body){
   if(input.payment.term==='credit'&&!input.payment.dueDate)fail('Informe vencimento da venda a prazo.','DUE_DATE_REQUIRED',400);
  }
  const products=(await c.query('SELECT * FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[input.items.map(item=>item.productId)])).rows;
- const items=input.items.map((item,index)=>{const p=products.find(p=>p.id===item.productId);if(!p||!p.active||p.stock<item.quantity)fail('Produto indisponível ou estoque insuficiente.','STOCK_UNAVAILABLE');if(Number(p.price_cents)!==item.expectedUnitPriceCents)fail('O preço mudou. Atualize o produto antes de vender.','PRICE_CHANGED');const unitPrice=item.unitPriceCents??Number(p.price_cents);return {...item,product:p,position:index+1,unitPrice,gross:unitPrice*item.quantity};});
+ const items=input.items.map((item,index)=>{const p=products.find(p=>p.id===item.productId);if(!p||!p.active||p.stock<item.quantity)fail('Produto indisponível ou estoque insuficiente.','STOCK_UNAVAILABLE');if(input.deliveryMode==='delivery'&&p.gas_do_povo&&!p.gas_do_povo_delivery)fail('Gás do Povo disponível somente para retirada.','PROGRAM_PICKUP_ONLY');const quoted=quotedItems?.find(q=>q.productId===item.productId),expected=quoted?quoted.priceCents:Number(p.price_cents);if(expected!==item.expectedUnitPriceCents)fail('O preço mudou. Atualize o produto antes de vender.','PRICE_CHANGED');const unitPrice=item.unitPriceCents??expected;return {...item,product:p,position:index+1,unitPrice,gross:unitPrice*item.quantity};});
  const subtotal=items.reduce((sum,item)=>sum+item.gross,0),total=subtotal-input.discountCents+input.deliveryFeeCents;
  if(!Number.isSafeInteger(subtotal)||subtotal>1000000000||total>1000000000||input.discountCents>=subtotal)fail('Total ou desconto inválido.','INVALID_TOTAL',400);
  let remaining=input.discountCents;for(const item of items){item.discount=Number(BigInt(input.discountCents)*BigInt(item.gross)/BigInt(subtotal));remaining-=item.discount;}
