@@ -37,7 +37,8 @@ export function createAuth(database,{ jwtSecret,expiresIn='1h' }) {
       notificationPreferences:{},devices:[]},tenant,establishment};
   }
   async function verifyLoginHash(client,userId,expectedHash){
-    if(expectedHash){const row=(await client.query('SELECT bansir.lock_own_password() AS password_hash')).rows[0];if(row?.password_hash!==expectedHash)throw httpError(401,'Credenciais alteradas. Entre novamente.','INVALID_CREDENTIALS');}
+    const row=(await client.query('SELECT bansir.lock_own_password() AS password_hash')).rows[0];
+    if(!row?.password_hash||(expectedHash&&row.password_hash!==expectedHash))throw httpError(401,'Credenciais alteradas. Entre novamente.','INVALID_CREDENTIALS');
   }
   async function issue(userId,tenantId,establishmentId,selectionId,expectedHash) {
     return database.transaction({userId,tenantId,establishmentId,allowPasswordChange:true},async (client,member)=>{
