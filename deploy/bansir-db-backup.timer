@@ -1,0 +1,10 @@
+[Unit]
+Description=Bansir daily local database backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/Cuiaba
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

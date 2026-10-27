@@ -1,0 +1,17 @@
+[Unit]
+Description=Bansir PostgreSQL API and notification worker
+Requires=docker.service postgresql.service
+After=docker.service postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/bansir/backend
+ExecStart=/usr/bin/docker compose -f compose.production.yml -f /etc/bansir/compose.ec2.yml up -d api notifications
+ExecStop=/usr/bin/docker compose -f compose.production.yml -f /etc/bansir/compose.ec2.yml stop api notifications
+TimeoutStartSec=180
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target
