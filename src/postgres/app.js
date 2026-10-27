@@ -1,4 +1,5 @@
 import express from 'express';
+import {mountPrinting} from './printing.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -141,6 +142,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountNotifications(app,{scoped,route,database});
   mountFiscal(app,{scoped});
   mountSales(app,{scoped});
+  mountPrinting(app,{scoped});
   mountCustomers(app,{scoped});
   mountSuppliers(app,{scoped});
   mountFiscalMonitor(app,{scoped});
