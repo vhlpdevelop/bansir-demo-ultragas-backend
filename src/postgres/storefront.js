@@ -87,7 +87,14 @@ export function mountStorefrontAdmin(app,{scoped}){
   if(previous)await c.query('UPDATE bansir.storefronts SET slug=$3,enabled=$4,config=$5,updated_at=now() WHERE tenant_id=$1 AND establishment_id=$2',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);
   else await c.query('INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,$3,$4,$5)',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);return {data};
  }));
- app.get('/api/v1/storefront/orders',scoped('sales',true,async c=>({data:(await c.query("SELECT * FROM bansir.storefront_orders ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC LIMIT 100")).rows.map(o=>({...o,subtotal_cents:Number(o.subtotal_cents),shipping_cents:Number(o.shipping_cents),total_cents:Number(o.total_cents)}))})));
+ app.get('/api/v1/storefront/orders',scoped('sales',true,async(c,req)=>{
+  const q=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','new','accepted','rejected','cancelled']).default('all'),search:z.string().trim().max(200).default('')}).parse(req.query);
+  const where="($1='all' OR status=$1) AND($2='' OR strpos(lower(customer_name||' '||phone||' '||delivery_address||' '||id::text),lower($2))>0)";
+  const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.storefront_orders WHERE ${where}`,[q.status,q.search])).rows[0].total;
+  const stats=(await c.query("SELECT count(*)::int AS total,count(*) FILTER(WHERE status='new')::int AS pending,count(*) FILTER(WHERE status='accepted')::int AS accepted,count(*) FILTER(WHERE status IN('rejected','cancelled'))::int AS closed FROM bansir.storefront_orders")).rows[0];
+  const rows=(await c.query(`SELECT * FROM bansir.storefront_orders WHERE ${where} ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC,id LIMIT $3 OFFSET $4`,[q.status,q.search,q.pageSize,q.page*q.pageSize])).rows;
+  return {data:rows.map(o=>({...o,subtotal_cents:Number(o.subtotal_cents),shipping_cents:Number(o.shipping_cents),total_cents:Number(o.total_cents)})),meta:{total,stats,page:q.page,pageSize:q.pageSize}};
+ }));
  app.post('/api/v1/storefront/orders/:id/accept',scoped('sales',false,async(c,req,member)=>{
   const input=z.object({customerConfirmed:z.literal(true),deliveryEmployeeId:z.uuid().optional()}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`accept:${i.tenantId}:${i.establishmentId}:${id}`]);

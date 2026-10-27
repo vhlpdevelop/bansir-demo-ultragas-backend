@@ -17,8 +17,17 @@ process.once('message', async ({ action, model, key, payload, settings, certific
       lib: { connection: { timeout: 25000 }, log: { exibirLogNoConsole: false, armazenarLogs: false }, useOpenSSL: false, useForSchemaValidation: 'validateSchemaJsBased' } };
     config.nfce = { ...config.nfe };
     const library = await import('nfewizard-io');
+    library.logger.initialize({exibirLogNoConsole:false,armazenarLogs:false});
+    library.logger.logger.silent=true;
     let result;
-    if (action === 'consult') {
+    if(action==='distribute'){
+      const {Environment,Utility,XmlBuilder,GerarConsulta}=library;
+      const environment=new Environment(config),{axios}=await environment.loadEnvironment(),utility=new Utility(environment),builder=new XmlBuilder(environment);
+      const xml=builder.gerarXml({$:{versao:'1.01',xmlns:'http://www.portalfiscal.inf.br/nfe'},tpAmb:settings.environment,cUFAutor:payload.ufCode,CNPJ:settings.cnpj,distNSU:{ultNSU:payload.ultNSU}},'distDFeInt','NFeDistribuicaoDFe');
+      const query=await new GerarConsulta(environment,utility,builder).gerarConsulta(xml,'NFeDistribuicaoDFe',true,'1.01','NFe',true,'nfeDistDFeInteresse');
+      query.agent.options.rejectUnauthorized=true;stage='request';
+      result=(await axios.post(query.webServiceUrl,query.xmlFormated,{headers:{'Content-Type':'application/soap+xml; charset=utf-8'},httpsAgent:query.agent,timeout:30000,maxContentLength:16*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0,responseType:'text',transformResponse:[v=>v]})).data;
+    } else if (action === 'consult') {
       // Public BaseNFE API: select NFCe endpoints explicitly (default NFe is wrong for model 65).
       const { Environment, Utility, XmlBuilder, SaveFiles, GerarConsulta, BaseNFE } = library;
       const environment = new Environment(config); const { axios } = await environment.loadEnvironment();
@@ -35,7 +44,13 @@ process.once('message', async ({ action, model, key, payload, settings, certific
       const wizard = new Wizard();
       await wizard.NFE_LoadEnvironment({ config });
       stage = 'request';
-      result = await wizard[model === '65' ? 'NFCE_Autorizacao' : 'NFE_Autorizacao'](payload);
+      if(action==='science'){
+        const axios=(await import('axios')).default,service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;
+        const transport=axios.create({httpsAgent:agent,timeout:30000,maxContentLength:2*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0});let raw;
+        transport.interceptors.response.use(response=>{raw=response.data;return response;});service.axios=transport;
+        try{result=await wizard.NFE_CienciaDaOperacao(payload);}catch(error){if(!raw)throw error;}
+        if(raw)result=raw;
+      }else result=await wizard[model==='65'?'NFCE_Autorizacao':'NFE_Autorizacao'](payload);
     }
     let xml;
     async function findXml(path) {

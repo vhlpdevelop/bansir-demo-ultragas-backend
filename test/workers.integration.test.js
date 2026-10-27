@@ -39,6 +39,7 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    const issuedAt=issuedTimestamp('America/Cuiaba',new Date('2026-11-01T02:00:00Z'));assert.equal(issuedAt,'2026-10-31T22:00:00-04:00');
    assert.equal(accessKey({uf:'MT',cnpj:config.cnpj,series:1,number:1,issuedAt,code:'00000001'}).slice(2,6),'2610');
    await assert.rejects(runWizard({action:'consult',model:'65',key:'1'.repeat(44),settings:config,certificate:{base64:Buffer.from('INVALID TEST CERT').toString('base64'),password:'test'},csc:config.cscToken}),/WIZARD_SETUP_FAILED/);
+   for(const action of ['distribute','science'])await assert.rejects(runWizard({action,model:'55',payload:{ufCode:51,ultNSU:'000000000000000'},settings:config,certificate:{base64:Buffer.from('INVALID TEST CERT').toString('base64'),password:'test'},csc:''}),/WIZARD_SETUP_FAILED/);
   });
   await t.test('certificate required first; valid A1 saved encrypted and metadata only returned',async()=>{
    assert.equal((await send('/fiscal/settings','PUT',config)).status,409);

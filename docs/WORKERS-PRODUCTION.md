@@ -1,5 +1,7 @@
 # API, notificações e NFC-e em PostgreSQL
 
+**Atualização 013:** [pedidos, fornecedores, A1 e acompanhamento fiscal](UX-FORNECEDORES-FISCAL.md), incluindo requisitos ainda pendentes para operação real na SEFAZ.
+
 **Atualização de clientes e pedidos:** [entregadores, importador PDF e página pública](CLIENTES-ENTREGAS-PEDIDOS.md). Aplicar também as migrações 008–009 nesta versão.
 
 **Atualização do PDV:** [vendas, caixa, recebimentos, vínculo fiscal e limites restantes](PDV-POSTGRES.md). Aplicar também a migração 007; o app já possui uma tela comercial própria para PostgreSQL.

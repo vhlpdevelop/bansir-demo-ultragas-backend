@@ -9,12 +9,14 @@ import {mountFiscal} from './fiscal.js';
 import {mountNotifications} from './notifications.js';
 import {mountSales} from './sales.js';
 import {mountCustomers} from './customers.js';
+import {mountSuppliers} from './suppliers.js';
+import {mountFiscalMonitor} from './fiscal-monitor.js';
 import {mountCustomerProfile} from './customer-profile.js';
 import {mountProductImport} from './product-import.js';
 import {mountPublicStorefront,mountStorefrontAdmin} from './storefront.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
-export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront'];
+export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor'];
 export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '1h',onError }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -140,6 +142,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountFiscal(app,{scoped});
   mountSales(app,{scoped});
   mountCustomers(app,{scoped});
+  mountSuppliers(app,{scoped});
+  mountFiscalMonitor(app,{scoped});
   mountCustomerProfile(app,{scoped});
   mountProductImport(app,{scoped});
   mountStorefrontAdmin(app,{scoped});

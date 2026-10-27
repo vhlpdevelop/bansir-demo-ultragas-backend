@@ -14,12 +14,12 @@ export const fiscalSettingsInput=z.object({
  cscId:z.string().regex(/^\d{1,6}$/),cscToken:z.string().trim().min(16).max(100).optional(),
  address:z.object({street:text,number:z.string().trim().min(1).max(20),district:text,city:text,cityCode:z.string().regex(/^\d{7}$/),uf:z.enum(Object.keys(ufCodes)),cep:z.string().regex(/^\d{8}$/),phone:z.string().regex(/^\d{10,14}$/)}).strict()
 }).strict().refine(d=>d.address.cityCode.startsWith(String(ufCodes[d.address.uf])),{message:'Código IBGE incompatível com a UF.'});
-const certificateInput=z.object({base64:z.string().max(1400000),password:z.string().min(1).max(256)}).strict();
+const certificateInput=z.object({base64:z.string().max(1400000),password:z.string().min(1).max(256),name:z.string().trim().min(2).max(100).default('Certificado A1')}).strict();
 const canonical=v=>v instanceof Date?v.toISOString():Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 export const fiscalDraftHash=v=>createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex');
 const digest=fiscalDraftHash;
 export const configurationVersion=row=>digest({data:row.data,csc:row.encrypted_csc,updatedAt:row.updated_at});
-function publicCertificate(row){return row?{subject:row.subject,cnpj:row.cnpj,validFrom:row.valid_from,validUntil:row.valid_until,fingerprint:row.fingerprint}:null;}
+function publicCertificate(row){return row?{subject:row.subject,cnpj:row.cnpj,validFrom:row.valid_from,validUntil:row.valid_until,fingerprint:row.fingerprint,active:row.active,name:row.name}:null;}
 export function accessKey({uf,cnpj,series,number,issuedAt,code}) {
  const body=String(ufCodes[uf])+issuedAt.slice(2,4)+issuedAt.slice(5,7)+cnpj+'65'+String(series).padStart(3,'0')+String(number).padStart(9,'0')+'1'+code;
  let sum=0,weight=2;for(let i=body.length-1;i>=0;i--){sum+=Number(body[i])*weight;weight=weight===9?2:weight+1;}const digit=11-sum%11;
@@ -32,25 +32,33 @@ export function issuedTimestamp(timeZone,date=new Date()) {
 }
 export function mountFiscal(app,{scoped}) {
  app.get('/api/v1/fiscal/settings',scoped('settings',false,async c=>{
-  const cert=(await c.query('SELECT subject,cnpj,valid_from,valid_until,fingerprint FROM bansir.fiscal_certificates')).rows[0];
+  const cert=(await c.query('SELECT subject,cnpj,valid_from,valid_until,fingerprint,active,name FROM bansir.fiscal_certificates')).rows[0];
   const cfg=(await c.query('SELECT data FROM bansir.fiscal_settings')).rows[0];
   if(cfg){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2',[cfg.data.environment,cfg.data.series])).rows[0];if(counter)cfg.data.nextNumber=counter.last_number+1;}
-  return {data:{certificate:publicCertificate(cert),settings:cfg?.data||null}};
+  const store=(await c.query('SELECT e.legal_name,e.name,e.document_id FROM bansir.establishments e WHERE id=bansir.establishment_id()')).rows[0];
+  return {data:{certificate:publicCertificate(cert),settings:cfg?.data||null,store,readiness:{encryption:!!process.env.FISCAL_ENCRYPTION_KEY,xmlStorage:!!process.env.FISCAL_S3_BUCKET,productionEnabled:process.env.FISCAL_PRODUCTION_ENABLED==='true'}}};
+ }));
+ app.patch('/api/v1/fiscal/certificate',scoped('settings',false,async(c,req)=>{
+  const {active}=z.object({active:z.boolean()}).strict().parse(req.body);
+  const row=(await c.query('UPDATE bansir.fiscal_certificates SET active=$1,updated_at=now() WHERE (NOT $1 OR valid_until>now()) RETURNING subject,cnpj,valid_from,valid_until,fingerprint,active,name',[active])).rows[0];
+  if(!row)throw httpError(409,'Certificado indisponível ou vencido.','CERTIFICATE_REQUIRED');return {data:{certificate:publicCertificate(row)}};
  }));
  app.post('/api/v1/fiscal/certificate',scoped('settings',false,async(c,req)=>{
   const data=certificateInput.parse(req.body),cert=inspectCertificate(data.base64,data.password),i=req.identity;
+  const store=(await c.query('SELECT document_id FROM bansir.establishments WHERE id=$1',[i.establishmentId])).rows[0];
+  if(store?.document_id&&store.document_id.replace(/\D/g,'')!==cert.cnpj)throw httpError(409,'O CNPJ do certificado difere do estabelecimento selecionado.','CERTIFICATE_CNPJ_MISMATCH');
   const cfg=(await c.query('SELECT data FROM bansir.fiscal_settings')).rows[0];
   if(cfg && cfg.data.cnpj!==cert.cnpj)throw httpError(409,'O CNPJ do certificado difere do emitente cadastrado.','CERTIFICATE_CNPJ_MISMATCH');
-  const encrypted=seal(data,secretContext(i,'certificate'));
-  await c.query(`INSERT INTO bansir.fiscal_certificates(tenant_id,establishment_id,encrypted_bundle,subject,cnpj,fingerprint,valid_from,valid_until)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET encrypted_bundle=EXCLUDED.encrypted_bundle,subject=EXCLUDED.subject,cnpj=EXCLUDED.cnpj,fingerprint=EXCLUDED.fingerprint,valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,updated_at=now()`,
-  [i.tenantId,i.establishmentId,encrypted,cert.subject,cert.cnpj,cert.fingerprint,cert.validFrom,cert.validUntil]);
+  const encrypted=seal({base64:data.base64,password:data.password},secretContext(i,'certificate'));
+  await c.query(`INSERT INTO bansir.fiscal_certificates(tenant_id,establishment_id,encrypted_bundle,subject,cnpj,fingerprint,valid_from,valid_until,name)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET encrypted_bundle=EXCLUDED.encrypted_bundle,subject=EXCLUDED.subject,cnpj=EXCLUDED.cnpj,fingerprint=EXCLUDED.fingerprint,valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,active=true,name=EXCLUDED.name,updated_at=now()`,
+  [i.tenantId,i.establishmentId,encrypted,cert.subject,cert.cnpj,cert.fingerprint,cert.validFrom,cert.validUntil,data.name]);
   return {status:201,data:{certificate:{...cert}}};
  }));
  app.put('/api/v1/fiscal/settings',scoped('settings',false,async(c,req)=>{
   const data=fiscalSettingsInput.parse(req.body),i=req.identity;
-  const cert=(await c.query('SELECT cnpj,valid_until FROM bansir.fiscal_certificates FOR UPDATE')).rows[0];
-  if(!cert || new Date(cert.valid_until)<=new Date())throw httpError(409,'Envie um certificado válido primeiro.','CERTIFICATE_REQUIRED');
+  const cert=(await c.query('SELECT cnpj,valid_until,active FROM bansir.fiscal_certificates FOR UPDATE')).rows[0];
+  if(!cert || cert.active===false || new Date(cert.valid_until)<=new Date())throw httpError(409,'Envie um certificado válido primeiro.','CERTIFICATE_REQUIRED');
   if(cert.cnpj!==data.cnpj)throw httpError(400,'CNPJ deve corresponder ao certificado.','CERTIFICATE_CNPJ_MISMATCH');
   const current=(await c.query('SELECT * FROM bansir.fiscal_settings')).rows[0];
   if(!data.cscToken && (!current || current.data.environment!==data.environment || current.data.cscId!==data.cscId))throw httpError(400,'Informe o CSC deste ambiente.','CSC_REQUIRED');
@@ -84,7 +92,7 @@ export async function createFiscalDocument(c,identity,body) {
   // Lock configuration serializes allocation, idempotency and changes of certificate/config.
   const cert=(await c.query('SELECT * FROM bansir.fiscal_certificates FOR UPDATE')).rows[0];
   const cfg=(await c.query('SELECT * FROM bansir.fiscal_settings FOR UPDATE')).rows[0];
-  if(!cfg || !cert || new Date(cert.valid_until)<=new Date())throw httpError(409,'Cadastre certificado válido e emitente.','FISCAL_NOT_READY');
+  if(!cfg || !cert || cert.active===false || new Date(cert.valid_until)<=new Date())throw httpError(409,'Cadastre certificado válido e emitente.','FISCAL_NOT_READY');
   const existing=(await c.query('SELECT id,status,payload FROM bansir.fiscal_documents WHERE request_key=$1',[input.requestKey])).rows[0];
   if(existing){if(existing.payload.draftHash!==digest(input.draft))throw httpError(409,'Identificador já usado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return {id:existing.id,status:existing.status};}
   const s=cfg.data,draft=input.draft;

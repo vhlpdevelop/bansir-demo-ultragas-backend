@@ -34,6 +34,7 @@
     "@nfewizard/danfe": "1.0.7",
     "@nfewizard/nfce": "1.0.6",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "axios": "^1.21.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
