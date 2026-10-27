@@ -1,0 +1,9 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "WritePrivateFiscalXml",
+    "Effect": "Allow",
+    "Action": ["s3:PutObject"],
+    "Resource": "arn:aws:s3:::REPLACE_PRIVATE_FISCAL_BUCKET/tenants/*/establishments/*/fiscal/*"
+  }]
+}

@@ -11,3 +11,11 @@ coverage
 .DS_Store
 
 data
+migration-private/
+.wwebjs_auth/
+*.pfx
+*.p12
+*.pem
+*.key
+output/
+deploy/*.env

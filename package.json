@@ -6,6 +6,17 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "start:postgres": "node scripts/start-postgres.js",
+    "worker:notifications": "node scripts/worker-postgres.js notification",
+    "worker:fiscal": "node scripts/worker-postgres.js fiscal",
+    "db:migrate": "node scripts/migrate-postgres.js",
+    "db:provision": "node scripts/provision-postgres.js",
+    "db:establishment:create": "node scripts/manage-establishments.js create",
+    "db:plan:assign": "node scripts/manage-establishments.js plan",
+    "db:export:foundation": "node scripts/export-mongo-foundation.js",
+    "db:import:foundation": "node scripts/import-postgres-foundation.js",
+    "test:postgres": "node scripts/test-postgres.js",
+    "preview:pdv": "node scripts/preview-pdv.js",
     "dev": "node --watch src/server.js",
     "seed": "node src/utils/seed.js",
     "push:keys": "node scripts/generate-vapid-keys.js",
@@ -18,6 +29,7 @@
     "test:mongo": "node scripts/check-mongo-integration.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1157.0",
     "@nfewizard/danfe": "1.0.7",
     "@nfewizard/nfce": "1.0.6",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
@@ -31,10 +43,14 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
     "nfewizard-io": "1.1.4",
+    "node-forge": "^1.4.1",
+    "pdfjs-dist": "^6.4.299",
     "pdfkit": "^0.20.2",
+    "pg": "^8.23.1",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
     "web-push": "^3.6.7",
+    "xml2js": "^0.6.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -43,5 +59,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "overrides": {
+    "nodemailer": "^10.1.4"
   }
 }

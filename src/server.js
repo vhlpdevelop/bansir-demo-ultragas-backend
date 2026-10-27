@@ -6,6 +6,17 @@ const PORT = config.port || 5000;
 
 async function startServer() {
   try {
+    if (process.env.DATABASE_URL && !process.env.DATABASE_ENGINE) {
+      throw new Error('Defina DATABASE_ENGINE explicitamente antes de iniciar com DATABASE_URL.');
+    }
+    if (process.env.DATABASE_ENGINE === 'postgres') {
+      const { startPostgresServer } = await import('./postgres/server.js');
+      await startPostgresServer();
+      return;
+    }
+    if (process.env.DATABASE_ENGINE && process.env.DATABASE_ENGINE !== 'mongodb') {
+      throw new Error('DATABASE_ENGINE inválido. Use postgres ou mongodb.');
+    }
     if (!config.jwtSecret) throw new Error('JWT_SECRET é obrigatória. Configure no .env ou no ambiente.');
     // Attempt MongoDB connection
     await connectDB();

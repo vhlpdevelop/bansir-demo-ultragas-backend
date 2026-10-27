@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Bansir SaaS Node.js API
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /usr/src/app
 
@@ -14,7 +14,7 @@ RUN javac -version && npm ci --omit=dev
 COPY . .
 
 # Production runner
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 
 WORKDIR /usr/src/app
 

@@ -1,0 +1,114 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomBytes,randomUUID} from 'node:crypto';
+import pg from 'pg';
+import PDFDocument from 'pdfkit';
+import {createDatabase} from '../src/postgres/database.js';
+import {createPostgresApp} from '../src/postgres/app.js';
+import {provisionTenant,assignPlan,createEstablishment} from '../src/postgres/provision.js';
+import {createAuth} from '../src/postgres/auth.js';
+import {defaultStorefront,publicStorefront} from '../src/postgres/storefront.js';
+import {normalizePhone} from '../src/postgres/phone.js';
+import {rowsFromPdfLines} from '../src/postgres/customers.js';
+
+async function clientPdf(){const doc=new PDFDocument({margin:40});const chunks=[];const done=new Promise(resolve=>{doc.on('data',chunk=>chunks.push(chunk));doc.on('end',()=>resolve(Buffer.concat(chunks)));});doc.fontSize(10).text('Nome',40,50).text('Telefone',220,50).text('Endereco',380,50);doc.text('Maria de Teste',40,90).text('(65) 99999-1111',220,90).text('Rua Um 10 Centro',380,90);doc.text('Pedro de Teste',40,120).text('(65) 99998-8888',220,120).text('Rua Dois 20 Centro',380,120);doc.end();return done;}
+test('Deliverers, customer PDF import and public order link',{skip:!process.env.TEST_POSTGRES_URL,timeout:90000},async t=>{
+ assert.match(new URL(process.env.TEST_POSTGRES_URL).pathname,/^\/bansir_test_[a-f0-9]+$/);
+ const admin=new pg.Client({connectionString:process.env.TEST_POSTGRES_ADMIN_URL});await admin.connect();const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL,max:8});let server;
+ try{
+  const password=randomBytes(20).toString('hex'),secret=randomBytes(48).toString('hex');
+  const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'shop-test',name:'Shop A',adminName:'Admin',email:'shop@test.invalid',password});
+  const actor=(await admin.query("SELECT id FROM bansir.users WHERE email='shop@test.invalid'")).rows[0].id;
+  await assignPlan(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:tenant.slug,code:'shop-two',name:'Test',maxEstablishments:2});const unit2=await createEstablishment(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:tenant.slug,name:'Shop B',memberships:[{userId:actor,role:'admin',allowedRoutes:['sales','settings']}]});
+  const auth=createAuth(db,{jwtSecret:secret}),selection=await auth.login({email:'shop@test.invalid',password}),s=await auth.select({selectionToken:selection.selectionToken,tenantId:tenant.id,establishmentId:tenant.establishmentId});
+  const selection2=await auth.login({email:'shop@test.invalid',password}),s2=await auth.select({selectionToken:selection2.selectionToken,tenantId:tenant.id,establishmentId:unit2.establishmentId});
+  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',onError:e=>{if(!e.status&&!e.issues&&!['23505','23503'].includes(e.code))console.error('Storefront test diagnostic:',e.stack);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`;
+  const send=async(path,method='GET',body,{token=s.token,checkout}={})=>{const response=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} : {}),...(checkout?{'X-Checkout-Token':checkout}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,body:await response.json()};};
+  const publicSend=(path,method='GET',body,token)=>send(`/public/stores/shop-public${path}`,method,body,{token:null,checkout:token});
+  const p=(await send('/products','POST',{name:'Gas public',barcode:'SHOP-1',price:120.45,costPrice:90,stock:20,ncm:'27111910'})).body.data;
+  const hidden=(await send('/products','POST',{name:'Private product',barcode:'PRIVATE',price:50,stock:10})).body.data;
+  const foreignProduct=(await send('/products','POST',{name:'Other unit',barcode:'OTHER',price:1,stock:10},{token:s2.token})).body.data;
+  let imported,deliverer,config,checkoutA,checkoutB,order;
+  await t.test('PDF preview extracts real PDF text, normalizes phones and requires explicit atomic import',async()=>{
+   assert.equal(normalizePhone('(65) 99999-1111'),'5565999991111');assert.equal(normalizePhone('+55 65 99999-1111'),'5565999991111');assert.throws(()=>normalizePhone('0000'));
+   assert.throws(()=>rowsFromPdfLines(Array(1001).fill('Cliente teste\t(65) 99999-1111\tRua Teste')),e=>e.code==='PDF_TOO_LARGE');
+   const pdf=await clientPdf();const preview=await send('/customers/import/pdf','POST',{base64:pdf.toString('base64')});assert.equal(preview.status,200,JSON.stringify(preview.body));imported=preview.body.data;
+   assert.equal(imported.rows.length,2,JSON.stringify(imported));assert.equal(imported.rows[0].name,'Maria de Teste');assert.equal(imported.rows[0].phone,'5565999991111');assert.match(imported.rows[0].address,/Rua Um/);
+   assert.equal((await send('/customers')).body.data.length,0);
+   const body={requestKey:randomUUID(),fileHash:imported.fileHash,mode:'skip-existing',rows:imported.rows.map(({name,phone,document,address})=>({name,phone,document,address}))};
+   const first=await send('/customers/import/confirm','POST',body);assert.equal(first.status,201,JSON.stringify(first.body));assert.equal(first.body.data.created,2);
+   assert.deepEqual((await send('/customers/import/confirm','POST',body)).body.data,first.body.data);assert.equal((await send('/customers')).body.data.length,2);
+   assert.equal((await send('/customers','GET',undefined,{token:s2.token})).body.data.length,0);
+   const skip=await send('/customers/import/confirm','POST',{...body,requestKey:randomUUID()});assert.equal(skip.body.data.skipped,2);
+   assert.equal((await send('/customers/import/confirm','POST',{...body,requestKey:randomUUID(),rows:[body.rows[0],body.rows[0]]})).status,400);
+   const existing=(await send('/customers')).body.data,mar=existing.find(c=>c.name.startsWith('Maria')),pedro=existing.find(c=>c.name.startsWith('Pedro'));
+   const duplicate=(await admin.query('INSERT INTO bansir.customers(tenant_id,establishment_id,name,phone) VALUES($1,$2,\'Duplicate test only\',$3) RETURNING id',[tenant.id,tenant.establishmentId,mar.phone])).rows[0];
+   const failed=await send('/customers/import/confirm','POST',{...body,requestKey:randomUUID(),mode:'update-existing',rows:body.rows.map(r=>({...r,name:'MUST ROLLBACK'}))});assert.equal(failed.status,409);assert.equal((await admin.query('SELECT name FROM bansir.customers WHERE id=$1',[pedro.id])).rows[0].name,'Pedro de Teste');
+   await admin.query('UPDATE bansir.customers SET active=false WHERE id=$1',[duplicate.id]);
+   const update=await send('/customers/import/confirm','POST',{...body,requestKey:randomUUID(),mode:'update-existing'});assert.equal(update.body.data.updated,2);
+  });
+  await t.test('deliverer is scoped and snapshotted on every sale, independent of future changes',async()=>{
+   const created=await send('/deliverers','POST',{name:'Entregador original',phone:'65999992222',active:true});assert.equal(created.status,201);deliverer=created.body.data;
+   await send('/pdv/cash/open','POST',{openingCents:10000});
+   const body={requestKey:randomUUID(),items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}],deliveryEmployeeId:deliverer.id,payment:{method:'cash',confirmed:true,receivedCents:15000}};
+   const sold=await send('/sales','POST',body);assert.equal(sold.status,201,JSON.stringify(sold.body));assert.equal(sold.body.data.delivery_employee_id,deliverer.id);assert.equal(sold.body.data.delivery_employee_name,'Entregador original');assert.equal(sold.body.data.delivery_employee_phone,'5565999992222');
+   await send(`/deliverers/${deliverer.id}`,'PUT',{name:'Nome alterado',phone:'65999993333',active:false});const history=(await send(`/sales/${sold.body.data.id}`)).body.data;assert.equal(history.delivery_employee_name,'Entregador original');assert.equal(history.delivery_employee_phone,'5565999992222');
+   assert.equal((await send('/sales','POST',{...body,requestKey:randomUUID()})).status,404);
+   const foreign=(await send('/deliverers','POST',{name:'Other deliverer',phone:'65999994444'},{token:s2.token})).body.data;assert.equal((await send('/sales','POST',{...body,requestKey:randomUUID(),deliveryEmployeeId:foreign.id})).status,404);
+   await send(`/deliverers/${deliverer.id}`,'PUT',{name:'Entregador atual',phone:'65999992222',active:true});
+  });
+  await t.test('public catalog is explicitly published; public SQL role cannot read costs or customer PII',async()=>{
+   assert.equal((await publicSend('')).status,404);
+   config={slug:'shop-public',enabled:true,config:{...defaultStorefront,name:'Shop Test',productIds:[p.id],zones:[{id:'centro',name:'Centro',feeCents:700}],allowPickup:true}};
+   assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,productIds:[foreignProduct.id]}})).status,400);
+   const save=await send('/storefront/settings','PUT',config);assert.equal(save.status,200,JSON.stringify(save.body));
+   const page=await publicSend('');assert.equal(page.status,200);assert.equal(page.body.data.products.length,1);assert.equal(page.body.data.products[0].id,p.id);assert.equal(page.body.data.products[0].priceCents,12045);assert.equal(page.body.data.products[0].costPrice,undefined);assert.equal(JSON.stringify(page.body).includes(hidden.id),false);
+   assert.equal((await send('/storefront/settings', 'GET',undefined,{token:s2.token})).body.data.slug,'');
+   assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,productIds:[foreignProduct.id]}},{token:s2.token})).status,403);
+   await assert.rejects(publicStorefront(db,'shop-public',null,c=>c.query('SELECT * FROM bansir.customers')),e=>e.code==='42501');
+   await assert.rejects(publicStorefront(db,'shop-public',null,c=>c.query('SELECT cost_cents FROM bansir.products')),e=>e.code==='42501');
+   assert.equal((await db.pool.query('SELECT * FROM bansir.products')).rowCount,0);assert.equal((await db.pool.query('SELECT current_user AS role')).rows[0].role,'bansir_test_app');
+  });
+  await t.test('phone is first and linked internally; neither known nor unknown phones expose customer identity',async()=>{
+   const known=await publicSend('/start','POST',{phone:'(65) 99999-1111'});const unknown=await publicSend('/start','POST',{phone:'(65) 99999-5555'});assert.equal(known.status,201,JSON.stringify(known.body));assert.equal(unknown.status,201);
+   assert.deepEqual(Object.keys(known.body.data).sort(),['phone','token']);assert.deepEqual(Object.keys(unknown.body.data).sort(),['phone','token']);checkoutA=known.body.data;checkoutB=unknown.body.data;
+   const internal=(await admin.query('SELECT customer_id FROM bansir.checkout_sessions WHERE phone=$1 ORDER BY created_at DESC LIMIT 1',[checkoutA.phone])).rows[0];assert.ok(internal.customer_id);
+   const body={requestKey:randomUUID(),customerName:'Nome informado no pedido',deliveryAddress:'Rua de entrega informada 200',fulfillment:'delivery',zoneId:'centro',expectedShippingCents:700,items:[{productId:p.id,quantity:2,expectedUnitPriceCents:12045}]};
+   assert.equal((await publicSend('/orders','POST',body)).status,401);
+   assert.equal((await publicSend('/orders','POST',{...body,expectedShippingCents:0},checkoutA.token)).status,409);
+   assert.equal((await publicSend('/orders','POST',{...body,items:[{productId:p.id,quantity:2,expectedUnitPriceCents:1}]},checkoutA.token)).status,409);
+   assert.equal((await publicSend('/orders','POST',{...body,items:[{productId:foreignProduct.id,quantity:1,expectedUnitPriceCents:100}]},checkoutA.token)).status,400);
+   assert.equal((await publicSend('/orders','POST',{...body,customerId:randomUUID()},checkoutA.token)).status,400);
+   const before=Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock);
+   const created=await publicSend('/orders','POST',body,checkoutA.token);assert.equal(created.status,201,JSON.stringify(created.body));order=created.body.data;assert.equal(order.totalCents,24790);assert.equal(order.status,'new');assert.deepEqual(Object.keys(order).sort(),['id','status','totalCents']);
+   assert.equal((await publicSend('/orders','POST',body,checkoutA.token)).body.data.id,order.id);assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before);
+   assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutB.token)).status,404);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).status,200);
+   const customer=(await admin.query('SELECT name,address FROM bansir.customers WHERE phone=$1 AND active',[checkoutA.phone])).rows[0];assert.equal(customer.name,'Maria de Teste');assert.match(customer.address,/Rua Um/);
+  });
+  await t.test('staff acceptance binds order to one sale and deliverer; receipt, stock and pending payment stay scoped',async()=>{
+   const privateOrder=(await send('/storefront/orders')).body.data.find(o=>o.id===order.id);assert.ok(privateOrder.customer_id);assert.equal(privateOrder.customer_name,'Nome informado no pedido');
+   assert.deepEqual((await send('/storefront/orders','GET',undefined,{token:s2.token})).body.data,[]);
+   assert.equal((await send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true},{token:s2.token})).status,404);
+   assert.equal((await send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:false})).status,400);
+   const before=Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock);
+   const results=await Promise.all([send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true,deliveryEmployeeId:deliverer.id}),send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true,deliveryEmployeeId:deliverer.id})]);assert.ok(results.every(r=>[200,201].includes(r.status)),JSON.stringify(results));assert.equal(results[0].body.data.id,results[1].body.data.id);
+   const sale=results[0].body.data;assert.equal(sale.status,'pending');assert.equal(sale.outstanding_cents,24790);assert.equal(sale.delivery_fee_cents,700);assert.equal(sale.delivery_employee_id,deliverer.id);assert.equal(sale.customer_name,'Maria de Teste');assert.equal(sale.delivery_address,'Rua de entrega informada 200');assert.equal(sale.payments.length,0);assert.equal(sale.invoiceIssued,false);
+   assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before-2);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).body.data.status,'accepted');
+   assert.equal((await send(`/storefront/orders/${order.id}/reject`,'POST',{reason:'Cannot reject accepted'})).status,409);
+  });
+  await t.test('closed pages and rejected orders cannot create sales or leak private status to another checkout',async()=>{
+   const body={requestKey:randomUUID(),customerName:'New order customer',fulfillment:'pickup',zoneId:'',expectedShippingCents:0,items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}]};
+   const created=await publicSend('/orders','POST',body,checkoutB.token);assert.equal(created.status,201,JSON.stringify(created.body));
+   const rejected=await send(`/storefront/orders/${created.body.data.id}/reject`,'POST',{reason:'Internal test note'});assert.equal(rejected.status,200);
+   assert.equal((await send(`/storefront/orders/${created.body.data.id}/reject`,'POST',{reason:'Internal test note'})).status,200);
+   const status=await publicSend(`/orders/${created.body.data.id}`,'GET',undefined,checkoutB.token);assert.equal(status.body.data.status,'rejected');assert.equal(JSON.stringify(status.body).includes('Internal test note'),false);
+   assert.equal((await send(`/storefront/orders/${created.body.data.id}/accept`,'POST',{customerConfirmed:true})).status,409);
+   const pickup=await publicSend('/orders','POST',{...body,requestKey:randomUUID()},checkoutB.token);
+   const pickupSale=await send(`/storefront/orders/${pickup.body.data.id}/accept`,'POST',{customerConfirmed:true});assert.equal(pickupSale.status,201,JSON.stringify(pickupSale.body));assert.equal(pickupSale.body.data.payment_term,'pickup');assert.equal(pickupSale.body.data.status,'pending');
+   assert.equal((await send(`/sales/${pickupSale.body.data.id}/cancel`,'POST',{reason:'Cancellation of pending public order',refundConfirmed:true})).status,200);
+   assert.equal((await publicSend(`/orders/${pickup.body.data.id}`,'GET',undefined,checkoutB.token)).body.data.status,'cancelled');
+   await send('/storefront/settings','PUT',{...config,config:{...config.config,acceptingOrders:false}});assert.equal((await publicSend('/start','POST',{phone:'65999996666'})).status,409);
+   await send('/storefront/settings','PUT',{...config,enabled:false});assert.equal((await publicSend('')).status,404);
+  });
+ }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
+});

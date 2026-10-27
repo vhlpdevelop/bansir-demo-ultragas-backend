@@ -39,3 +39,8 @@ data/
 *.pem
 *.key
 fiscal-runtime/
+deploy/*.env
+
+# Offline migration snapshots contain personal data and password hashes.
+migration-private/
+tmp/pdfs/
