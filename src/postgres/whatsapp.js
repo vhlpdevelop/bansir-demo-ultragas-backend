@@ -12,6 +12,8 @@ export async function queueWhatsapp(c,i,{key,payload}){
  await enqueue(c,i,{kind:'whatsapp',key,payload:data,maxAttempts:5});return true;
 }
 export function mountWhatsapp(app,{scoped,metaConnect}){
+ app.get('/api/v1/whatsapp/greeting',scoped('settings',true,async c=>({data:(await c.query('SELECT enabled,message,recipient_filter FROM bansir.meta_greetings')).rows[0]||{enabled:false,message:''}})));
+ app.put('/api/v1/whatsapp/greeting',scoped('settings',false,async(c,req,m)=>{if(!['admin','superadmin'].includes(m.role))throw httpError(403,'Somente administrador pode configurar a saudação.','FORBIDDEN');const d=z.object({enabled:z.boolean(),message:z.string().trim().min(1).max(1024)}).strict().parse(req.body),i=req.identity;await c.query('INSERT INTO bansir.meta_greetings(tenant_id,establishment_id,enabled,message,sender_user_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET enabled=EXCLUDED.enabled,message=EXCLUDED.message,sender_user_id=EXCLUDED.sender_user_id,updated_at=now()',[i.tenantId,i.establishmentId,d.enabled,d.message,i.userId]);return {data:d};}));
  app.get('/api/v1/whatsapp/status',scoped('settings',true,async c=>{const account=(await c.query('SELECT phone_number_id,waba_id,display_phone,enabled,template_language,voucher_template,delivery_template FROM bansir.meta_accounts')).rows[0];return {data:{provider:'meta',status:account?.enabled?'CONFIGURED':'NOT_CONFIGURED',account:account||null,webhookConfigured:!!(process.env.META_APP_SECRET&&process.env.META_VERIFY_TOKEN)}};}));
  app.put('/api/v1/whatsapp/meta',scoped('settings',false,async(c,req,m)=>{
   if(!['admin','superadmin'].includes(m.role))throw httpError(403,'Somente administrador pode configurar a conta Meta.','FORBIDDEN');

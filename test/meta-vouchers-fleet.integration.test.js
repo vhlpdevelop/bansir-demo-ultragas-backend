@@ -94,6 +94,21 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
   assert.equal((await queue.pool.query('SELECT * FROM bansir.meta_cell_receiver($1,$2)',[account.phoneNumberId,'wrong'])).rowCount,0);
   await queue.ready();const createJob=async(phone)=>{assert.equal((await send('/whatsapp/messages','POST',{requestKey:randomUUID(),phone,message:'Hello test'})).status,202);const j=await queue.claim('whatsapp');assert.ok(j);return j;};
   const finish=job=>queue.finish(job,'done');
+  await t.test('greeting outbox is isolated, deduplicated, rate limited and disabled before sending',async()=>{
+   const cfg={enabled:true,message:'Olá! Faça seu pedido pelo link de teste.'};
+   assert.equal((await send('/whatsapp/greeting','PUT',cfg,driverSession.token)).status,403);
+   assert.equal((await send('/whatsapp/greeting','PUT',cfg)).status,200);
+   assert.equal((await send('/whatsapp/greeting','GET',undefined,otherSession.token)).body.data.enabled,false);
+   const inbound=async(mid,phone='5565977777777',text='Olá!',date=new Date())=>admin.query('SELECT bansir.meta_ingest($1,$2,$3,$4,$5,$6,$7,$8)',[account.phoneNumberId,account.wabaId,mid,'in',phone,text,'received',date]);
+   await inbound('wamid.greeting');await inbound('wamid.greeting');await Promise.all([inbound('wamid.greeting2'),inbound('wamid.greeting3')]);
+   const jobs=(await admin.query("SELECT id FROM bansir.jobs WHERE payload->>'action'='auto-greeting'")).rows;assert.equal(jobs.length,1);
+   const j=await queue.claim('whatsapp');assert.equal(j.id,jobs[0].id);let calls=0;
+   await processMetaJob(queue,j,{version:'v99.0',transport:async(_u,o)=>{calls++;assert.equal(JSON.parse(o.body).text.body,cfg.message);return new Response(JSON.stringify({messages:[{id:'wamid.greeting.sent'}]}),{status:200});}});assert.equal(calls,1);await finish(j);
+   assert.equal((await send('/whatsapp/messages')).body.data.find(m=>m.message_id==='wamid.greeting.sent').body,cfg.message);
+   await inbound('wamid.greeting.old','5565966666666','oi',new Date(Date.now()-3600000));assert.equal((await queue.claim('whatsapp')),undefined);
+   await inbound('wamid.greeting.new','5565966666666');const stale=await queue.claim('whatsapp');assert.ok(stale);
+   await send('/whatsapp/greeting','PUT',{...cfg,enabled:false});await assert.rejects(processMetaJob(queue,stale,{version:'v99.0'}),/META_GREETING_DISABLED/);await queue.finish(stale,'dead','META_GREETING_DISABLED');
+  });
   await t.test('worker requires consent/templates, uses approved template and never resends accepted messages',async()=>{
    const phone='5565999999999',j=await createJob(phone);let calls=0;const transport=async(url,opts)=>{calls++;assert.match(url,/graph\.facebook\.com\/v99\.0\/123456789012345\/messages$/);assert.equal(JSON.parse(opts.body).type,'template');return new Response(JSON.stringify({messages:[{id:'wamid.accepted'}]}),{status:200});};
    await assert.rejects(processMetaJob(queue,j,{version:'v99.0',transport}),/META_OPT_IN_REQUIRED/);assert.equal(calls,0);
