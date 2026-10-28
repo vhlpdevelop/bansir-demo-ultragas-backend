@@ -50,9 +50,19 @@ test('Product pricing, Saturday calendar and Gas do Povo',{skip:!process.env.TES
    const forged=await send('/sales','POST',{requestKey:randomUUID(),quotedItems:[{productId:gas.id,priceCents:1}],items:[item(gas,1)],payment:{method:'cash',confirmed:true,receivedCents:1}});assert.equal(forged.status,400);
    const snapshot=(await admin.query('SELECT pricing_context FROM bansir.storefront_orders WHERE id=$1',[saturdayOrder.body.data.id])).rows[0];assert.equal(snapshot.pricing_context.date,'2026-10-31');
   });
+  await t.test('promotions persist, quote real discounted amounts and preserve accepted order prices',async()=>{
+   const result=await send('/products/'+water.id,'PUT',{fulfillmentPricing:{deliveryPrice:15,promotionPickupPrice:10,promotionDeliveryPrice:13}});assert.equal(result.status,200);
+   const p=(await catalog()).products.find(p=>p.id===water.id);assert.equal(p.pickupOriginalCents,1200);assert.equal(p.deliveryOriginalCents,1500);assert.equal(p.pickupCents,1000);assert.equal(p.deliveryCents,1300);
+   const promo=await order({items:[item(water,1300)]});assert.equal(promo.status,201);assert.equal(promo.body.data.totalCents,1300);
+   assert.equal((await order({items:[item(water,1500)]})).status,409);
+   await send('/products/'+water.id,'PUT',{fulfillmentPricing:{deliveryPrice:15}});
+   const accepted=await send(`/storefront/orders/${promo.body.data.id}/accept`,'POST',{customerConfirmed:true});assert.equal(accepted.status,201);assert.equal(accepted.body.data.total_cents,1300);
+   const normal=(await catalog()).products.find(p=>p.id===water.id);assert.equal(normal.pickupCents,1200);assert.equal(normal.deliveryCents,1500);
+  });
   await t.test('non-owner cannot alter delivery prices or the calendar, including direct SQL',async()=>{
    const user=(await admin.query("SELECT id FROM bansir.users WHERE email='pricing@test.invalid'")).rows[0];await admin.query('UPDATE bansir.establishments SET owner_user_id=NULL WHERE id=$1',[tenant.establishmentId]);
    assert.equal((await send('/products/'+gas.id,'PUT',{fulfillmentPricing:{deliveryPrice:1}})).status,403);
+   assert.equal((await send('/products/'+gas.id,'PUT',{fulfillmentPricing:{promotionPickupPrice:1}})).status,403);
    assert.equal((await send('/products/'+gas.id,'PUT',{gasDoPovo:true})).status,403);
    assert.equal((await send('/products/'+gas.id,'PUT',{name:'Permitido'})).status,200);
    await assert.rejects(db.transaction({tenantId:tenant.id,establishmentId:tenant.establishmentId,userId:user.id},c=>c.query("UPDATE bansir.products SET fulfillment_pricing='{\"deliveryPrice\":1}' WHERE id=$1",[gas.id])),e=>e.code==='42501');

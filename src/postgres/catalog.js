@@ -7,7 +7,7 @@ const amount = z.number().finite().min(0).max(10000000)
 export const productInput = z.object({
   name: text.min(1), barcode: text.min(1), price: amount.refine(n => n > 0),
   costPrice: amount.optional(), stock: z.number().int().min(0).max(100000000).optional(),
-  fulfillmentPricing:z.object({deliveryPrice:amount.positive().optional(),saturdayPickupPrice:amount.positive().optional(),saturdayDeliveryPrice:amount.positive().optional()}).strict().optional(),
+  fulfillmentPricing:z.object({promotionPickupPrice:amount.positive().optional(),promotionDeliveryPrice:amount.positive().optional(),deliveryPrice:amount.positive().optional(),saturdayPickupPrice:amount.positive().optional(),saturdayDeliveryPrice:amount.positive().optional()}).strict().optional(),
   gasDoPovo:z.boolean().optional(),gasDoPovoDelivery:z.boolean().optional(),
   category: text.optional(), sku: text.optional(), unit: text.optional(), brand: text.optional(),
   specs: z.string().max(5000).optional(), ncm: z.string().regex(/^(\d{8})?$/).optional(), active: z.boolean().optional()
@@ -72,7 +72,7 @@ export async function updateProduct(client, context, id, input) {
   return presentProduct(product);
 }
 async function deliveryOwner(client,context,before,data){
- const pricing=p=>JSON.stringify(p||{},['deliveryPrice','saturdayPickupPrice','saturdayDeliveryPrice']);
+ const pricing=p=>JSON.stringify(p||{},['deliveryPrice','saturdayPickupPrice','saturdayDeliveryPrice','promotionPickupPrice','promotionDeliveryPrice']);
  const changed=(data.fulfillmentPricing!==undefined&&pricing(data.fulfillmentPricing)!==pricing(before.fulfillment_pricing))||(data.gasDoPovo!==undefined&&data.gasDoPovo!==!!before.gas_do_povo)||(data.gasDoPovoDelivery!==undefined&&data.gasDoPovoDelivery!==!!before.gas_do_povo_delivery);
  if(changed&&!(await client.query('SELECT 1 FROM bansir.establishments WHERE tenant_id=$1 AND id=$2 AND owner_user_id=$3',[context.tenantId,context.establishmentId,context.userId])).rowCount)throw httpError(403,'Somente o dono pode configurar preços por modalidade e Gás do Povo.','OWNER_REQUIRED');
 }

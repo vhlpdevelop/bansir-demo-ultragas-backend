@@ -7,9 +7,12 @@ export function pricingDay(timeZone='America/Cuiaba',now=new Date()){
 }
 export function productQuote(product,day){
  const p=product.fulfillment_pricing||{},base=Number(product.price_cents);
- const pickup=day.saturday&&p.saturdayPickupPrice!==undefined?Math.round(p.saturdayPickupPrice*100):base;
- const delivery=day.saturday&&p.saturdayDeliveryPrice!==undefined?Math.round(p.saturdayDeliveryPrice*100):p.deliveryPrice!==undefined?Math.round(p.deliveryPrice*100):pickup;
- return {pickupCents:pickup,deliveryCents:delivery,deliveryIncluded:p.deliveryPrice!==undefined||(day.saturday&&p.saturdayDeliveryPrice!==undefined),gasDoPovo:!!product.gas_do_povo,allowDelivery:!product.gas_do_povo||!!product.gas_do_povo_delivery};
+ let pickup=day.saturday&&p.saturdayPickupPrice!==undefined?Math.round(p.saturdayPickupPrice*100):base;
+ let delivery=day.saturday&&p.saturdayDeliveryPrice!==undefined?Math.round(p.saturdayDeliveryPrice*100):p.deliveryPrice!==undefined?Math.round(p.deliveryPrice*100):pickup;
+ const pickupOriginalCents=base,deliveryOriginalCents=p.deliveryPrice!==undefined?Math.round(p.deliveryPrice*100):base;
+ if(p.promotionPickupPrice!==undefined)pickup=Math.min(pickup,Math.round(p.promotionPickupPrice*100));
+ if(p.promotionDeliveryPrice!==undefined&&Math.round(p.promotionDeliveryPrice*100)<deliveryOriginalCents)delivery=Math.min(delivery,Math.round(p.promotionDeliveryPrice*100));
+ return {pickupOriginalCents,deliveryOriginalCents,pickupCents:pickup,deliveryCents:delivery,deliveryIncluded:(p.promotionDeliveryPrice!==undefined&&Math.round(p.promotionDeliveryPrice*100)<deliveryOriginalCents)||p.deliveryPrice!==undefined||(day.saturday&&p.saturdayDeliveryPrice!==undefined),gasDoPovo:!!product.gas_do_povo,allowDelivery:!product.gas_do_povo||!!product.gas_do_povo_delivery};
 }
 export function basketShipping(items,fulfillment,normalFee){
  return fulfillment==='delivery'&&items.some(i=>!i.deliveryIncluded)?normalFee:0;
