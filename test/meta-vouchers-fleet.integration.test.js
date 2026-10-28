@@ -81,6 +81,8 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    const wrong=inbound('wamid.foreign');wrong.entry[0].id='12345';assert.equal((await webhook(wrong)).status,200);
    assert.equal((await admin.query("SELECT message_id FROM bansir.meta_messages WHERE message_id='wamid.inbound'")).rowCount,1);assert.equal((await admin.query("SELECT message_id FROM bansir.meta_messages WHERE message_id='wamid.foreign'")).rowCount,0);assert.deepEqual((await send('/whatsapp/messages','GET',undefined,otherSession.token)).body.data,[]);
   });
+  assert.equal((await queue.pool.query('SELECT * FROM bansir.meta_cell_receiver($1,$2)',[account.phoneNumberId,account.wabaId])).rows[0].establishment_id,tenant.establishmentId);
+  assert.equal((await queue.pool.query('SELECT * FROM bansir.meta_cell_receiver($1,$2)',[account.phoneNumberId,'wrong'])).rowCount,0);
   await queue.ready();const createJob=async(phone)=>{assert.equal((await send('/whatsapp/messages','POST',{requestKey:randomUUID(),phone,message:'Hello test'})).status,202);const j=await queue.claim('whatsapp');assert.ok(j);return j;};
   const finish=job=>queue.finish(job,'done');
   await t.test('worker requires consent/templates, uses approved template and never resends accepted messages',async()=>{

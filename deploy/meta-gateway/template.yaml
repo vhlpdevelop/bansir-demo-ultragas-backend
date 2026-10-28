@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Bansir central Meta webhook, routing registry and first EC2 inbox
+Parameters:
+  MetaAppId:
+    Type: String
+    Default: '1793938688602287'
+    AllowedPattern: '[0-9]{5,30}'
+  MetaSecretArn:
+    Type: String
+    Description: ARN of Secrets Manager JSON containing appSecret and verifyToken
+  CellId:
+    Type: String
+    Default: gas-1
+    AllowedPattern: '[a-z0-9-]{1,30}'
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    CodeUri: .
+    MemorySize: 128
+    Timeout: 25
+Resources:
+  Routes:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: true
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+  IngressDead:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
+  IngressQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 180
+      SqsManagedSseEnabled: true
+      RedrivePolicy: {deadLetterTargetArn: !GetAtt IngressDead.Arn, maxReceiveCount: 8}
+  CellDead:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
+  CellQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: !Sub bansir-meta-cell-${CellId}
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 120
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy: {deadLetterTargetArn: !GetAtt CellDead.Arn, maxReceiveCount: 8}
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefaultRouteSettings: {ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10}
+  Ingress:
+    DependsOn: IngressLog
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ingress
+      Handler: src/lambda.ingress
+      Environment:
+        Variables:
+          META_APP_ID: !Ref MetaAppId
+          META_SECRET_ARN: !Ref MetaSecretArn
+          INGRESS_QUEUE_URL: !Ref IngressQueue
+      Policies:
+        - Statement:
+            - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref MetaSecretArn}
+            - {Effect: Allow, Action: 'sqs:SendMessage', Resource: !GetAtt IngressQueue.Arn}
+      Events:
+        Verify: {Type: HttpApi, Properties: {ApiId: !Ref Api, Path: /webhook, Method: GET}}
+        Receive: {Type: HttpApi, Properties: {ApiId: !Ref Api, Path: /webhook, Method: POST}}
+  Router:
+    DependsOn: RouterLog
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-router
+      Handler: src/lambda.router
+      Environment:
+        Variables:
+          META_APP_ID: !Ref MetaAppId
+          ROUTES_TABLE: !Ref Routes
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+      Policies:
+        - Statement:
+            - {Effect: Allow, Action: 'dynamodb:GetItem', Resource: !GetAtt Routes.Arn}
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:bansir-meta-cell-*
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngressQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes: [ReportBatchItemFailures]
+            ScalingConfig: {MaximumConcurrency: 2}
+  IngressLog:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-ingress', RetentionInDays: 7}
+  RouterLog:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-router', RetentionInDays: 7}
+  CellConsumerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: ['sqs:ReceiveMessage','sqs:DeleteMessage','sqs:GetQueueAttributes']
+            Resource: !GetAtt CellQueue.Arn
+  IngressDeadAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{Name: QueueName, Value: !GetAtt IngressDead.QueueName}]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  CellDeadAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{Name: QueueName, Value: !GetAtt CellDead.QueueName}]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+Outputs:
+  WebhookUrl: {Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/webhook'}
+  RoutesTable: {Value: !Ref Routes}
+  CellQueueUrl: {Value: !Ref CellQueue}
+  CellQueueArn: {Value: !GetAtt CellQueue.Arn}
+  CellConsumerPolicyArn: {Value: !Ref CellConsumerPolicy}
+  IngressDeadQueueUrl: {Value: !Ref IngressDead}
+  CellDeadQueueUrl: {Value: !Ref CellDead}

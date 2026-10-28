@@ -1,0 +1,19 @@
+[Unit]
+Description=Bansir Meta inbound cell consumer
+After=network-online.target postgresql.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/bansir/backend/deploy/meta-gateway
+EnvironmentFile=/etc/bansir/meta-cell.env
+ExecStart=/usr/bin/node src/consumer.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=150
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+[Install]
+WantedBy=multi-user.target
