@@ -8,12 +8,14 @@ export async function managementReport(c,query){
  const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
  if(d.endDate<d.startDate||(+new Date(d.endDate)-+new Date(d.startDate))>366*86400000)throw httpError(400,'Selecione um período de até um ano.','INVALID_PERIOD');
  const timezone=(await c.query("SELECT coalesce(config->>'timeZone','America/Cuiaba') AS tz FROM bansir.storefronts")).rows[0]?.tz||'America/Cuiaba';
- const sales=(await c.query(`SELECT s.*,x.sale_id IS NOT NULL AS cancelled,coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id),0) AS paid,
+ const rawSales=(await c.query(`SELECT s.*,x.sale_id IS NOT NULL AS cancelled,coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id),0) AS paid,
  coalesce((SELECT sum(i.quantity*i.unit_cost_cents) FROM bansir.sale_items i WHERE i.sale_id=s.id),0) AS cost
  FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON x.sale_id=s.id
  WHERE (s.created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date AND ($4='' OR s.seller_name=$4)
  AND ($5='' OR EXISTS(SELECT 1 FROM bansir.sale_items i JOIN bansir.products p ON p.id=i.product_id WHERE i.sale_id=s.id AND p.category=$5))
- AND ($6='' OR EXISTS(SELECT 1 FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod])).rows.map(s=>({...s,status:s.cancelled?'cancelled':Number(s.paid)>=Number(s.total_cents)?'paid':'pending'})).filter(s=>!d.saleStatus||d.saleStatus===s.status);
+ AND ($6='' OR EXISTS(SELECT 1 FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod])).rows;
+ if(rawSales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
+ const sales=rawSales.map(s=>({...s,status:s.cancelled?'cancelled':Number(s.paid)>=Number(s.total_cents)?'paid':'pending'})).filter(s=>!d.saleStatus||d.saleStatus===s.status);
  if(sales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
  const valid=sales.filter(s=>!s.cancelled),total=valid.reduce((n,s)=>n+Number(s.total_cents),0)/100,cost=valid.reduce((n,s)=>n+Number(s.cost),0)/100;
  const ledger=await financeEntries(c);const dated=await c.query("SELECT ($1::date AT TIME ZONE $3) AS start,(($2::date+1) AT TIME ZONE $3) AS finish",[d.startDate,d.endDate,timezone]);const bounds=dated.rows[0];
