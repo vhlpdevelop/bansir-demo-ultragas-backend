@@ -1,3 +1,4 @@
+import {mountMetaOnboarding} from './meta-onboarding.js';
 import {mountManagement} from './management.js';
 import {mountManagementReports} from './management-reports.js';
 import express from 'express';
@@ -24,7 +25,7 @@ import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -161,7 +162,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountCustomerProfile(app,{scoped});
   mountProductImport(app,{scoped});
   mountStorefrontAdmin(app,{scoped});
-  mountWhatsapp(app,{scoped});
+  mountWhatsapp(app,{scoped,metaConnect});
+  mountMetaOnboarding(app,{scoped,call:metaConnect});
   mountVouchersFleet(app,{database});
   // Never mount legacy MongoDB business routers in the multi-tenant process.
   app.use('/api/v1', (req, res) => res.status(503).json({ success: false, code: 'MODULE_MIGRATION_PENDING',

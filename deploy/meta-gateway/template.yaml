@@ -109,6 +109,37 @@ Resources:
             BatchSize: 5
             FunctionResponseTypes: [ReportBatchItemFailures]
             ScalingConfig: {MaximumConcurrency: 2}
+  Connect:
+    DependsOn: ConnectLog
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-connect-${CellId}
+      Handler: src/lambda.connect
+      Timeout: 60
+      Environment:
+        Variables:
+          META_APP_ID: !Ref MetaAppId
+          META_GRAPH_VERSION: v25.0
+          META_SECRET_ARN: !Ref MetaSecretArn
+          CELL_ID: !Ref CellId
+          CELL_QUEUE_URL: !Ref CellQueue
+          ROUTES_TABLE: !Ref Routes
+      Policies:
+        - Statement:
+            - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref MetaSecretArn}
+            - Effect: Allow
+              Action: ['dynamodb:GetItem','dynamodb:PutItem','dynamodb:UpdateItem']
+              Resource: !GetAtt Routes.Arn
+  ConnectLog:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-connect-${CellId}', RetentionInDays: 7}
+  ConnectPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - {Effect: Allow, Action: 'lambda:InvokeFunction', Resource: !GetAtt Connect.Arn}
   IngressLog:
     Type: AWS::Logs::LogGroup
     Properties: {LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-ingress', RetentionInDays: 7}
@@ -122,7 +153,7 @@ Resources:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Action: ['sqs:ReceiveMessage','sqs:DeleteMessage','sqs:GetQueueAttributes']
+            Action: ['sqs:ReceiveMessage','sqs:DeleteMessage','sqs:GetQueueAttributes','sqs:ChangeMessageVisibility']
             Resource: !GetAtt CellQueue.Arn
   IngressDeadAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -149,6 +180,8 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 Outputs:
+  ConnectFunctionArn: {Value: !GetAtt Connect.Arn}
+  ConnectPolicyArn: {Value: !Ref ConnectPolicy}
   WebhookUrl: {Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/webhook'}
   RoutesTable: {Value: !Ref Routes}
   CellQueueUrl: {Value: !Ref CellQueue}

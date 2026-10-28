@@ -15,6 +15,7 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
  const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL,max:8}),queue=createQueue(process.env.TEST_WORKER_URL);let server;
  const previous={...process.env};
  try{
+  process.env.META_EMBEDDED_SIGNUP_ENABLED='true';process.env.META_APP_ID='12345';process.env.META_EMBEDDED_SIGNUP_CONFIG_ID='67890';process.env.META_GRAPH_VERSION='v25.0';process.env.META_CONNECT_FUNCTION_ARN='test-only';
   process.env.FISCAL_ENCRYPTION_KEY=randomBytes(32).toString('base64');process.env.META_APP_SECRET=randomBytes(32).toString('hex');process.env.META_VERIFY_TOKEN=randomUUID();
   const password=randomBytes(20).toString('hex'),secret=randomBytes(48).toString('hex');
   const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'meta-vouchers',name:'Vouchers',adminName:'Owner',email:'vouchers@test.invalid',password});
@@ -24,7 +25,8 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
   const driver=randomUUID();await admin.query("INSERT INTO bansir.users(id,email,name,password_hash) VALUES($1,'voucher-driver@test.invalid','Driver',$2)",[driver,user.password_hash]);
   await admin.query("INSERT INTO bansir.tenant_memberships(tenant_id,user_id,role,allowed_routes) VALUES($1,$2,'entregador',ARRAY['valegas-redeem'])",[tenant.id,driver]);
   await admin.query("INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes) VALUES($1,$2,$3,'entregador',ARRAY['valegas-redeem'])",[tenant.id,tenant.establishmentId,driver]);
-  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test'}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`;
+  let exchanges=0,activations=0,failActivation=true;
+  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',metaConnect:async b=>{if(b.action==='exchange'){exchanges++;return {ok:true,token:'TEST_ONLY_TOKEN_FOR_ONBOARDING',phoneNumberId:'123456789012345',wabaId:'987654321012345',displayPhone:'TEST'};}if(b.action==='activate'){activations++;if(failActivation){failActivation=false;throw Object.assign(Error('Simulated failure'),{status:409});}}return {ok:true};}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`;
   const auth=createAuth(db,{jwtSecret:secret});const login=async unit=>{const s=await auth.login({email:'vouchers@test.invalid',password});return auth.select({selectionToken:s.selectionToken,tenantId:tenant.id,establishmentId:unit});};
   const session=await login(tenant.establishmentId),otherSession=await login(other.establishmentId),driverSession=await auth.login({email:'voucher-driver@test.invalid',password});
   const send=async(path,method='GET',body,token=session.token)=>{const r=await fetch(base+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
@@ -100,5 +102,18 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    await assert.rejects(processMetaJob(queue,j,{version:'v99.0',transport}),/META_SENDER_REVOKED/);assert.equal(calls,0);await admin.query('UPDATE bansir.establishment_memberships SET active=true WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3',[tenant.id,tenant.establishmentId,user.id]);
    await send('/whatsapp/logout','POST',{});await assert.rejects(processMetaJob(queue,j,{version:'v99.0',transport}),/META_NOT_CONFIGURED/);assert.equal(calls,0);await queue.finish(j,'dead','META_NOT_CONFIGURED');
   });
- }finally{for(const k of ['FISCAL_ENCRYPTION_KEY','META_APP_SECRET','META_VERIFY_TOKEN']){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}if(server)await new Promise(r=>server.close(r));await queue.close();await db.pool.end();await admin.end();}
+  await t.test('Embedded Signup binds nonce to user/unit/session and resumes activation without another exchange',async()=>{
+   assert.equal((await send('/whatsapp/onboarding/config','GET',undefined,driverSession.token)).status,403);
+   const started=await send('/whatsapp/onboarding/start','POST',{});assert.equal(started.status,200,JSON.stringify(started));const attemptId=started.body.data.id;
+   assert.equal((await send('/whatsapp/onboarding/complete','POST',{attemptId,code:'test-authorization-code'},otherSession.token)).status,409);
+   const complete=await send('/whatsapp/onboarding/complete','POST',{attemptId,code:'test-authorization-code'});assert.equal(complete.status,200,JSON.stringify(complete));assert.equal(exchanges,1);
+   assert.equal((await send('/whatsapp/status')).body.data.status,'NOT_CONFIGURED');
+   assert.equal((await send('/whatsapp/onboarding/activate','POST',{attemptId})).status,409);
+   assert.equal((await send('/whatsapp/onboarding/config')).body.data.pendingAttempt,attemptId);
+   assert.equal((await send('/whatsapp/onboarding/complete','POST',{attemptId,code:'test-authorization-code'})).status,200);assert.equal(exchanges,1);
+   assert.equal((await send('/whatsapp/onboarding/activate','POST',{attemptId})).status,200);assert.equal(activations,2);
+   assert.equal((await send('/whatsapp/status')).body.data.status,'CONFIGURED');
+   assert.equal((await send('/whatsapp/logout','POST',{})).status,200);
+  });
+ }finally{for(const k of ['FISCAL_ENCRYPTION_KEY','META_APP_SECRET','META_VERIFY_TOKEN','META_APP_ID','META_EMBEDDED_SIGNUP_CONFIG_ID','META_GRAPH_VERSION','META_CONNECT_FUNCTION_ARN','META_EMBEDDED_SIGNUP_ENABLED']){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}if(server)await new Promise(r=>server.close(r));await queue.close();await db.pool.end();await admin.end();}
 });

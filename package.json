@@ -31,6 +31,7 @@
     "test:bridge-live": "node scripts/check-bridge-live.js"
   },
   "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1159.0",
     "@aws-sdk/client-s3": "^3.1157.0",
     "@nfewizard/danfe": "1.0.7",
     "@nfewizard/nfce": "1.0.6",

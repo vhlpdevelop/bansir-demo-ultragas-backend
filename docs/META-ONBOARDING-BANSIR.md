@@ -24,3 +24,13 @@ O App ID foi registrado no exemplo de ambiente; isso **não altera o ambiente da
 6. Validar conexão, recebimento e envio com ativos de teste e pelo menos dois estabelecimentos antes de liberar a conexão de clientes.
 
 Referência: [Embedded Signup da Meta](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-customers-as-a-tech-provider).
+
+## Configuração recebida do painel
+
+Configuration ID: `1017617441354422`. O link fornecido contém `featureType=whatsapp_business_app_onboarding`, `sessionInfoVersion=3` e `version=v4`. Esses valores descrevem o cadastro incorporado/coexistência; `v4` não é a versão da Graph API. Os campos `setup` com valores `null` indicam ausência de preenchimento automático. Não reutilizar este link estático como prova de autorização ou como associação de tenant. O SDK, a correlação com a sessão do administrador, a troca de código no servidor, a descoberta/validação dos ativos autorizados e a reserva global do número ainda precisam ser implementados. Não tratar IDs recebidos por postMessage como prova de propriedade.
+
+Versão Graph API confirmada pelo exemplo fornecido no painel: `v25.0`. Business Portfolio ID no exemplo: `1100181716136455`. A consulta `owned_whatsapp_business_accounts` enumera contas próprias do portfólio e não substitui o consentimento de cada cliente no Embedded Signup. O token incluído no exemplo não foi utilizado nem persistido; deve ser revogado e substituído por ter sido compartilhado no chat.
+
+## Implementação do fluxo incorporado
+
+O SDK no SaaS, as sessões por usuário/estabelecimento, a troca de código na Lambda privada, a validação de ativos, o token cifrado local e a ativação recuperável do roteamento foram implementados. A liberação permanece bloqueada por `META_EMBEDDED_SIGNUP_ENABLED` até atualizar stack e IAM. Seguir `deploy/meta-gateway/UPGRADE-EMBEDDED.md`. As descrições anteriores de recursos pendentes representam o estado anterior à implementação. Nenhuma conexão real ou token de cliente foi usado nos testes.

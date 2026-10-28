@@ -1,6 +1,6 @@
 # Publicar o webhook Meta do Bansir
 
-Pacote independente da API. Não instala NFeWizard nem MongoDB no Lambda. **Preparado para publicação; nenhum recurso AWS foi criado por este pacote.** O Embedded Signup e a conexão automática de clientes ainda não fazem parte desta entrega. O primeiro vínculo é cadastrado por um administrador após conferir os ativos autorizados.
+Pacote independente da API. Não instala NFeWizard nem MongoDB no Lambda. **Preparado para publicação; nenhum recurso AWS foi criado por este pacote.** O fluxo de conexão automática foi acrescentado em uma atualização: seguir [UPGRADE-EMBEDDED.md](UPGRADE-EMBEDDED.md) para publicar a Lambda privada e habilitar o botão no SaaS. O cadastro manual abaixo permanece para administração e testes controlados.
 
 ## 1. O que você precisa
 
@@ -130,6 +130,6 @@ Criar uma fila Standard `bansir-meta-cell-CELULA`, com SSE-SQS, retenção 14 di
 
 `npm test` usa transporte simulado e cobre assinatura, corpo base64, durabilidade, separação de payloads e falhas parciais. Foi acrescentada cobertura do vínculo local da migração 020 em `test/meta-vouchers-fleet.integration.test.js`, mas sua execução nesta entrega ficou bloqueada pelo Docker local desligado. Executar esse teste antes de ativar o consumidor. Fazer `sam validate --lint` e um deploy de teste na conta AWS antes de cadastrar o callback real. O template passou no cfn-lint com transformação SAM, sem alertas. SAM/AWS CLI não estavam disponíveis no ambiente de preparação; o deploy remoto não foi executado.
 
-Envio de mensagens continua no worker Meta já existente, com token criptografado por estabelecimento, templates e consentimento. Este pacote implementa **entrada e roteamento**; não implementa Embedded Signup, pedidos automáticos, cobrança Meta ou habilitação de permissões do aplicativo. A administração de rotas é manual até a conexão automática validar os ativos no servidor.
+Envio de mensagens continua no worker Meta já existente, com token criptografado por estabelecimento, templates e consentimento. Este pacote implementa **entrada e roteamento**; não cria pedidos automaticamente nem configura cobrança Meta ou permissões do aplicativo. O fluxo Embedded Signup exige a atualização de stack e policy descrita em UPGRADE-EMBEDDED.md; só então ele cadastra automaticamente vínculos validados.
 
 A tabela e as quatro filas são preservadas na exclusão da stack. Para recriar com o mesmo CellId, conferir os recursos retidos; não apagar filas com mensagens pendentes. A solução ainda exige teste real em AWS/Meta e validação do consumidor conectado ao PostgreSQL.
