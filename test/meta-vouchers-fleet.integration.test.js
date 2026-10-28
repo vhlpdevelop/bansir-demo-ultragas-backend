@@ -99,10 +99,10 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    assert.equal((await send('/whatsapp/greeting','PUT',cfg,driverSession.token)).status,403);
    assert.equal((await send('/whatsapp/greeting','PUT',cfg)).status,200);
    assert.equal((await send('/whatsapp/greeting','GET',undefined,otherSession.token)).body.data.enabled,false);
-   const inbound=async(mid,phone='5565977777777',text='Olá!',date=new Date())=>admin.query('SELECT bansir.meta_ingest($1,$2,$3,$4,$5,$6,$7,$8)',[account.phoneNumberId,account.wabaId,mid,'in',phone,text,'received',date]);
+   const inbound=async(mid,phone='556577777777',text='Olá!',date=new Date())=>admin.query('SELECT bansir.meta_ingest($1,$2,$3,$4,$5,$6,$7,$8)',[account.phoneNumberId,account.wabaId,mid,'in',phone,text,'received',date]);
    await inbound('wamid.greeting');await inbound('wamid.greeting');await Promise.all([inbound('wamid.greeting2'),inbound('wamid.greeting3')]);
    const jobs=(await admin.query("SELECT id FROM bansir.jobs WHERE payload->>'action'='auto-greeting'")).rows;assert.equal(jobs.length,1);
-   const j=await queue.claim('whatsapp');assert.equal(j.id,jobs[0].id);let calls=0;
+   const j=await queue.claim('whatsapp');assert.equal(j.id,jobs[0].id);assert.equal(j.payload.phone,'5565977777777');let calls=0;
    await processMetaJob(queue,j,{version:'v99.0',transport:async(_u,o)=>{calls++;assert.equal(JSON.parse(o.body).text.body,cfg.message);return new Response(JSON.stringify({messages:[{id:'wamid.greeting.sent'}]}),{status:200});}});assert.equal(calls,1);await finish(j);
    assert.equal((await send('/whatsapp/messages')).body.data.find(m=>m.message_id==='wamid.greeting.sent').body,cfg.message);
    await inbound('wamid.greeting.old','5565966666666','oi',new Date(Date.now()-3600000));assert.equal((await queue.claim('whatsapp')),undefined);
