@@ -11,7 +11,7 @@ export function pushEndpoint(value) {
 }
 const deviceInput=z.object({deviceId:z.string().min(1).max(200),pushEnabled:z.boolean().optional(),
  subscription:z.object({endpoint:z.string().max(2048).refine(pushEndpoint,'Provedor push não permitido.'),expirationTime:z.number().nullable().optional(),keys:z.object({p256dh:z.string().regex(/^[\w-]{87}={0,2}$/),auth:z.string().regex(/^[\w-]{22}={0,2}$/)}).strict()}).strict().nullable().optional(),
- deviceName:z.string().max(200).optional(),browser:z.string().max(200).optional(),os:z.string().max(200).optional(),userAgent:z.string().max(1000).optional(),platform:z.string().max(100).optional(),name:z.string().max(200).optional()
+ deviceType:z.enum(['desktop','mobile','tablet']).optional(),deviceName:z.string().max(200).optional(),browser:z.string().max(200).optional(),os:z.string().max(200).optional(),userAgent:z.string().max(1000).optional(),platform:z.string().max(100).optional(),name:z.string().max(200).optional()
 }).strip();
 
 // Producers call this in the SAME transaction as their business event (outbox).
@@ -27,19 +27,21 @@ export function mountNotifications(app,{scoped,route,database}) {
  app.get('/api/v1/notifications/vapid-public-key',route(async req=>{await database.transaction(req.identity,async()=>{});return {data:{publicKey:vapid.publicKey},meta:{publicKey:vapid.publicKey}};}));
  const own=fn=>route(async req=>database.transaction(req.identity,client=>fn(client,req)));
  app.get('/api/v1/notifications',own(async c=>({data:(await c.query('SELECT id AS _id,title,body,created_at AS date,read_at IS NOT NULL AS read FROM bansir.notifications ORDER BY created_at DESC LIMIT 100')).rows})));
- app.get('/api/v1/notifications/devices',own(async c=>({data:(await c.query('SELECT device_id AS "deviceId",enabled AS "pushEnabled",updated_at AS "lastActive" FROM bansir.push_devices')).rows})));
+ app.get('/api/v1/notifications/devices',own(async c=>({data:(await c.query('SELECT details,device_id AS "deviceId",enabled AS "pushEnabled",updated_at AS "lastActive" FROM bansir.push_devices')).rows.map(d=>({...d,...d.details}))})));
  app.post('/api/v1/notifications/devices/register',own(async(c,req)=>{
   const data=deviceInput.parse(req.body),i=req.identity;
   if(data.pushEnabled && (!vapid.configured || !data.subscription))throw httpError(409,'Push não configurado ou assinatura ausente.','PUSH_NOT_READY');
   if(data.subscription)await c.query(`INSERT INTO bansir.push_devices(tenant_id,establishment_id,user_id,device_id,subscription,enabled) VALUES($1,$2,$3,$4,$5,$6)
    ON CONFLICT(tenant_id,establishment_id,user_id,device_id) DO UPDATE SET subscription=EXCLUDED.subscription,enabled=EXCLUDED.enabled,updated_at=now()`,[i.tenantId,i.establishmentId,i.userId,data.deviceId,data.subscription,!!data.pushEnabled]);
   else if(data.pushEnabled===false)await c.query('UPDATE bansir.push_devices SET enabled=false,updated_at=now() WHERE device_id=$1',[data.deviceId]);
+  await c.query('UPDATE bansir.push_devices SET details=$2 WHERE device_id=$1',[data.deviceId,{deviceName:data.deviceName||data.name||'Navegador',deviceType:data.deviceType||'desktop',browser:data.browser||'',os:data.os||''}]);
   return {data:{deviceId:data.deviceId}};
  }));
  app.patch('/api/v1/notifications/devices/:deviceId/toggle',own(async(c,req)=>{
   const {pushEnabled}=z.object({pushEnabled:z.boolean()}).strict().parse(req.body);
   await c.query('UPDATE bansir.push_devices SET enabled=$2,updated_at=now() WHERE device_id=$1',[req.params.deviceId,pushEnabled]);return {data:true};
  }));
+ app.delete('/api/v1/notifications/devices/:deviceId',own(async(c,req)=>{await c.query('DELETE FROM bansir.push_devices WHERE device_id=$1',[req.params.deviceId]);return {data:true};}));
  app.post('/api/v1/notifications/test-push',own(async(c,req)=>{
   if(!vapid.configured)throw httpError(409,'Configure as chaves VAPID.','PUSH_NOT_READY');
   const {deviceId}=z.object({deviceId:z.string().min(1).max(200)}).strict().parse(req.body);

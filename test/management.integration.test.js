@@ -17,6 +17,28 @@ test('Management PostgreSQL: finance, employees, pricing, commissions and report
   server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',onError:e=>{if(!e.status&&!e.issues)console.error('Management test diagnostic',e.code,e.message);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`,auth=createAuth(db,{jwtSecret:secret});
   const login=async unit=>{const s=await auth.login({email:'management@test.invalid',password});return auth.select({selectionToken:s.selectionToken,tenantId:tenant.id,establishmentId:unit});};const session=await login(tenant.establishmentId),foreign=await login(other.establishmentId),read=await auth.login({email:'management-reader@test.invalid',password});
   const send=async(path,method='GET',body,token=session.token)=>{const r=await fetch(base+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
+  await t.test('access control is unit-scoped, protects owner and creates users with mandatory password change',async()=>{
+   const listed=await send('/access/users');assert.equal(listed.status,200,JSON.stringify(listed));assert.ok(listed.body.data.some(u=>u.id===reader));
+   assert.equal((await send('/access/users','GET',undefined,read.token)).status,403);
+   const body={name:'New operator',email:'access-new@test.invalid',password:'Temporary123!',role:'operador',allowedRoutes:['sales'],active:true};
+   const created=await send('/access/users','POST',body);assert.equal(created.status,200,JSON.stringify(created));const id=created.body.data.id;
+   assert.equal((await send('/access/users','GET',undefined,foreign.token)).body.data.some(u=>u.id===id),false);
+   assert.equal((await send('/access/users/'+id,'PUT',body,foreign.token)).status,403);
+   assert.equal((await send('/access/users/'+actor.id,'PUT',body)).status,403);
+   const next=await send('/access/users/'+id,'PUT',{...body,active:false,role:'entregador',allowedRoutes:['valegas-redeem']});assert.equal(next.status,200,JSON.stringify(next));
+   assert.equal((await admin.query('SELECT must_change_password FROM bansir.users WHERE id=$1',[id])).rows[0].must_change_password,true);
+   const dashboard=await send('/dashboard');assert.equal(dashboard.status,200,JSON.stringify(dashboard));assert.equal(dashboard.body.data.sales,0);assert.equal((await send('/dashboard','GET',undefined,read.token)).status,403);
+   assert.equal((await send('/auth/me','PUT',{name:'Owner',phone:'123'})).status,200);
+  });
+  await t.test('notification device metadata and removal stay isolated by user and unit',async()=>{
+   const device={deviceId:'management-device',deviceName:'Caixa Windows',deviceType:'desktop',browser:'Chrome',os:'Windows',pushEnabled:false,subscription:{endpoint:'https://fcm.googleapis.com/fcm/send/management-test',keys:{p256dh:'a'.repeat(87),auth:'b'.repeat(22)}}};
+   assert.equal((await send('/notifications/devices/register','POST',device)).status,200);
+   let list=(await send('/notifications/devices')).body.data;assert.equal(list.length,1);assert.equal(list[0].deviceName,'Caixa Windows');
+   assert.equal((await send('/notifications/devices','GET',undefined,foreign.token)).body.data.length,0);
+   await send('/notifications/devices/management-device','DELETE',undefined,foreign.token);
+   assert.equal((await send('/notifications/devices')).body.data.length,1);
+   await send('/notifications/devices/management-device','DELETE');assert.equal((await send('/notifications/devices')).body.data.length,0);
+  });
   const employeeBody={name:'Seller',email:'seller@test.invalid',roleTitle:'Caixa',laborType:'MOD',baseSalary:2000,commissionType:'percentage',commissionValue:5,userId:actor.id};let employee,sale,manual;
   await t.test('employee CRUD is unit-scoped, admin-only and linked to an existing unit user',async()=>{
    let r=await send('/employees','POST',employeeBody);assert.equal(r.status,201,JSON.stringify(r));employee=r.body.data;assert.equal(employee.baseSalary,2000);

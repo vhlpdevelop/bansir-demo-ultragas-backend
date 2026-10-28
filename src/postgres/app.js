@@ -1,3 +1,4 @@
+import {mountAccess} from './access.js';
 import {mountMetaOnboarding} from './meta-onboarding.js';
 import {mountManagement} from './management.js';
 import {mountManagementReports} from './management-reports.js';
@@ -63,6 +64,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use('/api/v1', auth.protect);
   app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));
+  app.put('/api/v1/auth/me',route(async req=>{const d=z.object({name:z.string().trim().min(1).max(200),phone:z.string().max(40)}).strict().parse(req.body);await database.transaction(req.identity,c=>c.query('SELECT bansir.update_own_profile($1,$2)',[d.name,d.phone]));return {data:(await auth.session(req.identity)).user};}));
   app.post('/api/v1/auth/change-password',rateLimit({windowMs:900000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.changePassword(req.identity,req.body)})));
   app.post('/api/v1/auth/return-to-selection', route(async req => ({data: await auth.returnToSelection(req.identity)})));
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
@@ -71,6 +73,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
     return fn(client, req,member);
   }));
 
+  mountAccess(app,{scoped});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);
     return { data: row ? { storeName: row.store_name, pixKey: row.pix_key, documentId: row.document_id, address: row.address, merchantCity: row.merchant_city } : {} };
