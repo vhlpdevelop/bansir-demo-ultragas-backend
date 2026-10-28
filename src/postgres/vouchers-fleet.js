@@ -8,7 +8,7 @@ import {queueWhatsapp} from './whatsapp.js';
 import {normalizePhone} from './phone.js';
 
 const admin=m=>['admin','superadmin'].includes(m?.role);
-const canIssue=m=>admin(m)||m?.allowed_routes?.some(r=>['valegas','valegas-issue'].includes(r));
+const canIssue=m=>m?.role!=='entregador'&&(admin(m)||m?.allowed_routes?.some(r=>['valegas','valegas-issue'].includes(r)));
 const canRedeem=m=>admin(m)||m?.role==='entregador'||m?.allowed_routes?.some(r=>['valegas','valegas-redeem'].includes(r));
 const money=z.number().finite().min(0).max(10000000).refine(v=>Math.abs(v*100-Math.round(v*100))<0.00001,'Use duas casas decimais.');
 const uuid=z.uuid();
@@ -17,13 +17,14 @@ const vehicleInput=z.object({code:z.string().trim().min(1).max(40),name:z.string
 const endpoint=(database,fn)=>async(req,res,next)=>{try{const result=await database.transaction(req.identity,(c,m)=>fn(c,req,m));res.status(result.status||200).json({success:true,data:result.data});}catch(error){next(error);}};
 const forbidden=()=>{throw httpError(403,'Seu perfil não tem permissão para este recurso.','FORBIDDEN');};
 const voucherView=row=>({...row,_id:row.id,totalAmount:Number(row.total_cents)/100,customerName:row.customer_name,customerPhone:row.customer_phone,issuedByName:row.issued_by_name,redeemedByName:row.redeemed_by_name,source:row.sale_id?'PDV':'LEGADO',saleId:row.sale_id,issuedBy:row.issued_by,redeemedBy:row.redeemed_by,issuedAt:row.issued_at,redeemedAt:row.redeemed_at});
+const presentVoucher=(row,m,redeemable)=>{const v=voucherView(row);if(canIssue(m))return {...v,...(redeemable===undefined?{}:{redeemable})};return {_id:v.id,code:v.code,status:v.status,customerName:v.customerName,customerPhone:v.customerPhone,items:v.items.map(i=>({product:i.product,productName:i.productName,quantity:i.quantity})),issuedAt:v.issuedAt,redeemedAt:v.redeemedAt,redeemedByName:v.redeemedByName,...(redeemable===undefined?{}:{redeemable})};};
 const vehicleView=row=>({...row,_id:row.id,purchaseValue:Number(row.purchase_cents)/100,currentKm:Number(row.current_km),lastKmUpdate:row.last_km_update,maintenanceRules:row.maintenance_rules});
 
 export function mountVouchersFleet(app,{database}){
  app.get('/api/v1/vouchers',endpoint(database,async(c,req,m)=>{
   if(!canIssue(m)&&!canRedeem(m))forbidden();const status=z.enum(['ACTIVE','REDEEMED','CANCELLED']).optional().parse(req.query.status);
   const rows=(await c.query('SELECT * FROM bansir.vouchers WHERE tenant_id=$1 AND establishment_id=$2 AND ($3::text IS NULL OR status=$3) ORDER BY issued_at DESC LIMIT 100',[req.identity.tenantId,req.identity.establishmentId,status||null])).rows;
-  return {data:rows.map(voucherView)};
+  return {data:rows.filter(v=>canIssue(m)||v.redeemed_by===req.identity.userId).map(v=>presentVoucher(v,m))};
  }));
  app.post('/api/v1/vouchers',endpoint(database,async(c,req,m)=>{
   if(!canIssue(m))forbidden();const input=z.object({requestKey:z.uuid(),payment:z.record(z.string(),z.unknown()),customerName:z.string().trim().min(2).max(200),customerPhone:z.string().trim().min(10).max(30),items:itemsInput,totalAmount:money}).strict().parse(req.body),i=req.identity;
@@ -49,19 +50,19 @@ export function mountVouchersFleet(app,{database}){
  }));
  app.get('/api/v1/vouchers/:code',endpoint(database,async(c,req,m)=>{
   if(!canIssue(m)&&!canRedeem(m))forbidden();const row=(await c.query('SELECT * FROM bansir.vouchers WHERE tenant_id=$1 AND establishment_id=$2 AND code=$3',[req.identity.tenantId,req.identity.establishmentId,String(req.params.code).toUpperCase()])).rows[0];
-  if(!row)throw httpError(404,'Vale Gás não encontrado.','NOT_FOUND');return {data:voucherView(row)};
+  if(!row)throw httpError(404,'Vale Gás não encontrado.','NOT_FOUND');const sale=row.sale_id?await saleView(c,row.sale_id):null;return {data:presentVoucher(row,m,row.status==='ACTIVE'&&sale?.status==='paid')};
  }));
  app.post('/api/v1/vouchers/:code/redeem',endpoint(database,async(c,req,m)=>{
   if(!canRedeem(m))forbidden();const i=req.identity,code=String(req.params.code).toUpperCase();
   const voucher=(await c.query('SELECT * FROM bansir.vouchers WHERE code=$1 FOR UPDATE',[code])).rows[0];
   if(!voucher)throw httpError(404,'Vale não encontrado.','NOT_FOUND');
-  if(voucher.status==='REDEEMED')return {data:voucherView(voucher)};
+  if(voucher.status==='REDEEMED')return {data:presentVoucher(voucher,m,false)};
   if(!voucher.sale_id)throw httpError(409,'Vale antigo sem pagamento vinculado. Necessária conciliação antes de entregar.','VOUCHER_RECONCILIATION_REQUIRED');
   const sale=await saleView(c,voucher.sale_id);if(voucher.status!=='ACTIVE'||sale?.status!=='paid')throw httpError(409,'Vale cancelado ou sem pagamento confirmado.','VOUCHER_NOT_ACTIVE');
   const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);const row=(await c.query(`UPDATE bansir.vouchers SET status='REDEEMED',redeemed_by=$4,redeemed_by_name=$5,redeemed_at=now()
    WHERE tenant_id=$1 AND establishment_id=$2 AND code=$3 AND status='ACTIVE' RETURNING *`,[i.tenantId,i.establishmentId,code,i.userId,actor?.name||''])).rows[0];
   if(!row){const existing=(await c.query('SELECT status FROM bansir.vouchers WHERE tenant_id=$1 AND establishment_id=$2 AND code=$3',[i.tenantId,i.establishmentId,code])).rows[0];if(!existing)throw httpError(404,'Vale Gás não encontrado.','NOT_FOUND');throw httpError(409,`Este vale já foi ${existing.status==='REDEEMED'?'resgatado':'cancelado'}.`,'VOUCHER_NOT_ACTIVE');}
-  return {data:voucherView(row)};
+  return {data:presentVoucher(row,m,false)};
  }));
  app.get('/api/v1/fleet/vehicles',endpoint(database,async(c,req,m)=>{
   if(!admin(m))forbidden();const rows=(await c.query('SELECT * FROM bansir.vehicles WHERE tenant_id=$1 AND establishment_id=$2 ORDER BY created_at DESC',[req.identity.tenantId,req.identity.establishmentId])).rows;return {data:rows.map(vehicleView)};

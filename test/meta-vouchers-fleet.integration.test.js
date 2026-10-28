@@ -56,12 +56,19 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    assert.equal((await admin.query('SELECT id FROM bansir.stock_movements WHERE reason=$1',[`Reserva vale ${voucher.saleId}`])).rowCount,1);
   });
   await t.test('redemption delivers once without charging or reducing stock again; cancellation refunds and reconciles',async()=>{
+   const lookup=await send('/vouchers/'+voucher.code,'GET',undefined,driverSession.token);assert.equal(lookup.status,200);assert.equal(lookup.body.data.redeemable,true);assert.equal('totalAmount' in lookup.body.data,false);assert.equal('price' in lookup.body.data.items[0],false);
+   assert.equal((await send('/vouchers','GET',undefined,driverSession.token)).body.data.length,0);
+   await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['valegas-issue','valegas-redeem'] WHERE user_id=$1",[driver]);
+   assert.equal((await send('/vouchers','POST',input(),driverSession.token)).status,403);
+   const dashboard=await send('/dashboard?timezone=America/Cuiaba');assert.equal(dashboard.status,200,JSON.stringify(dashboard));assert.equal(dashboard.body.data.revenue,150);assert.equal(dashboard.body.data.vouchers.active,1);assert.equal(dashboard.body.data.ticket,150);assert.equal(dashboard.body.data.daily.length,7);assert.equal(dashboard.body.data.topProducts[0].units,1);
+   assert.equal((await send('/dashboard','GET',undefined,otherSession.token)).body.data.revenue,0);
+   assert.equal((await send('/dashboard?timezone=INVALID')).status,400);
    assert.equal((await send(`/vouchers/${voucher.code}`,'GET',undefined,otherSession.token)).status,404);
    assert.equal((await send(`/vouchers/${voucher.code}/redeem`,'POST',{},otherSession.token)).status,404);
    const r=await send(`/vouchers/${voucher.code}/redeem`,'POST',{},driverSession.token);assert.equal(r.status,200,JSON.stringify(r));assert.equal(r.body.data.status,'REDEEMED');assert.equal(r.body.data.redeemedByName,'Driver');
    assert.equal((await send(`/vouchers/${voucher.code}/redeem`,'POST',{},driverSession.token)).status,200);assert.equal(await stock(),19);assert.equal((await send('/pdv/cash')).body.data.expected_cents,15000);
    assert.equal((await send(`/sales/${voucher.saleId}/cancel`,'POST',{reason:'Test voucher refund',refundConfirmed:true})).status,200);
-   assert.equal((await send(`/vouchers/${voucher.code}`)).body.data.status,'CANCELLED');assert.equal((await send(`/vouchers/${voucher.code}/redeem`,'POST',{})).status,409);assert.equal(await stock(),20);assert.equal((await send('/pdv/cash')).body.data.expected_cents,0);
+   assert.equal((await send(`/vouchers/${voucher.code}`)).body.data.status,'CANCELLED');assert.equal((await send('/dashboard')).body.data.revenue,0);assert.equal((await send('/dashboard')).body.data.vouchers.active,0);assert.equal((await send('/vouchers/'+voucher.code,'GET',undefined,driverSession.token)).body.data.redeemable,false);assert.equal((await send(`/vouchers/${voucher.code}/redeem`,'POST',{})).status,409);assert.equal(await stock(),20);assert.equal((await send('/pdv/cash')).body.data.expected_cents,0);
   });
   await t.test('legacy vouchers require reconciliation and normal sale UUID cannot issue a second entitlement',async()=>{
    await admin.query("INSERT INTO bansir.vouchers(tenant_id,establishment_id,code,customer_name,customer_phone,items,total_cents,issued_by) VALUES($1,$2,'VGL-LEGACY','Legacy','5565999999999','[]',15000,$3)",[tenant.id,tenant.establishmentId,user.id]);
