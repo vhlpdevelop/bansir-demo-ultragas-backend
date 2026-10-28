@@ -1,3 +1,5 @@
+import {mountManagement} from './management.js';
+import {mountManagementReports} from './management-reports.js';
 import express from 'express';
 import {mountMetaWebhook} from './meta-webhook.js';
 import {mountQzSigning} from './qz-signing.js';
@@ -21,7 +23,7 @@ import {mountWhatsapp} from './whatsapp.js';
 import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
-export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet'];
+export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports'];
 export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -149,6 +151,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountNotifications(app,{scoped,route,database});
   mountFiscal(app,{scoped});
   mountSales(app,{scoped});
+  mountManagement(app,{scoped});
+  mountManagementReports(app,{scoped});
   mountPrinting(app,{scoped});
   mountQzSigning(app,{scoped});
   mountCustomers(app,{scoped});
