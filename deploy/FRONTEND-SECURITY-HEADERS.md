@@ -1,8 +1,12 @@
 # Headers de segurança do app de Gás — SEC-02
 
+**Atualização de plano:** policies customizadas exigem Business/Premium nos planos flat-rate. Para manter o plano atual, seguir `FRONTEND-SECURITY-FUNCTION.md` e usar `frontend-security-headers-function.js` em Viewer response. O procedimento de policy abaixo fica como referência e não é a recomendação para Free/Pro.
+
 O app usa o bucket privado `bansir-gas-app-prod-1` e o domínio `gas.bansir.com.br`. O arquivo `_headers` dentro do S3 não configura os headers HTTP do CloudFront. A API já possui Helmet, mas seus headers não se aplicam ao HTML do frontend.
 
 ## Estado desta entrega
+
+Policy criada pelo usuário: **`741b668b-5c16-4209-8e31-d89bf5508783`**. A associação aos behaviors da distribuição de `gas.bansir.com.br` e a verificação dos headers públicos ainda precisam ser confirmadas.
 
 Template pronto: `frontend-security-headers.cloudformation.json`. **Ainda não aplicado.** A consulta ao CloudFront com a role da EC2 retornou HTTP 403 / `AccessDenied` em 29/10/2026. Não ampliar a role de execução da API para administrar a CDN; usar uma conta/perfil de infraestrutura autorizado. Nenhuma distribuição foi alterada e o achado SEC-02 continua pendente de aplicação/verificação pública.
 
