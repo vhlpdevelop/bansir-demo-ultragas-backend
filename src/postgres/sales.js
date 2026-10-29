@@ -108,6 +108,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
 }
 
 export function mountSales(app,{scoped}){
+ app.get('/api/v1/pdv/business-hours',scoped('sales',true,async c=>{const config=(await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config||{};return {data:{timeZone:config.timeZone||'America/Cuiaba',businessHours:config.businessHours||{enabled:false,days:[]}}};}));
  app.get('/api/v1/pdv/cash',scoped('sales',true,async(c,req)=>({data:await cashView(c,await lockCash(c,req.identity))})));
  app.post('/api/v1/pdv/cash/open',scoped('sales',false,async(c,req)=>{
   const {openingCents}=z.object({openingCents:cents}).strict().parse(req.body),i=req.identity;
