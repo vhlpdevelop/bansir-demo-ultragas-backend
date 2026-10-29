@@ -1,5 +1,7 @@
 # Sessão renovável e localização no link
 
+Atualização de 29/10/2026: o frontend web novo usa cookie HttpOnly para refresh; o access token continua por aba. O comportamento sem cookies descrito abaixo refere-se a clientes antigos/APK. Contrato, limites persistentes e migração compatível em [BROWSER-SESSIONS-RATE-LIMIT.md](BROWSER-SESSIONS-RATE-LIMIT.md).
+
 Migração 015 adiciona apenas o hash do refresh token às sessões existentes. Novos logins e seleções emitem access token de 10 minutos (padrão) e refresh token com prazo absoluto de 12 horas. Renovar não estende esse limite. Sessões antigas continuam com sua validade anterior e recebem o recurso no próximo login.
 
 Refresh é rotacionado sob bloqueio da sessão e senha; reutilizar um token anterior revoga a família inteira, inclusive access tokens ainda dentro da validade. Usuário, empresa, estabelecimento e participação são revalidados. Logout online, retorno à seleção e alteração da senha revogam a sessão/família; senha revoga todas as sessões do usuário. O refresh não permite escolher outra unidade. API: POST /auth/refresh e POST /auth/logout.

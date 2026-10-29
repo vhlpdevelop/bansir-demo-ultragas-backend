@@ -1,3 +1,5 @@
+import {createLoginThrottle} from './login-throttle.js';
+import {createBrowserSessions} from './browser-sessions.js';
 import {mountBridge} from './bridge.js';
 import {mountPdvTerminals} from './pdv-terminals.js';
 import {mountPlatformAdmin} from './platform-admin.js';
@@ -36,6 +38,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
   const auth = createAuth(database, { jwtSecret, expiresIn });
+  const browserSessions=createBrowserSessions({secret:jwtSecret,nodeEnv,allowedOrigins:allowed});
+  const loginThrottle=createLoginThrottle(database,jwtSecret);
   app.disable('x-powered-by');
   // No proxy is trusted implicitly; set TRUST_PROXY_HOPS for the deployed topology.
   app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
@@ -43,7 +47,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use(cors({ origin(origin, cb) {
     const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
     cb(null, !origin || allowed.includes(origin) || (nodeEnv !== 'production' && local));
-  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token','X-Pdv-Terminal'], exposedHeaders: ['Content-Disposition'] }));
+  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token','X-Pdv-Terminal','X-Bansir-Client','X-Bansir-Session','X-CSRF-Token'], credentials:true, exposedHeaders: ['Content-Disposition'] }));
   mountMetaWebhook(app,{database});
   const uploads=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
@@ -61,20 +65,21 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
     try { await database.ping(); res.json({ status: 'online', dbConnected: true, database: 'postgres', multiTenant: true, migrationPhase: 'foundation', migratedModules }); }
     catch { res.status(503).json({ status: 'unavailable', dbConnected: false, database: 'postgres' }); }
   });
-  const loginLimit = rateLimit({ windowMs: 900000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
+  const loginLimit = rateLimit({ windowMs: 900000, limit: 60, skipSuccessfulRequests:true, standardHeaders: 'draft-7', legacyHeaders: false });
+  app.use(['/api/v1/auth','/api/v1/platform'],(_req,res,next)=>{res.set('Cache-Control','no-store');next();});
   app.use('/api/v1', rateLimit({ windowMs: 900000, limit: 1500, standardHeaders: 'draft-7', legacyHeaders: false }));
-  app.post('/api/v1/auth/login', loginLimit, route(async req => ({ data: await auth.login(req.body) })));
-  app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => ({ data: await auth.select(req.body) })));
-  app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.refresh(req.body)})));
-  mountPlatformAdmin(app,{database,route});
+  app.post('/api/v1/auth/login', loginLimit, route(async req => {browserSessions.loginOrigin(req);await loginThrottle.attempt(req,'tenant');const data=await auth.login(req.body);await loginThrottle.success(req,'tenant');return {data:browserSessions.issue(req,data)};}));
+  app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => {browserSessions.loginOrigin(req);return {data:browserSessions.issue(req,await auth.select(req.body))};}));
+  app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>{browserSessions.loginOrigin(req);const cookieMode=browserSessions.isBrowser(req)&&req.get('X-Bansir-Session');const body=cookieMode?browserSessions.refresh(req):req.body;try{return {data:browserSessions.issue(req,await auth.refresh(body))};}catch(e){if(cookieMode&&e.status===401)browserSessions.clearRefresh(req,req.get('X-Bansir-Session'));throw e;}}));
+  mountPlatformAdmin(app,{database,route,browserSessions,loginThrottle});
   mountPublicStorefront(app,{database,route,clock,imageStorage});
   app.use('/api/v1', auth.protect);
   app.use(async(req,res,next)=>{try{const feature=routeFeature(req.path);if(feature)await database.transaction(req.identity,async c=>{await requireFeature(c,feature);if(req.path==='/api/v1/storefront/conversations')await requireFeature(c,'whatsapp');});next();}catch(e){next(e);}});
-  app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));
+  app.post('/api/v1/auth/logout',route(async req=>{browserSessions.checkRefreshMutation(req);const data=await auth.logout(req.identity);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));
   app.put('/api/v1/auth/me',route(async req=>{const d=z.object({name:z.string().trim().min(1).max(200),phone:z.string().max(40)}).strict().parse(req.body);await database.transaction(req.identity,c=>c.query('SELECT bansir.update_own_profile($1,$2)',[d.name,d.phone]));return {data:(await auth.session(req.identity)).user};}));
-  app.post('/api/v1/auth/change-password',rateLimit({windowMs:900000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.changePassword(req.identity,req.body)})));
-  app.post('/api/v1/auth/return-to-selection', route(async req => ({data: await auth.returnToSelection(req.identity)})));
+  app.post('/api/v1/auth/change-password',rateLimit({windowMs:900000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>{browserSessions.checkRefreshMutation(req);const data=await auth.changePassword(req.identity,req.body);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
+  app.post('/api/v1/auth/return-to-selection', route(async req => {browserSessions.checkRefreshMutation(req);const data=await auth.returnToSelection(req.identity);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
   const scoped = (module, read, fn) => route(async req => database.transaction(req.identity, async (client, member) => {
     requirePermission(member, module, read);
