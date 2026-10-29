@@ -107,6 +107,23 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${sale.id}/cancel`,'POST',{reason:'Must cancel fiscally',refundConfirmed:true})).status,409);
    assert.equal((await send(`/sales/${sale.id}/fiscal-draft`,'GET',undefined,operatorSession.token)).status,403);
   });
+  await t.test('invoice checkout requires CPF and paid sale; customer document edits stay scoped and lock after invoice',async()=>{
+   const before=await stock(product);
+   assert.equal((await send('/sales','POST',{...order(),issueInvoice:true})).status,400);
+   assert.equal(await stock(product),before);
+   const body={...order(),issueInvoice:true,customerDocument:'12345678909'};
+   const a=await send('/sales','POST',body);assert.equal(a.status,201,JSON.stringify(a.body));
+   assert.equal((await send('/sales','POST',body)).body.data.id,a.body.data.id);assert.equal(await stock(product),before-1);
+   const id=a.body.data.id;
+   assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'98765432100'},session2.token)).status,403);
+   assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'98765432100'},operatorSession.token)).status,403);
+   assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'98765432100'})).status,200);
+   const draft=(await send(`/sales/${id}/fiscal-draft`)).body.data;assert.equal(draft.dest.CNPJCPF,'98765432100');
+   draft.det[0].prod.CFOP='5102';draft.det[0].imposto={ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}};
+   assert.equal((await send(`/sales/${id}/fiscal`,'POST',{requestKey:randomUUID(),draft})).status,202);
+   assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'12345678909'})).status,409);
+   assert.equal((await send(`/sales/${id}`)).body.data.fiscal_model,'65');
+  });
   await t.test('cash withdrawals, deposits and closing reconcile physical cash only, including cash refunds',async()=>{
    const before=(await send('/pdv/cash')).body.data.expected_cents;
    const movement={requestKey:randomUUID(),kind:'deposit',amountCents:1000,reason:'Test supply'};await send('/pdv/cash/movements','POST',movement);await send('/pdv/cash/movements','POST',movement);

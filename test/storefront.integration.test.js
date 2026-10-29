@@ -121,5 +121,17 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    await send('/storefront/settings','PUT',{...config,config:{...config.config,acceptingOrders:false}});assert.equal((await publicSend('/start','POST',{phone:'65999996666'})).status,409);
    await send('/storefront/settings','PUT',{...config,enabled:false});assert.equal((await publicSend('')).status,404);
   });
+  await t.test('business hours block public checkout, validate calendars and keep conversations private',async()=>{
+   const hours={enabled:true,ignoreWhatsappOutsideHours:true,closingSoonMinutes:30,days:Array.from({length:7},(_,day)=>({day,enabled:false,open:'08:00',close:'18:00'}))};
+   const updated={...config,config:{...config.config,businessHours:hours}};
+   assert.equal((await send('/storefront/settings','PUT',updated)).status,200);
+   const publicPage=await publicSend('');assert.equal(publicPage.body.data.businessStatus.state,'closed');
+   assert.equal((await publicSend('/start','POST',{phone:'65999991111'})).status,409);
+   assert.equal((await send('/storefront/settings','PUT',{...updated,config:{...updated.config,businessHours:{...hours,days:hours.days.slice(1)}}})).status,400);
+   const conv=await send('/storefront/conversations');assert.equal(conv.status,200,JSON.stringify(conv.body));assert.ok(conv.body.data.length>0);assert.ok(conv.body.total>0);assert.ok(Number.isFinite(Date.parse(conv.body.serverNow)));
+   assert.equal((await send('/storefront/conversations','GET',undefined,{token:s2.token})).body.data.length,0);
+   const sql=await admin.query('SELECT bansir.whatsapp_open_at($1,$2) AS open',[updated.config,'2026-10-26T14:00Z']);assert.equal(sql.rows[0].open,false);
+   await send('/storefront/settings','PUT',config);
+  });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });

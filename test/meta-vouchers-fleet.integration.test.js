@@ -41,6 +41,24 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    assert.equal((await send(`/fleet/vehicles/${v.body.data.id}`,'DELETE')).status,200);
    assert.equal((await send('/fleet/vehicles','GET',undefined,driverSession.token)).status,403);
   });
+  await t.test('fleet scheduler warns once, escalates overdue, respects units and private deletion',async()=>{
+   const v=(await send('/fleet/vehicles','POST',{code:'ALERT',name:'Delivery truck',currentKm:9600,maintenanceRules:[{name:'Oil',intervalKm:10000,lastServiceKm:0}]})).body.data;
+   await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');
+   const alerts=()=>admin.query("SELECT * FROM bansir.notifications WHERE tenant_id=$1 AND body LIKE 'Delivery truck%'",[tenant.id]);
+   assert.equal((await alerts()).rowCount,1);assert.match((await alerts()).rows[0].body,/400 km/);
+   assert.equal((await alerts()).rows[0].user_id,user.id);
+   assert.equal((await send('/notifications','GET',undefined,otherSession.token)).body.data.length,0);
+   assert.equal((await send('/notifications','GET',undefined,driverSession.token)).body.data.length,0);
+   await admin.query('UPDATE bansir.vehicles SET current_km=10000 WHERE id=$1',[v.id]);
+   await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');assert.equal((await alerts()).rowCount,2);
+   const id=(await alerts()).rows[0].id;
+   await send('/notifications/'+id,'DELETE',undefined,otherSession.token);assert.equal((await alerts()).rowCount,2);
+   await send('/notifications/'+id,'DELETE',undefined,driverSession.token);assert.equal((await alerts()).rowCount,2);
+   assert.equal((await send('/notifications/'+id,'DELETE')).status,200);assert.equal((await alerts()).rowCount,1);
+   await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');assert.equal((await alerts()).rowCount,1);
+   await admin.query("UPDATE bansir.vehicles SET maintenance_rules='[]' WHERE id=$1",[v.id]);
+   await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');assert.equal((await alerts()).rowCount,1);
+  });
   await t.test('payment is required at issuance, and concurrent retries reserve stock and receive cash once',async()=>{
    assert.equal((await send('/vouchers','POST',input())).status,409);assert.equal(await stock(),20);
    await send('/pdv/cash/open','POST',{openingCents:0});
@@ -108,6 +126,21 @@ test('Meta, paid vouchers and fleet: transactional financial flow and unit isola
    await inbound('wamid.greeting.old','5565966666666','oi',new Date(Date.now()-3600000));assert.equal((await queue.claim('whatsapp')),undefined);
    await inbound('wamid.greeting.new','5565966666666');const stale=await queue.claim('whatsapp');assert.ok(stale);
    await send('/whatsapp/greeting','PUT',{...cfg,enabled:false});await assert.rejects(processMetaJob(queue,stale,{version:'v99.0'}),/META_GREETING_DISABLED/);await queue.finish(stale,'dead','META_GREETING_DISABLED');
+  });
+  await t.test('closed-hour greetings are kept without consuming cooldown and worker rechecks calendar',async()=>{
+   const hours={enabled:true,ignoreWhatsappOutsideHours:true,closingSoonMinutes:30,days:Array.from({length:7},(_,day)=>({day,enabled:false,open:'08:00',close:'18:00'}))};
+   const config={acceptingOrders:true,timeZone:'America/Cuiaba',businessHours:hours};
+   await admin.query("INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,config) VALUES($1,$2,'meta-calendar-test',$3)",[tenant.id,tenant.establishmentId,config]);
+   await send('/whatsapp/greeting','PUT',{enabled:true,message:'Calendar greeting'});
+   const phone='5565955554444';const inbound=mid=>admin.query('SELECT bansir.meta_ingest($1,$2,$3,$4,$5,$6,$7,$8)',[account.phoneNumberId,account.wabaId,mid,'in',phone,'Olá','received',new Date()]);
+   await inbound('wamid.calendar.closed');assert.equal(await queue.claim('whatsapp'),undefined);
+   assert.equal((await admin.query('SELECT phone FROM bansir.meta_greeting_contacts WHERE phone=$1',[phone])).rowCount,0);
+   assert.equal((await admin.query('SELECT message_id FROM bansir.meta_messages WHERE message_id=$1',['wamid.calendar.closed'])).rowCount,1);
+   await admin.query("UPDATE bansir.storefronts SET config=$1 WHERE slug='meta-calendar-test'",[{...config,businessHours:{...hours,enabled:false}}]);
+   await inbound('wamid.calendar.open');const job=await queue.claim('whatsapp');assert.ok(job);
+   await admin.query("UPDATE bansir.storefronts SET config=$1 WHERE slug='meta-calendar-test'",[config]);let calls=0;
+   const outcome=await processMetaJob(queue,job,{version:'v99.0',transport:()=>{calls++;throw Error('must not call');}});assert.equal(outcome.skipped,true);assert.equal(calls,0);await finish(job);
+   await admin.query("DELETE FROM bansir.storefronts WHERE slug='meta-calendar-test'");await send('/whatsapp/greeting','PUT',{enabled:false,message:'Calendar greeting'});
   });
   await t.test('worker requires consent/templates, uses approved template and never resends accepted messages',async()=>{
    const phone='5565999999999',j=await createJob(phone);let calls=0;const transport=async(url,opts)=>{calls++;assert.match(url,/graph\.facebook\.com\/v99\.0\/123456789012345\/messages$/);assert.equal(JSON.parse(opts.body).type,'template');return new Response(JSON.stringify({messages:[{id:'wamid.accepted'}]}),{status:200});};

@@ -1,3 +1,4 @@
+import {businessStatus} from './business-hours.js';
 import {z} from 'zod';
 import rateLimit from 'express-rate-limit';
 import {randomBytes,createHash} from 'node:crypto';
@@ -10,7 +11,8 @@ import {pricingDay,productQuote,basketShipping,storeTimeZones} from './product-p
 
 const money=z.number().int().min(0).max(1000000000),slugInput=z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/),text=z.string().trim();
 const image=z.string().url().max(2048).refine(v=>{try{const u=new URL(v);return u.protocol==='https:'&&!u.username&&!u.password;}catch{return false;}},'Use uma URL HTTPS de imagem.');
-export const storefrontConfig=z.object({location:z.object({address:z.string().trim().max(300).default(''),latitude:z.number().min(-90).max(90).nullable().default(null),longitude:z.number().min(-180).max(180).nullable().default(null),showMap:z.boolean().default(false)}).strict().refine(v=>(v.latitude===null)===(v.longitude===null),'Informe latitude e longitude juntas.').refine(v=>!v.showMap||v.latitude!==null,'Informe as coordenadas para exibir o mapa.').default({address:'',latitude:null,longitude:null,showMap:false}),timeZone:z.enum(storeTimeZones).default('America/Cuiaba'),name:text.min(2).max(100),headline:text.min(2).max(120),description:text.max(500).default(''),contactPhone:text.max(40).default('').transform(v=>normalizePhone(v,{optional:true})),primaryColor:z.string().regex(/^#[0-9a-fA-F]{6}$/),backgroundColor:z.string().regex(/^#[0-9a-fA-F]{6}$/),style:z.enum(['modern','classic','bold']).default('modern'),logoUrl:z.union([image,z.literal('')]).default(''),productIds:z.array(z.uuid()).max(200),productImages:z.record(z.uuid(),image).default({}),shippingMode:z.enum(['fixed','regions']).default('regions'),fixedShippingCents:money.default(0),allowPickup:z.boolean().default(true),acceptingOrders:z.boolean().default(true),zones:z.array(z.object({id:text.regex(/^[a-z0-9-]{1,60}$/),name:text.min(1).max(100),feeCents:money}).strict()).max(30),notices:z.array(z.object({title:text.min(1).max(80),body:text.max(400),tone:z.enum(['info','warning','success'])}).strict()).max(6)}).strict()
+export const businessHoursInput=z.object({enabled:z.boolean().default(false),ignoreWhatsappOutsideHours:z.boolean().default(true),closingSoonMinutes:z.number().int().min(5).max(120).default(30),days:z.array(z.object({day:z.number().int().min(0).max(6),enabled:z.boolean(),open:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),close:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)}).strict().refine(d=>!d.enabled||d.open!==d.close,'Abertura e fechamento devem ser diferentes.')).length(7).refine(rows=>new Set(rows.map(r=>r.day)).size===7,'Informe cada dia uma vez.')}).strict();
+export const storefrontConfig=z.object({businessHours:businessHoursInput.optional(),location:z.object({address:z.string().trim().max(300).default(''),latitude:z.number().min(-90).max(90).nullable().default(null),longitude:z.number().min(-180).max(180).nullable().default(null),showMap:z.boolean().default(false)}).strict().refine(v=>(v.latitude===null)===(v.longitude===null),'Informe latitude e longitude juntas.').refine(v=>!v.showMap||v.latitude!==null,'Informe as coordenadas para exibir o mapa.').default({address:'',latitude:null,longitude:null,showMap:false}),timeZone:z.enum(storeTimeZones).default('America/Cuiaba'),name:text.min(2).max(100),headline:text.min(2).max(120),description:text.max(500).default(''),contactPhone:text.max(40).default('').transform(v=>normalizePhone(v,{optional:true})),primaryColor:z.string().regex(/^#[0-9a-fA-F]{6}$/),backgroundColor:z.string().regex(/^#[0-9a-fA-F]{6}$/),style:z.enum(['modern','classic','bold']).default('modern'),logoUrl:z.union([image,z.literal('')]).default(''),productIds:z.array(z.uuid()).max(200),productImages:z.record(z.uuid(),image).default({}),shippingMode:z.enum(['fixed','regions']).default('regions'),fixedShippingCents:money.default(0),allowPickup:z.boolean().default(true),acceptingOrders:z.boolean().default(true),zones:z.array(z.object({id:text.regex(/^[a-z0-9-]{1,60}$/),name:text.min(1).max(100),feeCents:money}).strict()).max(30),notices:z.array(z.object({title:text.min(1).max(80),body:text.max(400),tone:z.enum(['info','warning','success'])}).strict()).max(6)}).strict()
  .refine(d=>new Set(d.productIds).size===d.productIds.length,'Selecione cada produto uma única vez.')
  .refine(d=>new Set(d.zones.map(z=>z.id)).size===d.zones.length,'Cada região deve ter um identificador único.')
  .refine(d=>d.allowPickup||d.shippingMode==='fixed'||d.zones.length>0,'Habilite retirada ou cadastre uma região de entrega.');
@@ -37,12 +39,12 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date()})
  app.get('/api/v1/public/stores/:slug',reads,route(async req=>({data:await publicStorefront(database,req.params.slug,null,async(c,store)=>{
   const products=(await c.query('SELECT id,name,price_cents,fulfillment_pricing,gas_do_povo,gas_do_povo_delivery,stock,unit,brand,category FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY name',[store.config.productIds])).rows;
   const day=pricingDay(store.config.timeZone,clock());
-  return {slug:store.slug,config:store.config,pricingDay:day,products:products.map(p=>({id:p.id,name:p.name,priceCents:Number(p.price_cents),...productQuote(p,day),available:p.stock>0,unit:p.unit,brand:p.brand,category:p.category,imageUrl:store.config.productImages?.[p.id]||''}))};
+  return {slug:store.slug,config:store.config,pricingDay:day,businessStatus:businessStatus(store.config,clock()),products:products.map(p=>({id:p.id,name:p.name,priceCents:Number(p.price_cents),...productQuote(p,day),available:p.stock>0,unit:p.unit,brand:p.brand,category:p.category,imageUrl:store.config.productImages?.[p.id]||''}))};
  })})));
  app.post('/api/v1/public/stores/:slug/start',starts,route(async req=>{
   const {phone}=z.object({phone:z.string().min(8).max(40)}).strict().parse(req.body),normalized=normalizePhone(phone),token=randomBytes(32).toString('hex');
   return {status:201,data:await publicStorefront(database,req.params.slug,tokenHash(token),async(c,store)=>{
-   if(!store.config.acceptingOrders)throw httpError(409,'A loja não está recebendo pedidos neste momento.','STORE_CLOSED');
+   if(!businessStatus(store.config,clock()).open)throw httpError(409,'A loja não está recebendo pedidos neste momento.','STORE_CLOSED');
    await c.query('INSERT INTO bansir.checkout_sessions(tenant_id,establishment_id,token_hash,phone) VALUES($1,$2,$3,$4)',[store.tenant_id,store.establishment_id,tokenHash(token),normalized]);
    // Never return customer ID, name, document, address or even whether this phone is registered.
    return {token,phone:normalized};
@@ -55,7 +57,7 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date()})
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`order:${session.id}:${data.requestKey}`]);
    const previous=(await c.query('SELECT id,status,total_cents,request_hash FROM bansir.storefront_orders WHERE checkout_session_id=$1 AND request_key=$2',[session.id,data.requestKey])).rows[0];
    if(previous){if(previous.request_hash!==fingerprint)throw httpError(409,'Esta tentativa já foi usada com outros produtos.','IDEMPOTENCY_CONFLICT');return {id:previous.id,status:previous.status,totalCents:Number(previous.total_cents)};}
-   if(!store.config.acceptingOrders)throw httpError(409,'A loja não está recebendo pedidos.','STORE_CLOSED');
+   if(!businessStatus(store.config,clock()).open)throw httpError(409,'A loja não está recebendo pedidos.','STORE_CLOSED');
    if(data.fulfillment==='pickup'&&!store.config.allowPickup)throw httpError(400,'Esta loja trabalha apenas com entrega.','PICKUP_UNAVAILABLE');
    const fixed=store.config.shippingMode==='fixed',zone=data.fulfillment==='delivery'&&!fixed?store.config.zones.find(z=>z.id===data.zoneId):null;
    if(data.fulfillment==='delivery'&&((!fixed&&!zone)||data.deliveryAddress.length<5))throw httpError(400,'Selecione sua região e informe o endereço completo.','DELIVERY_REQUIRED');
@@ -89,6 +91,24 @@ export function mountStorefrontAdmin(app,{scoped}){
   if(data.enabled&&!data.config.productIds.length)throw httpError(400,'Escolha os produtos antes de ativar o link.','EMPTY_CATALOG');
   if(previous)await c.query('UPDATE bansir.storefronts SET slug=$3,enabled=$4,config=$5,updated_at=now() WHERE tenant_id=$1 AND establishment_id=$2',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);
   else await c.query('INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,$3,$4,$5)',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);return {data};
+ }));
+ app.get('/api/v1/storefront/conversations',scoped('sales',true,async(c,req)=>{
+  const page=z.coerce.number().int().min(0).max(10000).default(0).parse(req.query.page),search=z.string().max(200).default('').parse(req.query.search);
+  const result=await c.query(`WITH contacts AS (SELECT phone FROM bansir.meta_messages WHERE message_id NOT LIKE 'attempt:%' UNION SELECT phone FROM bansir.storefront_orders)
+   SELECT p.phone,coalesce(nullif(CASE WHEN customer.name ~ '[[:alpha:]]' THEN customer.name END,''),nullif(CASE WHEN ord.customer_name ~ '[[:alpha:]]' THEN ord.customer_name END,''),p.phone) AS name,
+   last_msg.body AS last_message,last_msg.direction,last_msg.received_at AS last_message_at,inbound.last_inbound,
+   inbound.last_inbound+interval '24 hours' AS window_expires_at,ord.created_at AS last_order_at,
+   (SELECT count(*) FROM bansir.storefront_orders o WHERE o.phone=p.phone) AS order_count,
+   coalesce((SELECT jsonb_agg(x ORDER BY x.received_at) FROM (SELECT direction,body,status,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' ORDER BY received_at DESC LIMIT 20)x),'[]') AS messages,
+   count(*) OVER() AS total
+   FROM contacts p
+   LEFT JOIN LATERAL(SELECT name FROM bansir.customers WHERE active AND bansir.customer_lookup_phone(phone,import_metadata)=p.phone ORDER BY created_at LIMIT 1) customer ON true
+   LEFT JOIN LATERAL(SELECT customer_name,created_at FROM bansir.storefront_orders WHERE phone=p.phone ORDER BY created_at DESC LIMIT 1) ord ON true
+   LEFT JOIN LATERAL(SELECT body,direction,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' ORDER BY received_at DESC LIMIT 1) last_msg ON true
+   LEFT JOIN LATERAL(SELECT max(received_at) AS last_inbound FROM bansir.meta_messages WHERE phone=p.phone AND direction='in') inbound ON true
+   WHERE ($1='' OR p.phone ILIKE '%'||$1||'%' OR customer.name ILIKE '%'||$1||'%' OR ord.customer_name ILIKE '%'||$1||'%')
+   ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[search,page*30]);
+  return {data:result.rows.map(({total,...r})=>r),meta:{total:Number(result.rows[0]?.total||0),serverNow:new Date().toISOString()}};
  }));
  app.get('/api/v1/storefront/orders',scoped('sales',true,async(c,req)=>{
   const q=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','new','accepted','rejected','cancelled']).default('all'),search:z.string().trim().max(200).default('')}).parse(req.query);

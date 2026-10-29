@@ -17,13 +17,14 @@ if(kind==='fiscal'){
  if(!process.env.FISCAL_S3_BUCKET || !process.env.AWS_REGION)throw new Error('Configure bucket privado e região AWS para os documentos fiscais.');
 }
 const queue=createQueue(process.env.WORKER_DATABASE_URL);
-let stopping=false,wake;
+let stopping=false,wake,lastFleetCheck=0;
 const stop=()=>{stopping=true;wake?.();};process.once('SIGTERM',stop);process.once('SIGINT',stop);
 try{
  await queue.ready();console.log(`[worker:${kind}] Iniciado.`);
  while(!stopping){
   let job;
   try{
+   if(kind==='notification'&&Date.now()-lastFleetCheck>=60000){await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');lastFleetCheck=Date.now();}
    if(kind==='fiscal')await queue.pool.query('SELECT bansir.schedule_fiscal_monitors()');
    job=await queue.claim(kind);
    if(!job){await new Promise(resolve=>{const timer=setTimeout(resolve,2000);wake=()=>{clearTimeout(timer);resolve();};});continue;}

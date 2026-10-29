@@ -1,7 +1,8 @@
+import {businessStatus} from './business-hours.js';
 import {unseal,secretContext} from './secrets.js';
 import {normalizePhone} from './phone.js';
 const terminal=code=>Object.assign(new Error(code),{terminal:true});
-export async function processMetaJob(queue,job,{transport=fetch,version=process.env.META_GRAPH_VERSION}={}){
+export async function processMetaJob(queue,job,{transport=fetch,version=process.env.META_GRAPH_VERSION,clock=()=>new Date()}={}){
  if(!/^v\d{1,3}\.\d+$/.test(version||''))throw terminal('META_VERSION_REQUIRED');
  const snapshot=await queue.scope(job,async c=>{
   const allowed=(await c.query('SELECT bansir.meta_sender_active($1,$2,$3,$4) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId||null,job.payload.permission||null])).rows[0].allowed;
@@ -12,6 +13,11 @@ export async function processMetaJob(queue,job,{transport=fetch,version=process.
   const phone=normalizePhone(job.payload.phone),recent=(await c.query("SELECT 1 FROM bansir.meta_messages WHERE direction='in' AND phone=$1 AND received_at>now()-interval '24 hours' LIMIT 1",[phone])).rowCount;
   const optIn=(await c.query('SELECT opt_in FROM bansir.meta_contacts WHERE phone=$1',[phone])).rows[0]?.opt_in;
   if(job.payload.action==='auto-greeting'){
+   const calendar=(await c.query('SELECT bansir.whatsapp_business_calendar() AS config')).rows[0]?.config||{};
+   if(calendar.businessHours?.enabled&&calendar.businessHours.ignoreWhatsappOutsideHours){
+    const inbound=(await c.query("SELECT received_at FROM bansir.meta_messages WHERE direction='in' AND phone=$1 AND message_id=$2 LIMIT 1",[phone,job.dedupe_key?.slice('greeting:'.length)||''])).rows[0];
+    if(!businessStatus(calendar,clock()).open||!inbound||!businessStatus(calendar,new Date(inbound.received_at)).open)return {skipped:true};
+   }
    const cfg=(await c.query('SELECT * FROM bansir.meta_greetings WHERE enabled')).rows[0];
    if(!cfg||cfg.sender_user_id!==job.payload.userId||cfg.message!==job.payload.message||(cfg.recipient_filter&&cfg.recipient_filter!==phone)||optIn===false)throw terminal('META_GREETING_DISABLED');
    if(!recent)throw terminal('META_GREETING_WINDOW_EXPIRED');
@@ -23,7 +29,7 @@ export async function processMetaJob(queue,job,{transport=fetch,version=process.
   await c.query("INSERT INTO bansir.meta_messages(tenant_id,establishment_id,message_id,direction,phone,status,job_id) VALUES($1,$2,$3,'out',$4,'submitting',$5) ON CONFLICT(tenant_id,establishment_id,message_id) DO UPDATE SET status='submitting'",[job.tenant_id,job.establishment_id,'attempt:'+job.id,phone,job.id]);
   return {account:a,phone,message,body:{messaging_product:'whatsapp',recipient_type:'individual',to:phone,...content},token:unseal(a.encrypted_token,secretContext({tenantId:job.tenant_id,establishmentId:job.establishment_id},'whatsapp-meta'))};
  });
- if(snapshot.existing)return;
+ if(snapshot.existing||snapshot.skipped)return snapshot;
  let response;
  try{response=await transport(`https://graph.facebook.com/${version}/${snapshot.account.phone_number_id}/messages`,{method:'POST',headers:{Authorization:'Bearer '+snapshot.token,'Content-Type':'application/json'},body:JSON.stringify(snapshot.body),signal:AbortSignal.timeout(15000),redirect:'error'});}catch{throw terminal('META_SEND_UNCERTAIN');}
  if(response.status===429){await queue.scope(job,c=>c.query("UPDATE bansir.meta_messages SET status='retry_allowed' WHERE message_id=$1",['attempt:'+job.id]));throw new Error('META_RATE_LIMIT');}if(response.status>=500)throw terminal('META_SEND_UNCERTAIN');if(!response.ok)throw terminal('META_SEND_REJECTED');

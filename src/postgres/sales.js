@@ -16,7 +16,7 @@ const viewsAll=member=>manages(member)||member.allowed_routes?.includes('sales-c
 const discounts=member=>manages(member)||member.allowed_routes?.includes('sales-discount');
 const externalPayment=z.object({method:z.enum(['cash','pix','credit_card','debit_card']),confirmed:z.literal(true),reference:text.default(''),receivedCents:cents.optional()}).strict();
 const paymentSchema=z.union([externalPayment,z.object({method:z.literal('pending'),term:z.enum(['delivery','pickup','credit']),dueDate:z.iso.date().optional()}).strict()]);
-const saleInput=z.object({requestKey:uuid,items:z.array(z.object({productId:uuid,quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
+const saleInput=z.object({requestKey:uuid,issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
 const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
@@ -26,7 +26,7 @@ async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT c
 async function cashView(c,cash){if(!cash)return null;const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 GROUP BY p.method`,[cash.id])).rows;
  return {...cash,opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};}
 export async function saleView(c,id){
- const s=(await c.query(`SELECT s.*,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code
+ const s=(await c.query(`SELECT s.*,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
  FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON (x.tenant_id,x.establishment_id,x.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
@@ -64,10 +64,12 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  const cash=await openCash(c,i);
  if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
  if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
+ if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir NFC-e.','SALE_NOT_PAID');}
  let customer={name:input.customerName,document:input.customerDocument,phone:input.customerPhone,address:input.deliveryAddress};
  if(input.customerId){customer=(await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active',[input.customerId])).rows[0];if(!customer)fail('Cliente não encontrado neste estabelecimento.','CUSTOMER_NOT_FOUND',404);}
  const deliverer=input.deliveryEmployeeId?(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active',[input.deliveryEmployeeId])).rows[0]:null;
  if(input.deliveryEmployeeId&&!deliverer)fail('Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND',404);
+ if(input.issueInvoice&&!/^\d{11}$/.test(customer.document||''))fail('Informe o CPF do cliente para emitir a NFC-e.','FISCAL_CUSTOMER_REQUIRED',400);
  const address=input.deliveryAddress||customer.address;
  if(input.deliveryMode==='delivery'&&(!address||!customer.name||!customer.phone))fail('Entrega exige nome, telefone e endereço do cliente.','DELIVERY_CUSTOMER_REQUIRED',400);
  if(input.deliveryMode==='pickup'&&input.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.','INVALID_DELIVERY_FEE',400);
@@ -177,6 +179,12 @@ export function mountSales(app,{scoped}){
 }
 
 function mountSaleFiscal(app,{scoped}){
+ app.patch('/api/v1/sales/:id/customer-document',scoped('sales',false,async(c,req,member)=>{
+  requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
+  const {document}=z.object({document:z.string().regex(/^\d{11}$/)}).strict().parse(req.body);
+  if(sale.document_id||sale.status!=='paid')fail('Somente venda paga e sem nota pode ter o CPF fiscal atualizado.','FISCAL_CUSTOMER_LOCKED');
+  await c.query('UPDATE bansir.sales SET customer_document=$2 WHERE id=$1',[sale.id,document]);return {data:await saleView(c,sale.id)};
+ }));
  app.get('/api/v1/sales/:id/fiscal-draft',scoped('sales',true,async(c,req,member)=>{
   requirePermission(member,'fiscal');await ownedSale(c,req.identity,member,req.params.id);const sale=await saleView(c,req.params.id);
   if(sale.status!=='paid')fail('A venda precisa estar paga antes da emissão fiscal.','SALE_NOT_PAID');

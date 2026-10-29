@@ -81,7 +81,12 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    assert.equal((await admin.query('SELECT enabled FROM bansir.push_devices WHERE tenant_id=$1',[tenant.id])).rows[0].enabled,false);
    await admin.query('UPDATE bansir.establishment_memberships SET active=false WHERE tenant_id=$1 AND establishment_id=$2',[tenant.id,tenant.establishmentId]);
    let calls=0;await deliverNotification(queue,job,{send:async()=>calls++});assert.equal(calls,0);
-   await admin.query('UPDATE bansir.establishment_memberships SET active=true WHERE tenant_id=$1 AND establishment_id=$2',[tenant.id,tenant.establishmentId]);await queue.finish(job,'done');
+   await admin.query('UPDATE bansir.establishment_memberships SET active=true WHERE tenant_id=$1 AND establishment_id=$2',[tenant.id,tenant.establishmentId]);
+   await admin.query('UPDATE bansir.push_devices SET enabled=true WHERE tenant_id=$1',[tenant.id]);
+   await deliverNotification(queue,job,{send:async()=>calls++});assert.equal(calls,1);
+   assert.equal((await send('/notifications/'+job.payload.notificationId,'DELETE')).status,200);
+   await deliverNotification(queue,job,{send:async()=>calls++});assert.equal(calls,1,'Deleted inbox items must not send queued push');
+   await queue.finish(job,'done');
   });
   const draft={det:[{prod:{cProd:'TEST',xProd:'Test gas',NCM:'27111910',CFOP:'5656',qCom:1,vUnCom:100,vProd:100,cEAN:'SEM GTIN',uCom:'UN',cEANTrib:'SEM GTIN',uTrib:'UN',qTrib:1,vUnTrib:100,indTot:1},imposto:{ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}}}],total:{ICMSTot:{vNF:100,vProd:100}},pag:{detPag:[{tPag:'01',vPag:100}]}};
   await t.test('fiscal idempotency, production environment, uncertain sends consult only; S3 retry never re-emits',async()=>{
