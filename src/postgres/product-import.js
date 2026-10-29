@@ -1,11 +1,12 @@
+import {withPdfRequest} from './pdf-reader.js';
 import {z} from 'zod';
 import {readPdfTable,productReportRows} from './pdf-import.js';
 import {productInput,createProduct} from './catalog.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {httpError} from './database.js';
 
-export async function extractProductPdf(base64){
- const file=await readPdfTable(base64,{maxPages:100}),rows=productReportRows(file.pages);
+export async function extractProductPdf(base64,options={}){
+ const file=await readPdfTable(base64,{...options,maxPages:100}),rows=productReportRows(file.pages);
  return {fileHash:file.fileHash,pages:file.pages.length,rows,warning:'Confira nomes cortados, preços e estoque físico. Código/atalho não são EAN; usamos LEGACY-código como identificador editável. Estoques negativos ficam sem saldo e desmarcados. Vazios e setor são preservados como origem; não viram estoque vendável nem operação de vasilhames.'};
 }
 const rowSchema=productInput.extend({sourceCode:z.string().regex(/^\d{1,30}$/),sourceStock:z.number().finite().nullable(),empties:z.number().finite().nullable(),sector:z.string().max(200)});
@@ -29,6 +30,6 @@ export async function importProducts(c,i,body){
  return result;
 }
 export function mountProductImport(app,{scoped}){
- app.post('/api/v1/products/import/pdf',scoped('products',false,async(c,req)=>({data:await extractProductPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64)})));
+ app.post('/api/v1/products/import/pdf',scoped('products',false,async(c,req)=>({data:await withPdfRequest(req,options=>extractProductPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64,options))})));
  app.post('/api/v1/products/import/confirm',scoped('products',false,async(c,req)=>({status:201,data:await importProducts(c,req.identity,req.body)})));
 }

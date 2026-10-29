@@ -1,27 +1,6 @@
-import {createHash} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
 import {httpError} from './database.js';
+export {readPdfTable} from './pdf-reader.js';
 
-// Coordinates retain empty columns; splitting plain text would shift dates into phone/address fields.
-export async function readPdfTable(base64,{maxPages=250}={}){
- if(typeof base64!=='string'||!/^[A-Za-z0-9+/]+={0,2}$/.test(base64))throw httpError(400,'Arquivo PDF inválido.','INVALID_PDF');
- const bytes=Buffer.from(base64,'base64');if(bytes.length>5*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')throw httpError(400,'Envie um PDF de até 5 MB.','INVALID_PDF');
- const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');let task;
- try{
-  task=getDocument({data:new Uint8Array(bytes),standardFontDataUrl:fileURLToPath(new URL('../../node_modules/pdfjs-dist/standard_fonts/',import.meta.url)).replaceAll('\\','/'),isEvalSupported:false,useSystemFonts:false,disableFontFace:true,isOffscreenCanvasSupported:false,useWorkerFetch:false});
-  const doc=await task.promise;if(doc.numPages>maxPages)throw httpError(400,`O PDF deve ter até ${maxPages} páginas.`,'PDF_TOO_LARGE');
-  const pages=[];let count=0;
-  for(let n=1;n<=doc.numPages;n++){
-   const page=await doc.getPage(n),content=await page.getTextContent(),groups=[];
-   for(const item of content.items){if(!item.str?.trim())continue;const y=item.transform[5];let line=groups.find(g=>Math.abs(g.y-y)<2);if(!line){line={y,items:[]};groups.push(line);}line.items.push({x:item.transform[4],text:item.str});}
-   const lines=groups.sort((a,b)=>b.y-a.y).map(g=>({...g,items:g.items.sort((a,b)=>a.x-b.x)}));count+=lines.length;
-   if(count>25000)throw httpError(400,'PDF muito extenso. Divida em arquivos menores.','PDF_TOO_LARGE');
-   pages.push({number:n,width:page.view[2]-page.view[0],lines});page.cleanup();
-  }
-  return {fileHash:createHash('sha256').update(bytes).digest('hex'),pages};
- }catch(e){if(e.status)throw e;throw httpError(400,'Não foi possível ler o PDF. Use texto selecionável, sem senha.','PDF_READ_FAILED');}
- finally{if(task)await task.destroy();}
-}
 export const pdfLine=line=>line.items.map(i=>i.text).join('\t');
 export const pdfCell=(line,start,end)=>line.items.filter(i=>i.x>=start&&i.x<end).map(i=>i.text).join(' ').trim();
 export const fold=value=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();

@@ -33,6 +33,9 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    assert.equal(normalizePhone('(65) 99999-1111'),'5565999991111');assert.equal(normalizePhone('+55 65 99999-1111'),'5565999991111');assert.throws(()=>normalizePhone('0000'));
    assert.throws(()=>rowsFromPdfLines(Array(1001).fill('Cliente teste\t(65) 99999-1111\tRua Teste')),e=>e.code==='PDF_TOO_LARGE');
    const pdf=await clientPdf();const preview=await send('/customers/import/pdf','POST',{base64:pdf.toString('base64')});assert.equal(preview.status,200,JSON.stringify(preview.body));imported=preview.body.data;
+   const previews=await Promise.all([1,2].map(()=>fetch(base+'/customers/import/pdf',{method:'POST',headers:{Authorization:'Bearer '+s.token,'Content-Type':'application/json'},body:JSON.stringify({base64:pdf.toString('base64')})})));
+   assert.deepEqual(previews.map(r=>r.status).sort(),[200,429]);assert.equal(previews.find(r=>r.status===429).headers.get('retry-after'),'5');
+   for(const response of previews)await response.arrayBuffer();
    assert.equal(imported.rows.length,2,JSON.stringify(imported));assert.equal(imported.rows[0].name,'Maria de Teste');assert.equal(imported.rows[0].phone,'5565999991111');assert.match(imported.rows[0].address,/Rua Um/);
    assert.equal((await send('/customers')).body.data.length,0);
    const body={requestKey:randomUUID(),fileHash:imported.fileHash,mode:'skip-existing',rows:imported.rows.map(({name,phone,document,address})=>({name,phone,document,address}))};

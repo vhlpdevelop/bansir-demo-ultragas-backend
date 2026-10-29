@@ -18,4 +18,5 @@ migration-private/
 *.pem
 *.key
 output/
+scripts/testing/
 deploy/*.env

@@ -1,3 +1,4 @@
+import {withPdfRequest} from './pdf-reader.js';
 import {z} from 'zod';
 import {httpError} from './database.js';
 import {normalizePhone,customersForPhone} from './phone.js';
@@ -31,8 +32,8 @@ export function rowsFromPdfLines(lines){
  }
  return rows;
 }
-export async function extractCustomerPdf(base64){
- const file=await readPdfTable(base64),lines=file.pages.flatMap(p=>p.lines.map(pdfLine));
+export async function extractCustomerPdf(base64,options={}){
+ const file=await readPdfTable(base64,options),lines=file.pages.flatMap(p=>p.lines.map(pdfLine));
  const reportRows=customerReportRows(file.pages,normalizePhone),rows=reportRows??rowsFromPdfLines(lines);
  return {fileHash:file.fileHash,pages:file.pages.length,layout:reportRows?'jasley-clientes':'generic',repeatedLines:reportRows?rows.reduce((n,r)=>n+(r.sourceMetadata.occurrences||1)-1,0):0,rows,textPreview:lines.slice(0,20).join('\n'),warning:reportRows?'Relatório por colunas: confira telefones antigos, duplicados e endereços incompletos. Datas são preservadas como origem, sem validar sua veracidade. Consumidor final e telefones duplicados ficam desmarcados.':'Confira cada linha antes de importar. PDFs sem texto precisam de OCR.'};
 }
@@ -83,7 +84,7 @@ export function mountCustomers(app,{scoped}){
   if(data.phone&&data.active){const found=await customersForPhone(c,data.phone);if(found.some(row=>row.id!==id))throw httpError(409,'Telefone já vinculado a outro cliente ativo.','CUSTOMER_EXISTS');}
   const row=(await c.query('UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,active=$6,email=$7,birth_date=$8,notes=$9 WHERE id=$1 RETURNING id,name,phone,document,address,active',[id,data.name,data.phone,data.document,data.address,data.active,data.email,data.birthDate,data.notes])).rows[0];if(!row)throw httpError(404,'Cliente não encontrado.','NOT_FOUND');return {data:row};
  }));
- app.post('/api/v1/customers/import/pdf',scoped('settings',false,async(c,req)=>({data:await extractCustomerPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64)})));
+ app.post('/api/v1/customers/import/pdf',scoped('settings',false,async(c,req)=>({data:await withPdfRequest(req,options=>extractCustomerPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64,options))})));
  app.post('/api/v1/customers/import/confirm',scoped('settings',false,async(c,req)=>({status:201,data:await importCustomers(c,req.identity,req.body)})));
  app.get('/api/v1/pdv/deliverers',scoped('sales',true,async c=>({data:(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE active ORDER BY name')).rows})));
  app.get('/api/v1/deliverers',scoped('sales-manage',true,async c=>({data:(await c.query('SELECT id,name,phone,active,employee_id FROM bansir.deliverers ORDER BY name')).rows})));

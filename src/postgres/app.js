@@ -191,6 +191,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
     if (error.code === '23505') return res.status(409).json({ success: false, code: 'CONFLICT', message: 'Já existe um registro com este identificador nesta empresa.' });
     if (error.code === '23503') return res.status(409).json({ success: false, code: 'INVALID_REFERENCE', message: 'O vínculo informado não pertence a esta empresa ou não está disponível.' });
     if (error.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'Requisição muito grande.' });
+    if(error.code==='PDF_BUSY')res.set('Retry-After','5');
     const known = Number.isInteger(error.status) && error.status >= 400 && error.status < 500;
     res.status(known ? error.status : 503).json({ success: false, code: known ? error.code : 'SERVICE_UNAVAILABLE', message: known ? error.message : 'Não foi possível concluir a operação.' });
   });

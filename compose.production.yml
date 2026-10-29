@@ -17,11 +17,16 @@ x-service: &service
 services:
   api:
     <<: *service
+    # Bound the API process and its short-lived PDF parsers on the 4 GB host.
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 128
     env_file: [deploy/api.env]
     environment:
       NODE_ENV: production
       DATABASE_ENGINE: postgres
       PORT: 5000
+      PDF_MAX_CONCURRENT: 1
     ports: [127.0.0.1:5000:5000]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:5000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
