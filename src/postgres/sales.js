@@ -7,6 +7,7 @@ import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
 import {pixCode} from './pix.js';
 import {createCustomer} from './customers.js';
 import {queueWhatsapp} from './whatsapp.js';
+import {requireTerminal,assertCashTerminal} from './pdv-terminals.js';
 
 const cents=z.number().int().min(0).max(1000000000),text=z.string().trim().max(200),uuid=z.uuid();
 const hash=fiscalDraftHash;
@@ -20,7 +21,7 @@ const saleInput=z.object({requestKey:uuid,issueInvoice:z.boolean().optional(),it
 const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
-async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');return row;}
+async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');assertCashTerminal(row,await requireTerminal(c,i));return row;}
 // Shared by sale details and printable receipts: unit RLS alone does not
 // authorize an operator to read another operator's sale in the same unit.
 export async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
@@ -28,14 +29,16 @@ async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT c
 async function cashView(c,cash){if(!cash)return null;const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 GROUP BY p.method`,[cash.id])).rows;
  return {...cash,opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};}
 export async function saleView(c,id){
- const s=(await c.query(`SELECT s.*,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
- FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON (x.tenant_id,x.establishment_id,x.sale_id)=(s.tenant_id,s.establishment_id,s.id)
+ const s=(await c.query(`SELECT s.*,cash.terminal_id,cash.terminal_name,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
+ FROM bansir.sales s JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(s.tenant_id,s.establishment_id,s.cash_session_id)
+ LEFT JOIN bansir.sale_cancellations x ON (x.tenant_id,x.establishment_id,x.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
  if(!s)return null;
  for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
  s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
- s.payments=(await c.query('SELECT id,method,amount_cents,received_cents,reference,installments,created_at FROM bansir.sale_payments WHERE sale_id=$1 ORDER BY created_at',[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
+ s.payments=(await c.query(`SELECT p.id,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
+  FROM bansir.sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
  s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
  s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=`V-${s.id.slice(0,8).toUpperCase()}`;return s;
 }
@@ -114,14 +117,17 @@ export function mountSales(app,{scoped}){
  app.get('/api/v1/pdv/cash',scoped('sales',true,async(c,req)=>({data:await cashView(c,await lockCash(c,req.identity))})));
  app.post('/api/v1/pdv/cash/open',scoped('sales',false,async(c,req)=>{
   const {openingCents}=z.object({openingCents:cents}).strict().parse(req.body),i=req.identity;
-  const current=await lockCash(c,i);if(current){if(Number(current.opening_cents)!==openingCents)fail('Já existe caixa aberto com outro valor inicial.','CASH_ALREADY_OPEN');return {data:await cashView(c,current)};}
-  const {rows:[cash]}=await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents) VALUES($1,$2,$3,$4) RETURNING *',[i.tenantId,i.establishmentId,i.userId,openingCents]);return {status:201,data:await cashView(c,cash)};
+  const current=await lockCash(c,i),terminal=await requireTerminal(c,i);if(current){assertCashTerminal(current,terminal);if(Number(current.opening_cents)!==openingCents)fail('Já existe caixa aberto com outro valor inicial.','CASH_ALREADY_OPEN');return {data:await cashView(c,current)};}
+  if(terminal){await lock(c,`${unitKey(i)}:terminal:${terminal.id}`);if((await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[terminal.id])).rowCount)fail('Este terminal já possui um caixa aberto por outro operador.','TERMINAL_BUSY');}
+  const {rows:[cash]}=await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents,terminal_id,terminal_name) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[i.tenantId,i.establishmentId,i.userId,openingCents,terminal?.id||null,terminal?.name||null]);return {status:201,data:await cashView(c,cash)};
  }));
  app.get('/api/v1/pdv/cash/history',scoped('sales',true,async(c,req)=>({data:await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30',[req.identity.userId])).rows.map(cash=>cashView(c,cash)))})));
  app.post('/api/v1/pdv/cash/:id/close',scoped('sales',false,async(c,req)=>{
   const input=z.object({countedCents:cents,note:z.string().trim().max(1000).default('')}).strict().parse(req.body),i=req.identity;
   await lockCash(c,i);const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[uuid.parse(req.params.id),i.userId])).rows[0];if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
   if(cash.closed_at){if(Number(cash.counted_cents)!==input.countedCents||cash.closing_note!==input.note)fail('Caixa já fechado com outra conferência.','CASH_ALREADY_CLOSED');return {data:await cashView(c,cash)};}
+  // Legacy shifts can always be closed; never invent or reassign their origin.
+  if(cash.terminal_id)assertCashTerminal(cash,await requireTerminal(c,i));
   const expected=await cashBalance(c,cash),difference=input.countedCents-expected;
   if(difference&&!input.note)fail('Informe o motivo da diferença de caixa.','CASH_DIFFERENCE_NOTE',400);
   const closed=(await c.query('UPDATE bansir.cash_sessions SET closed_at=now(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *',[cash.id,input.countedCents,expected,difference,input.note])).rows[0];return {data:await cashView(c,closed)};
@@ -163,6 +169,7 @@ export function mountSales(app,{scoped}){
   const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
   if(sale.cancelled_at)return {data:sale};if(sale.document_id)fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
   if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
+  assertCashTerminal(cash,await requireTerminal(c,i));
   if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);
   const cashRefund=sale.payments.filter(p=>p.method==='cash').reduce((sum,p)=>sum+p.amount_cents,0);if(cashRefund>await cashBalance(c,cash))fail('Saldo de caixa insuficiente para devolver o dinheiro.','INSUFFICIENT_CASH');
   await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference) VALUES($1,$2,$3,$4,$5,$6)',[i.tenantId,i.establishmentId,sale.id,i.userId,input.reason,input.refundReference]);

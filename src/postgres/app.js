@@ -1,4 +1,5 @@
 import {mountBridge} from './bridge.js';
+import {mountPdvTerminals} from './pdv-terminals.js';
 import {mountPlatformAdmin} from './platform-admin.js';
 import {mountProductImages} from './product-images.js';
 import {requireFeature,routeFeature} from './features.js';
@@ -42,7 +43,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use(cors({ origin(origin, cb) {
     const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
     cb(null, !origin || allowed.includes(origin) || (nodeEnv !== 'production' && local));
-  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token'], exposedHeaders: ['Content-Disposition'] }));
+  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token','X-Pdv-Terminal'], exposedHeaders: ['Content-Disposition'] }));
   mountMetaWebhook(app,{database});
   const uploads=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
@@ -77,10 +78,12 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
   const scoped = (module, read, fn) => route(async req => database.transaction(req.identity, async (client, member) => {
     requirePermission(member, module, read);
+    req.identity.pdvTerminalToken=req.get('X-Pdv-Terminal');
     return fn(client, req,member);
   }));
 
   mountProductImages(app,{scoped,database,imageStorage});
+  mountPdvTerminals(app,{scoped});
   mountAccess(app,{scoped});
   mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
