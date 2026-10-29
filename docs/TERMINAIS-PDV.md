@@ -4,7 +4,7 @@ O terminal identifica um posto de atendimento, como Terminal 1 ou Terminal 2. É
 
 ## Ativação
 
-No PDV ou em Configurações → Equipamentos, um administrador cadastra o nome e gera um código de ativação. O código é aleatório, válido por 10 minutos, de uso único e armazenado apenas como hash no servidor. Um operador autenticado com acesso ao PDV informa esse código no navegador do posto. A API emite um vínculo separado da sessão do usuário; o banco guarda somente o hash. O navegador mantém o vínculo por empresa/unidade, mesmo após logout; cada operador continua usando sua própria conta.
+Em **Configurações → Terminais**, um administrador cadastra o nome e gera um código de ativação. O PDV mostra apenas identificação compacta e um atalho para essa aba. O código é aleatório, válido por 10 minutos, de uso único e armazenado apenas como hash no servidor. Um operador autenticado com acesso ao PDV informa esse código em Configurações → Terminais no navegador do posto. A API emite um vínculo separado da sessão do usuário; o banco guarda somente o hash. O navegador mantém o vínculo por empresa/unidade, mesmo após logout; cada operador continua usando sua própria conta.
 
 Cada terminal tem um único vínculo vigente. Nova ativação revoga o vínculo anterior. Não é uma identificação física ou atestação de hardware: o vínculo identifica o perfil do navegador. Não compartilhar ou copiar seu armazenamento para outros computadores. Ao limpar o armazenamento do site, é necessário ativar novamente. O vínculo não concede acesso à API sem login nem amplia as permissões do usuário.
 
