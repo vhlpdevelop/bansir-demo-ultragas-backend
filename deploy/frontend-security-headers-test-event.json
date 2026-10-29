@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "context": {
+    "eventType": "viewer-response"
+  },
+  "viewer": {
+    "ip": "198.51.100.10"
+  },
+  "request": {
+    "method": "GET",
+    "uri": "/",
+    "querystring": {},
+    "headers": {
+      "host": {"value": "gas.bansir.com.br"}
+    },
+    "cookies": {}
+  },
+  "response": {
+    "statusCode": 200,
+    "statusDescription": "OK",
+    "headers": {
+      "content-type": {"value": "text/html; charset=utf-8"},
+      "cache-control": {"value": "public, max-age=0, must-revalidate"}
+    },
+    "cookies": {}
+  }
+}
