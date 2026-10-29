@@ -1,3 +1,4 @@
+import {mountBridge} from './bridge.js';
 import {mountAccess} from './access.js';
 import {mountMetaOnboarding} from './meta-onboarding.js';
 import {mountManagement} from './management.js';
@@ -25,7 +26,7 @@ import {mountWhatsapp} from './whatsapp.js';
 import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
-export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports'];
+export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
 export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -74,6 +75,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   }));
 
   mountAccess(app,{scoped});
+  mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);
     return { data: row ? { storeName: row.store_name, pixKey: row.pix_key, documentId: row.document_id, address: row.address, merchantCity: row.merchant_city } : {} };
