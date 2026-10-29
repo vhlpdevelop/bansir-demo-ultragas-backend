@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private product photos for Bansir Gas
+Parameters:
+  Ec2RoleName:
+    Type: String
+    Default: bansir-gas-1-role
+Resources:
+  ProductImages:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub bansir-gas-product-images-prod-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+  ImagesAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: BansirProductImages
+      Roles: [!Ref Ec2RoleName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: ['s3:PutObject', 's3:GetObject']
+            Resource: !Sub '${ProductImages.Arn}/products/*'
+Outputs:
+  BucketName:
+    Value: !Ref ProductImages

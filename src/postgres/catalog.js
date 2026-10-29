@@ -21,7 +21,7 @@ export const presentProduct = row => ({ _id: row.id, id: row.id, name: row.name,
   price: Number(row.price_cents) / 100, costPrice: Number(row.cost_cents) / 100, stock: row.stock,
   category: row.category, sku: row.sku, unit: row.unit, brand: row.brand, specs: row.specs, ncm: row.ncm,
   fulfillmentPricing:row.fulfillment_pricing||{},gasDoPovo:!!row.gas_do_povo,gasDoPovoDelivery:!!row.gas_do_povo_delivery,
-  active: row.active, createdAt: row.created_at, updatedAt: row.updated_at });
+  imageId:row.image_id||null, active: row.active, createdAt: row.created_at, updatedAt: row.updated_at });
 export function catalogView(row,member) {
   const result=presentProduct(row);
   const manages=['admin','superadmin'].includes(member.role) || member.allowed_routes?.some(r=>r==='products' || r.startsWith('products-'));

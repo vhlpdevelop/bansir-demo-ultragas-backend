@@ -22,7 +22,9 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
   const unit2=await createEstablishment(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:tenant.slug,name:'Unit 2',memberships:[{userId:user.id,role:'operador',allowedRoutes:['sales']}]});
   const operator=randomUUID(),reader=randomUUID();await admin.query("INSERT INTO bansir.users(id,email,name,password_hash) VALUES($1,'pdv-operator@test.invalid','Operator',$3),($2,'pdv-reader@test.invalid','Reader',$3)",[operator,reader,user.password_hash]);
   for(const [id,routes]of [[operator,['sales']],[reader,['products']]]){await admin.query("INSERT INTO bansir.tenant_memberships(tenant_id,user_id,role,allowed_routes) VALUES($1,$2,'operador',$3)",[tenant.id,id,routes]);await admin.query("INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes) VALUES($1,$2,$3,'operador',$4)",[tenant.id,tenant.establishmentId,id,routes]);}
-  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test'}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`;
+  const images=new Map();process.env.PRODUCT_IMAGES_BUCKET='test-images';
+  const imageStorage={send:async command=>{const x=command.input;if(command.constructor.name==='PutObjectCommand'){images.set(x.Key,Buffer.from(x.Body));return {};}return {Body:{transformToByteArray:async()=>images.get(x.Key)}};}};
+  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',imageStorage}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api/v1`;
   const auth=createAuth(db,{jwtSecret:secret}),selection=await auth.login({email:'pdv@test.invalid',password});const session=await auth.select({selectionToken:selection.selectionToken,tenantId:tenant.id,establishmentId:tenant.establishmentId});
   const ticket2=await auth.login({email:'pdv@test.invalid',password});const session2=await auth.select({selectionToken:ticket2.selectionToken,tenantId:tenant.id,establishmentId:unit2.establishmentId});
   const operatorSession=await auth.login({email:'pdv-operator@test.invalid',password}),readerSession=await auth.login({email:'pdv-reader@test.invalid',password}),foreignSession=await auth.login({email:'pdv-other@test.invalid',password});
@@ -167,6 +169,19 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const retry=await send('/sales','POST',body);assert.equal(retry.body.data.id,sale.id);assert.equal((await send('/pdv/cash')).body.data.expected_cents,before+5000);
    const pag=saleFiscalDraft(sale).pag;assert.equal(pag.vTroco,10);assert.equal(pag.detPag.reduce((n,p)=>n+p.vPag,0)-pag.vTroco,100);
    const card=pag.detPag.find(p=>p.tPag==='03');assert.equal(card.indPag,1);assert.deepEqual(card.card,{tpIntegra:2});
+  });
+  await t.test('product image upload enforces RBAC, image identifiers and unit isolation',async()=>{
+   const p=(await send('/products','POST',{name:'Photo test',barcode:'PHOTO',price:10,stock:1})).body.data;
+   const bytes=Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082','hex');
+   const put=token=>fetch(base+'/products/'+p.id+'/image',{method:'PUT',headers:{Authorization:'Bearer '+token,'Content-Type':'image/png'},body:bytes});
+   assert.equal((await put(operatorSession.token)).status,403);
+   assert.equal((await put(session2.token)).status,403);assert.equal((await put(foreignSession.token)).status,404);
+   const uploaded=await put(session.token);assert.equal(uploaded.status,200);assert.match((await uploaded.json()).data.imageId,/^[a-f0-9-]{36}$/);
+   assert.equal(images.size,1);assert.ok([...images.keys()][0].startsWith(`products/${tenant.id}/${tenant.establishmentId}/${p.id}/`));
+   const get=token=>fetch(base+'/products/'+p.id+'/image',{headers:{Authorization:'Bearer '+token}});
+   assert.equal((await get(foreignSession.token)).status,404);
+   const r=await get(session.token);assert.equal(r.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await r.arrayBuffer()),bytes);
+   assert.equal((await send('/products','POST',{name:'Denied',barcode:'DENIED',price:1},operatorSession.token)).status,403);
   });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });

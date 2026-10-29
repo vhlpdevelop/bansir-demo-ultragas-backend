@@ -1,5 +1,6 @@
 import {mountBridge} from './bridge.js';
 import {mountPlatformAdmin} from './platform-admin.js';
+import {mountProductImages} from './product-images.js';
 import {requireFeature,routeFeature} from './features.js';
 import {mountAccess} from './access.js';
 import {mountMetaOnboarding} from './meta-onboarding.js';
@@ -29,7 +30,7 @@ import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -47,6 +48,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
   app.use('/api/v1/customers/import',uploads,auth.protect,express.json({limit:'8mb'}));
   app.use('/api/v1/products/import',uploads,auth.protect,express.json({limit:'8mb'}));
+  app.use('/api/v1/products/:id/image',(req,res,next)=>req.method==='PUT'?uploads(req,res,next):next(),auth.protect,express.raw({type:['image/jpeg','image/png','image/webp'],limit:'2mb'}));
   app.use(express.json({ limit: '500kb' }));
   const route = fn => async (req, res, next) => {
     try {
@@ -78,6 +80,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
     return fn(client, req,member);
   }));
 
+  mountProductImages(app,{scoped,database,imageStorage});
   mountAccess(app,{scoped});
   mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
