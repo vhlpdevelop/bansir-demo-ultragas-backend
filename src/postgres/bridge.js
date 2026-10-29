@@ -5,7 +5,7 @@ import {httpError} from './database.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const same=(c,i)=>c.tenant_id===i.tenantId&&c.establishment_id===i.establishmentId;
 const denied=()=>{throw httpError(403,'Somente administrador pode gerenciar equipamentos.','FORBIDDEN');};
-const terminal=z.object({name:z.string().trim().min(1).max(80),provider:z.enum(['pagbank','caixa','itau_rede','sicredi','mercado_pago','other']),model:z.string().trim().min(1).max(100),connectionType:z.enum(['usb','network','bluetooth','tef','cloud']),deviceIdentifier:z.string().max(160).default(''),serialNumber:z.string().max(100).default(''),partNumber:z.string().max(100).default(''),enabled:z.boolean().default(true)}).strict();
+const terminal=z.object({name:z.string().trim().min(1).max(80),provider:z.enum(['cielo','pagbank','caixa','itau_rede','sicredi','mercado_pago','other']),model:z.string().trim().min(1).max(100),connectionType:z.enum(['usb','network','bluetooth','tef','cloud']),deviceIdentifier:z.string().max(160).default(''),serialNumber:z.string().max(100).default(''),partNumber:z.string().max(100).default(''),enabled:z.boolean().default(true)}).strict();
 export function createBridge(database){
  const sockets=new Map(),pending=new Map(),wss=new WebSocketServer({noServer:true,maxPayload:16384});let attached=false,upgrades=0;
  const send=(socket,data)=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(data));};
