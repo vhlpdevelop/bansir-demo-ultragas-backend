@@ -1,3 +1,4 @@
+import {readProductImage} from './product-images.js';
 import {businessStatus} from './business-hours.js';
 import {requireFeature} from './features.js';
 import {z} from 'zod';
@@ -34,14 +35,23 @@ async function checkout(c){const row=(await c.query('SELECT id,phone FROM bansir
 const checkoutToken=req=>{const value=req.get('X-Checkout-Token')||'';if(!/^[a-f0-9]{64}$/.test(value))throw httpError(401,'Informe seu celular para iniciar o pedido.','CHECKOUT_REQUIRED');return tokenHash(value);};
 const publicOrderInput=z.object({requestKey:z.uuid(),customerName:text.min(2).max(200),deliveryAddress:text.max(1000).default(''),fulfillment:z.enum(['pickup','delivery']),zoneId:text.max(60).default(''),expectedShippingCents:money,items:z.array(z.object({productId:z.uuid(),quantity:z.number().int().min(1).max(100),expectedUnitPriceCents:money.refine(n=>n>0)}).strict()).min(1).max(50)}).strict();
 
-export function mountPublicStorefront(app,{database,route,clock=()=>new Date()}){
+export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),imageStorage}){
  const reads=rateLimit({windowMs:60000,limit:120,standardHeaders:'draft-7',legacyHeaders:false});
  const starts=rateLimit({windowMs:3600000,limit:20,standardHeaders:'draft-7',legacyHeaders:false});
  const writes=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
+ app.get('/api/v1/public/stores/:slug/products/:id/image',reads,async(req,res,next)=>{
+  try{const result=await publicStorefront(database,req.params.slug,null,async(c,store)=>{
+   const id=z.uuid().parse(req.params.id);
+   if(!store.config.productIds?.includes(id))throw httpError(404,'Imagem não encontrada.','NOT_FOUND');
+   const p=(await c.query('SELECT image_id,image_key,image_mime FROM bansir.products WHERE id=$1 AND active',[id])).rows[0];
+   if(!p?.image_key)throw httpError(404,'Imagem não encontrada.','NOT_FOUND');
+   return readProductImage(p,imageStorage);
+  });res.set({'Content-Type':result.mime,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}).send(result.body);}catch(e){next(e);}
+ });
  app.get('/api/v1/public/stores/:slug',reads,route(async req=>({data:await publicStorefront(database,req.params.slug,null,async(c,store)=>{
-  const products=(await c.query('SELECT id,name,price_cents,fulfillment_pricing,gas_do_povo,gas_do_povo_delivery,stock,unit,brand,category FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY name',[store.config.productIds])).rows;
+  const products=(await c.query('SELECT id,name,price_cents,fulfillment_pricing,gas_do_povo,gas_do_povo_delivery,stock,unit,brand,category,image_id FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY name',[store.config.productIds])).rows;
   const day=pricingDay(store.config.timeZone,clock());
-  return {slug:store.slug,config:store.config,pricingDay:day,businessStatus:businessStatus(store.config,clock()),products:products.map(p=>({id:p.id,name:p.name,priceCents:Number(p.price_cents),...productQuote(p,day),available:p.stock>0,unit:p.unit,brand:p.brand,category:p.category,imageUrl:store.config.productImages?.[p.id]||''}))};
+  return {slug:store.slug,config:store.config,pricingDay:day,businessStatus:businessStatus(store.config,clock()),products:products.map(p=>({id:p.id,name:p.name,priceCents:Number(p.price_cents),...productQuote(p,day),available:p.stock>0,unit:p.unit,brand:p.brand,category:p.category,imageId:p.image_id||null,imageUrl:p.image_id?`/api/v1/public/stores/${encodeURIComponent(store.slug)}/products/${p.id}/image`:''}))};
  })})));
  app.post('/api/v1/public/stores/:slug/start',starts,route(async req=>{
   const {phone}=z.object({phone:z.string().min(8).max(40)}).strict().parse(req.body),normalized=normalizePhone(phone),token=randomBytes(32).toString('hex');

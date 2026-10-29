@@ -2,6 +2,12 @@ import {randomUUID} from 'node:crypto';
 import {S3Client,PutObjectCommand,GetObjectCommand} from '@aws-sdk/client-s3';
 import {httpError} from './database.js';
 import {requirePermission,resourceId} from './catalog.js';
+const imageClient=new S3Client({region:process.env.AWS_REGION||'sa-east-1',requestHandler:{requestTimeout:20000,connectionTimeout:5000}});
+export async function readProductImage(product,imageStorage=imageClient){
+ if(!process.env.PRODUCT_IMAGES_BUCKET)throw httpError(409,'Armazenamento de imagens não configurado.','IMAGE_STORAGE_PENDING');
+ const object=await imageStorage.send(new GetObjectCommand({Bucket:process.env.PRODUCT_IMAGES_BUCKET,Key:product.image_key}));
+ return {mime:product.image_mime,body:Buffer.from(await object.Body.transformToByteArray())};
+}
 export function imageType(bytes){
  if(!Buffer.isBuffer(bytes)||bytes.length<12||bytes.length>2*1024*1024)throw httpError(400,'Envie uma imagem JPG, PNG ou WebP de até 2 MB.','INVALID_IMAGE');
  if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return ['image/png','png'];

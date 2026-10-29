@@ -66,7 +66,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => ({ data: await auth.select(req.body) })));
   app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.refresh(req.body)})));
   mountPlatformAdmin(app,{database,route});
-  mountPublicStorefront(app,{database,route,clock});
+  mountPublicStorefront(app,{database,route,clock,imageStorage});
   app.use('/api/v1', auth.protect);
   app.use(async(req,res,next)=>{try{const feature=routeFeature(req.path);if(feature)await database.transaction(req.identity,async c=>{await requireFeature(c,feature);if(req.path==='/api/v1/storefront/conversations')await requireFeature(c,'whatsapp');});next();}catch(e){next(e);}});
   app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));

@@ -181,6 +181,13 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const get=token=>fetch(base+'/products/'+p.id+'/image',{headers:{Authorization:'Bearer '+token}});
    assert.equal((await get(foreignSession.token)).status,404);
    const r=await get(session.token);assert.equal(r.headers.get('content-type'),'image/png');assert.deepEqual(Buffer.from(await r.arrayBuffer()),bytes);
+   await admin.query('INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,$3,true,$4) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET enabled=true,config=excluded.config',[tenant.id,tenant.establishmentId,'photo-public',{productIds:[p.id],timeZone:'America/Cuiaba'}]);
+   const catalog=await fetch(base+'/public/stores/photo-public');assert.equal(catalog.status,200);assert.ok((await catalog.json()).data.products[0].imageId);
+   const publicPhoto=await fetch(base+'/public/stores/photo-public/products/'+p.id+'/image');assert.equal(publicPhoto.status,200);assert.deepEqual(Buffer.from(await publicPhoto.arrayBuffer()),bytes);
+   await admin.query('UPDATE bansir.storefronts SET config=$2 WHERE tenant_id=$1',[tenant.id,{productIds:[]}]);
+   assert.equal((await fetch(base+'/public/stores/photo-public/products/'+p.id+'/image')).status,404);
+   await admin.query('UPDATE bansir.storefronts SET enabled=false WHERE tenant_id=$1',[tenant.id]);
+   assert.equal((await fetch(base+'/public/stores/photo-public/products/'+p.id+'/image')).status,404);
    assert.equal((await send('/products','POST',{name:'Denied',barcode:'DENIED',price:1},operatorSession.token)).status,403);
   });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
