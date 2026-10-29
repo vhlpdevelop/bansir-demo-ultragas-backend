@@ -98,7 +98,7 @@ export async function createFiscalDocument(c,identity,body) {
   const s=cfg.data,draft=input.draft;
   if(s.environment===1 && process.env.FISCAL_PRODUCTION_ENABLED!=='true')throw httpError(409,'A emissão de produção ainda não foi habilitada neste ambiente.','PRODUCTION_DISABLED');
   const cents=n=>Math.round(n*100),total=draft.det.reduce((n,d)=>n+cents(d.prod.vProd),0);
-  if(total!==cents(draft.total.ICMSTot.vProd) || draft.det.some(d=>cents(d.prod.qCom*d.prod.vUnCom)!==cents(d.prod.vProd)) || draft.pag.detPag.reduce((n,p)=>n+cents(p.vPag),0)!==cents(draft.total.ICMSTot.vNF))throw httpError(400,'Valores dos itens, totais ou pagamentos inconsistentes.','FISCAL_TOTAL_MISMATCH');
+  if(total!==cents(draft.total.ICMSTot.vProd) || draft.det.some(d=>cents(d.prod.qCom*d.prod.vUnCom)!==cents(d.prod.vProd)) || draft.pag.detPag.reduce((n,p)=>n+cents(p.vPag),0)-cents(draft.pag.vTroco||0)!==cents(draft.total.ICMSTot.vNF))throw httpError(400,'Valores dos itens, totais ou pagamentos inconsistentes.','FISCAL_TOTAL_MISMATCH');
   const {rows:[counter]}=await c.query('UPDATE bansir.fiscal_numbering SET last_number=last_number+1 WHERE environment=$1 AND series=$2 AND last_number<999999999 RETURNING last_number',[s.environment,s.series]);
   if(!counter)throw httpError(409,'Numeração fiscal indisponível.','NUMBERING_UNAVAILABLE');
   // XML schema requires a numeric UTC offset; access-key month uses the issuer's same local timestamp.

@@ -1,3 +1,4 @@
+import {saleFiscalDraft} from '../src/postgres/sales.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
@@ -40,7 +41,7 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send('/sales','GET',undefined,readerSession.token)).status,403);
    assert.equal((await send('/sales','POST',order({invoiceIssued:true}))).status,400);
    assert.equal((await send('/sales','POST',order({payment:{method:'pix',confirmed:false,reference:'fake'}}))).status,400);
-   assert.equal((await send('/sales','POST',order({payment:{method:'credit_card',confirmed:true}}))).status,400);
+   assert.equal((await send('/sales','POST',order({payment:{method:'pix',confirmed:true}}))).status,400);
    assert.equal((await send('/sales','POST',order({payment:{method:'cash',confirmed:true,receivedCents:100}}))).status,400);
    assert.equal((await send('/sales','POST',order({items:[{productId:product.id,quantity:1,expectedUnitPriceCents:100}]}))).status,409);
    assert.equal((await send('/sales','POST',order({tenantId:foreign.id}))).status,400);
@@ -148,6 +149,24 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${b.id}`,'GET',undefined,operatorSession.token)).body.data.paid_cents,0);
    assert.equal((await send(`/sales/${a.id}/cancel`,'POST',{reason:'No management permission',refundConfirmed:true},operatorSession.token)).status,403);
    assert.equal((await send(`/sales/${a.id}`,'GET',undefined,session2.token)).status,404);
+  });
+  await t.test('manual cards, exact split, cash shortfall, installments and fiscal change',async()=>{
+   const p=(await send('/products','POST',{name:'Split test',barcode:'SPLIT',price:100,stock:20})).body.data;
+   const input=payment=>order({items:[{productId:p.id,quantity:1,expectedUnitPriceCents:10000}],payment});
+   const before=(await send('/pdv/cash')).body.data.expected_cents;
+   for(const method of ['credit_card','debit_card']){
+    const r=await send('/sales','POST',input({method,confirmed:true,...(method==='credit_card'?{installments:3}:{})}));
+    assert.equal(r.status,201,JSON.stringify(r));assert.equal(r.body.data.payments[0].installments,method==='credit_card'?3:1);
+   }
+   assert.equal((await send('/pdv/cash')).body.data.expected_cents,before);
+   assert.equal((await send('/sales','POST',input({method:'cash',confirmed:true,receivedCents:9900}))).status,400);
+   const parts=[{method:'cash',confirmed:true,amountCents:5000,receivedCents:6000},{method:'credit_card',confirmed:true,amountCents:5000,installments:3}];
+   assert.equal((await send('/sales','POST',input({method:'split',parts:[{...parts[0],amountCents:4900},parts[1]]}))).status,400);
+   const body=input({method:'split',parts});const r=await send('/sales','POST',body);assert.equal(r.status,201,JSON.stringify(r));
+   const sale=r.body.data;assert.equal(sale.payments.length,2);assert.equal(sale.paid_cents,10000);assert.equal(sale.outstanding_cents,0);
+   const retry=await send('/sales','POST',body);assert.equal(retry.body.data.id,sale.id);assert.equal((await send('/pdv/cash')).body.data.expected_cents,before+5000);
+   const pag=saleFiscalDraft(sale).pag;assert.equal(pag.vTroco,10);assert.equal(pag.detPag.reduce((n,p)=>n+p.vPag,0)-pag.vTroco,100);
+   const card=pag.detPag.find(p=>p.tPag==='03');assert.equal(card.indPag,1);assert.deepEqual(card.card,{tpIntegra:2});
   });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });
