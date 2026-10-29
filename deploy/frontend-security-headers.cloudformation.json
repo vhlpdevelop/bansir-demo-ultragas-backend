@@ -10,7 +10,7 @@
       "Properties": {
         "ResponseHeadersPolicyConfig": {
           "Name": {"Ref": "PolicyName"},
-          "Comment": "Bansir Gas app only: enforced baseline and candidate full CSP in Report-Only. Preserve existing CORS/cache settings when attaching.",
+          "Comment": "Bansir Gas: baseline security headers and CSP Report-Only.",
           "SecurityHeadersConfig": {
             "ContentTypeOptions": {"Override": true},
             "FrameOptions": {"FrameOption": "DENY", "Override": true},
