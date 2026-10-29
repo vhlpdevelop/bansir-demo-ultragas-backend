@@ -1,10 +1,14 @@
 import {businessStatus} from './business-hours.js';
+import {tenantFeatures} from './features.js';
 import {unseal,secretContext} from './secrets.js';
 import {normalizePhone} from './phone.js';
 const terminal=code=>Object.assign(new Error(code),{terminal:true});
 export async function processMetaJob(queue,job,{transport=fetch,version=process.env.META_GRAPH_VERSION,clock=()=>new Date()}={}){
  if(!/^v\d{1,3}\.\d+$/.test(version||''))throw terminal('META_VERSION_REQUIRED');
  const snapshot=await queue.scope(job,async c=>{
+  const features=await tenantFeatures(c);
+  if(!features.whatsapp)throw terminal('META_CONTRACT_DISABLED');
+  if(job.payload.action==='auto-greeting'&&!features.orderLink)throw terminal('META_ORDER_LINK_DISABLED');
   const allowed=(await c.query('SELECT bansir.meta_sender_active($1,$2,$3,$4) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId||null,job.payload.permission||null])).rows[0].allowed;
   if(!allowed)throw terminal('META_SENDER_REVOKED');
   const a=(await c.query('SELECT * FROM bansir.meta_accounts WHERE enabled')).rows[0];if(!a)throw terminal('META_NOT_CONFIGURED');

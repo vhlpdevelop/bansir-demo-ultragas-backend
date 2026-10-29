@@ -1,5 +1,6 @@
 import {mountBridge} from './bridge.js';
 import {mountPlatformAdmin} from './platform-admin.js';
+import {requireFeature,routeFeature} from './features.js';
 import {mountAccess} from './access.js';
 import {mountMetaOnboarding} from './meta-onboarding.js';
 import {mountManagement} from './management.js';
@@ -65,6 +66,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountPlatformAdmin(app,{database,route});
   mountPublicStorefront(app,{database,route,clock});
   app.use('/api/v1', auth.protect);
+  app.use(async(req,res,next)=>{try{const feature=routeFeature(req.path);if(feature)await database.transaction(req.identity,async c=>{await requireFeature(c,feature);if(req.path==='/api/v1/storefront/conversations')await requireFeature(c,'whatsapp');});next();}catch(e){next(e);}});
   app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));
   app.put('/api/v1/auth/me',route(async req=>{const d=z.object({name:z.string().trim().min(1).max(200),phone:z.string().max(40)}).strict().parse(req.body);await database.transaction(req.identity,c=>c.query('SELECT bansir.update_own_profile($1,$2)',[d.name,d.phone]));return {data:(await auth.session(req.identity)).user};}));

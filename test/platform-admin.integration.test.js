@@ -6,6 +6,7 @@ import pg from 'pg';
 import {createDatabase} from '../src/postgres/database.js';
 import {createPostgresApp} from '../src/postgres/app.js';
 import {provisionTenant} from '../src/postgres/provision.js';
+import {processMetaJob} from '../src/postgres/meta-delivery.js';
 
 test('Platform isolation, mandatory password change, contracts, invoices and revocation',{skip:!process.env.TEST_POSTGRES_URL,timeout:90000},async()=>{
  assert.match(new URL(process.env.TEST_POSTGRES_URL).pathname,/^\/bansir_test_[a-f0-9]+$/);
@@ -37,6 +38,23 @@ test('Platform isolation, mandatory password change, contracts, invoices and rev
   assert.ok(overview.tenants.some(t=>t.id===another.id));
   const contract={active:true,planCode:'migration-single',monthlyCents:19990,nextDue:'2026-11-10',features:{whatsapp:true,orderLink:false,financialIntelligence:true},notes:'Teste'};
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,nextDue:'2026-02-31'},fresh.token)).status,400);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
+  const current=await send('/auth/me','GET',null,customer.token);
+  assert.deepEqual(current.body.data.features,contract.features);
+  assert.equal((await send('/storefront/settings','GET',null,customer.token)).status,403);
+  assert.equal((await send('/financial/pricing-intelligence','GET',null,customer.token)).status,200);
+  await admin.query("INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,'contract-test',true,'{}')",[tenant.id,tenant.establishmentId]);
+  assert.equal((await send('/public/stores/contract-test')).status,403);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,features:{whatsapp:false,orderLink:true,financialIntelligence:false}},fresh.token)).status,200);
+  assert.equal((await send('/whatsapp/status','GET',null,customer.token)).status,403);
+  let transported=false;
+  const scope={scope:(_job,fn)=>db.transaction({userId:customer.user.id,tenantId:tenant.id,establishmentId:tenant.establishmentId},fn)};
+  await assert.rejects(processMetaJob(scope,{payload:{}},{version:'v25.0',transport:async()=>{transported=true;}}),e=>e.terminal&&e.message==='META_CONTRACT_DISABLED');
+  assert.equal(transported,false);
+  assert.equal((await send('/financial/pricing-intelligence','GET',null,customer.token)).status,403);
+  assert.equal((await send('/financial/pricing-intelligence/apply-price','POST',{},customer.token)).status,403);
+  assert.equal((await send('/financial/summary','GET',null,customer.token)).status,200);
+  assert.equal((await send('/storefront/settings','GET',null,customer.token)).status,200);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,planCode:'missing'},fresh.token)).status,409);
   const charge={tenantId:tenant.id,reference:'2026-11',dueDate:'2026-11-10',amountCents:19990};

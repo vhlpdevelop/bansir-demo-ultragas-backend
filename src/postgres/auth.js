@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import {tenantFeatures} from './features.js';
 import bcrypt from 'bcryptjs';
 import { randomUUID,randomBytes,createHash } from 'node:crypto';
 import { httpError,validId } from './database.js';
@@ -34,7 +35,7 @@ export function createAuth(database,{ jwtSecret,expiresIn='10m' }) {
     if (!user) throw httpError(401,'Conta inativa.','USER_INACTIVE');
     const tenant={id:member.id,slug:member.slug,name:member.name};
     const establishment={id:member.establishment_id,name:member.establishment_name};
-    return {user:{...user,_id:user.id,role:member.role,isEstablishmentOwner:member.owner_user_id===userId,allowedRoutes:member.allowed_routes,tenant,establishment,
+    return {user:{...user,features:await tenantFeatures(client),_id:user.id,role:member.role,isEstablishmentOwner:member.owner_user_id===userId,allowedRoutes:member.allowed_routes,tenant,establishment,
       notificationPreferences:{},devices:[]},tenant,establishment};
   }
   async function verifyLoginHash(client,userId,expectedHash){

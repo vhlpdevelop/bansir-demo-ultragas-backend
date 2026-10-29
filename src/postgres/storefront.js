@@ -1,4 +1,5 @@
 import {businessStatus} from './business-hours.js';
+import {requireFeature} from './features.js';
 import {z} from 'zod';
 import rateLimit from 'express-rate-limit';
 import {randomBytes,createHash} from 'node:crypto';
@@ -25,6 +26,7 @@ export async function publicStorefront(database,slug,checkoutHash,fn){
   const store=(await c.query('SELECT tenant_id,establishment_id,slug,config FROM bansir.storefronts WHERE slug=$1',[slugInput.parse(slug)])).rows[0];
   if(!store)throw httpError(404,'Este link de pedidos não está disponível.','STOREFRONT_NOT_FOUND');
   await c.query("SELECT set_config('app.public_checkout','true',true),set_config('app.tenant_id',$1,true),set_config('app.establishment_id',$2,true),set_config('app.checkout_hash',$3,true)",[store.tenant_id,store.establishment_id,checkoutHash||'']);
+  await requireFeature(c,'orderLink');
   const result=await fn(c,store);await c.query('COMMIT');return result;
  }catch(e){try{await c.query('ROLLBACK');}catch(rollback){discard=rollback;}throw e;}finally{c.release(discard);}
 }

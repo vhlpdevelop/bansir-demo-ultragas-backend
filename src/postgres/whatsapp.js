@@ -1,10 +1,12 @@
 import {disconnectMeta} from './meta-onboarding.js';
+import {tenantFeatures} from './features.js';
 import {z} from 'zod';
 import {enqueue} from './queue.js';
 import {httpError} from './database.js';
 import {seal,secretContext} from './secrets.js';
 import {normalizePhone} from './phone.js';
 export async function queueWhatsapp(c,i,{key,payload}){
+ if(!(await tenantFeatures(c)).whatsapp)return false;
  const account=(await c.query('SELECT enabled,phone_number_id,waba_id FROM bansir.meta_accounts')).rows[0];if(!account?.enabled)return false;
  const data={...payload,userId:i.userId,metaPhoneId:account.phone_number_id,metaWabaId:account.waba_id};
  const existing=(await c.query("SELECT payload FROM bansir.jobs WHERE kind='whatsapp' AND dedupe_key=$1",[key])).rows[0];
