@@ -21,7 +21,9 @@ const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0)
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
 async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');return row;}
-async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
+// Shared by sale details and printable receipts: unit RLS alone does not
+// authorize an operator to read another operator's sale in the same unit.
+export async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
 async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`,[cash.id]);return Number(cash.opening_cents)+Number(totals.delta);}
 async function cashView(c,cash){if(!cash)return null;const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 GROUP BY p.method`,[cash.id])).rows;
  return {...cash,opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};}

@@ -190,5 +190,21 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await fetch(base+'/public/stores/photo-public/products/'+p.id+'/image')).status,404);
    assert.equal((await send('/products','POST',{name:'Denied',barcode:'DENIED',price:1},operatorSession.token)).status,403);
   });
+  await t.test('SEC-01: receipts enforce the same sale ownership and collection permissions',async()=>{
+   const permissions=async(role,routes)=>admin.query('UPDATE bansir.establishment_memberships SET role=$1,allowed_routes=$2 WHERE tenant_id=$3 AND establishment_id=$4 AND user_id=$5',[role,routes,tenant.id,tenant.establishmentId,operator]);
+   const receipt=token=>send(`/sales/${paid.id}/receipt`,'GET',undefined,token);
+   await permissions('operador',['sales']);
+   assert.equal((await send(`/sales/${paid.id}`,'GET',undefined,operatorSession.token)).status,404);
+   assert.equal((await receipt(operatorSession.token)).status,404);
+   assert.equal((await receipt(readerSession.token)).status,403);
+   assert.equal((await receipt(foreignSession.token)).status,404);
+   assert.equal((await receipt(session2.token)).status,404);
+   const own=await receipt(session.token);assert.equal(own.status,200);assert.equal(Buffer.from(own.body.data.base64,'base64').subarray(0,5).toString(),'%PDF-');
+   await permissions('operador',['sales','sales-collect']);assert.equal((await receipt(operatorSession.token)).status,200);
+   await permissions('operador',['sales','sales-manage']);assert.equal((await receipt(operatorSession.token)).status,200);
+   await permissions('admin',[]);assert.equal((await receipt(operatorSession.token)).status,200);
+   // Revocation must be effective even for an already-issued, unexpired JWT.
+   await permissions('operador',['sales']);assert.equal((await receipt(operatorSession.token)).status,404);
+  });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });
