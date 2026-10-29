@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private fiscal XML storage for Bansir Gas
+Parameters:
+  Ec2RoleName:
+    Type: String
+    Default: bansir-gas-1-role
+Resources:
+  FiscalBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'bansir-gas-fiscal-prod-${AWS::AccountId}'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+  FiscalBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FiscalBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt FiscalBucket.Arn
+              - !Sub '${FiscalBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+  FiscalStorageAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: bansir-gas-fiscal-xml-storage
+      Roles:
+        - !Ref Ec2RoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetBucketLocation
+            Resource: !GetAtt FiscalBucket.Arn
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub '${FiscalBucket.Arn}/tenants/*/establishments/*/fiscal/*'
+Outputs:
+  FiscalBucketName:
+    Value: !Ref FiscalBucket
+  FiscalBucketRegion:
+    Value: !Ref AWS::Region
