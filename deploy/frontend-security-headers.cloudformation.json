@@ -1,0 +1,34 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Security response headers policy for gas.bansir.com.br. Attach to the existing app distribution after reviewing its current policy; does not create or replace a distribution or bucket.",
+  "Parameters": {
+    "PolicyName": {"Type": "String", "Default": "bansir-gas-app-security-report-v1", "AllowedPattern": "[A-Za-z0-9_-]{1,128}"}
+  },
+  "Resources": {
+    "AppSecurityHeaders": {
+      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+      "Properties": {
+        "ResponseHeadersPolicyConfig": {
+          "Name": {"Ref": "PolicyName"},
+          "Comment": "Bansir Gas app only: enforced baseline and candidate full CSP in Report-Only. Preserve existing CORS/cache settings when attaching.",
+          "SecurityHeadersConfig": {
+            "ContentTypeOptions": {"Override": true},
+            "FrameOptions": {"FrameOption": "DENY", "Override": true},
+            "ReferrerPolicy": {"ReferrerPolicy": "strict-origin-when-cross-origin", "Override": true},
+            "ContentSecurityPolicy": {"ContentSecurityPolicy": "base-uri 'self'; object-src 'none'; frame-ancestors 'none'", "Override": true}
+          },
+          "CustomHeadersConfig": {
+            "Items": [{
+              "Header": "Content-Security-Policy-Report-Only",
+              "Value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' https://connect.facebook.net; script-src-attr 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://api-gas.bansir.com.br https://*.facebook.com https://*.fbcdn.net; connect-src 'self' https://api-gas.bansir.com.br https://connect.facebook.net https://www.facebook.com https://graph.facebook.com wss://localhost:* wss://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; frame-src 'self' blob: https://www.facebook.com https://web.facebook.com; worker-src 'self' blob:; manifest-src 'self'; form-action 'self'",
+              "Override": true
+            }]
+          }
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ResponseHeadersPolicyId": {"Value": {"Ref": "AppSecurityHeaders"}, "Description": "Attach only to cache behaviors of the existing gas.bansir.com.br application distribution."}
+  }
+}
