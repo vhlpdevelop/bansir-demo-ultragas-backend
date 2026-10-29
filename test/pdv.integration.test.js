@@ -41,7 +41,7 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send('/sales','GET',undefined,readerSession.token)).status,403);
    assert.equal((await send('/sales','POST',order({invoiceIssued:true}))).status,400);
    assert.equal((await send('/sales','POST',order({payment:{method:'pix',confirmed:false,reference:'fake'}}))).status,400);
-   assert.equal((await send('/sales','POST',order({payment:{method:'pix',confirmed:true}}))).status,400);
+   assert.equal((await send('/sales','POST',order({payment:{method:'debit_card',confirmed:true,installments:2}}))).status,400);
    assert.equal((await send('/sales','POST',order({payment:{method:'cash',confirmed:true,receivedCents:100}}))).status,400);
    assert.equal((await send('/sales','POST',order({items:[{productId:product.id,quantity:1,expectedUnitPriceCents:100}]}))).status,409);
    assert.equal((await send('/sales','POST',order({tenantId:foreign.id}))).status,400);
@@ -154,7 +154,7 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const p=(await send('/products','POST',{name:'Split test',barcode:'SPLIT',price:100,stock:20})).body.data;
    const input=payment=>order({items:[{productId:p.id,quantity:1,expectedUnitPriceCents:10000}],payment});
    const before=(await send('/pdv/cash')).body.data.expected_cents;
-   for(const method of ['credit_card','debit_card']){
+   for(const method of ['credit_card','debit_card','pix']){
     const r=await send('/sales','POST',input({method,confirmed:true,...(method==='credit_card'?{installments:3}:{})}));
     assert.equal(r.status,201,JSON.stringify(r));assert.equal(r.body.data.payments[0].installments,method==='credit_card'?3:1);
    }

@@ -38,7 +38,6 @@ export async function saleView(c,id){
  s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=`V-${s.id.slice(0,8).toUpperCase()}`;return s;
 }
 function checkPayment(p,amount){
- if(p.method==='pix' && p.reference.length<3)fail('Informe a referência conferida do PIX ou NSU/autorização da maquininha.','PAYMENT_REFERENCE_REQUIRED',400);
  if(p.method!=='credit_card'&&p.installments>1)fail('Parcelas permitidas somente no crédito.','INVALID_INSTALLMENTS',400);
  const received=p.method==='cash'?(p.receivedCents??0):amount;
  if(received<amount)fail('Valor recebido em dinheiro é menor que o valor a pagar.','INSUFFICIENT_CASH',400);
