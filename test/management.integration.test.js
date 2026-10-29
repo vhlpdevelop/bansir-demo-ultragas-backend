@@ -89,5 +89,21 @@ test('Management PostgreSQL: finance, employees, pricing, commissions and report
    assert.equal((await send('/reports/summary'+query,'GET',undefined,read.token)).status,403);assert.equal((await send('/reports/summary'+query,'GET',undefined,foreign.token)).body.data.rows.length,0);
    assert.equal((await send('/reports/summary?startDate=2026-12-31&endDate=2026-01-01')).status,400);
   });
+  await t.test('employee deliverer sync preserves identity, isolation and freelancer records',async()=>{
+   const body={...employeeBody,userId:null,name:'Funcionário Entregador',email:'employee-driver@test.invalid',phone:'67999999999',roleTitle:'Entregador'};
+   const created=await send('/employees','POST',body);assert.equal(created.status,201,JSON.stringify(created));const id=created.body.data.id;
+   let team=(await send('/deliverers')).body.data;const driver=team.find(d=>d.employee_id===id);assert.ok(driver);assert.equal(driver.active,true);
+   assert.equal((await send('/pdv/deliverers')).body.data.some(d=>d.id===driver.id),true);
+   assert.equal((await send('/deliverers','GET',undefined,foreign.token)).body.data.some(d=>d.id===driver.id),false);
+   const freelance=await send('/deliverers','POST',{name:'Freelancer',phone:'',active:true});assert.equal(freelance.status,201);
+   assert.equal((await send('/deliverers/'+driver.id,'PUT',{name:'Bypass',phone:'',active:true})).status,409);
+   assert.equal((await send('/employees/'+id,'PUT',{...body,name:'Novo nome',phone:'67988888888'})).status,200);
+   team=(await send('/deliverers')).body.data;assert.equal(team.find(d=>d.id===driver.id).name,'Novo nome');assert.equal(team.filter(d=>d.employee_id===id).length,1);
+   assert.equal((await send('/employees/'+id,'PUT',{...body,roleTitle:'Caixa'})).status,200);
+   assert.equal((await send('/pdv/deliverers')).body.data.some(d=>d.id===driver.id),false);
+   assert.equal((await send('/pdv/deliverers')).body.data.some(d=>d.id===freelance.body.data.id),true);
+   await send('/employees/'+id,'PUT',body);assert.equal((await send('/pdv/deliverers')).body.data.some(d=>d.id===driver.id),true);
+   await send('/employees/'+id,'DELETE');assert.equal((await send('/pdv/deliverers')).body.data.some(d=>d.id===driver.id),false);
+  });
  }finally{if(server)await new Promise(r=>server.close(r));await db.pool.end();await admin.end();}
 });
