@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
+import bcrypt from 'bcryptjs';
+import pg from 'pg';
+import {createDatabase} from '../src/postgres/database.js';
+import {createPostgresApp} from '../src/postgres/app.js';
+import {provisionTenant} from '../src/postgres/provision.js';
+
+test('Platform isolation, mandatory password change, contracts, invoices and revocation',{skip:!process.env.TEST_POSTGRES_URL,timeout:90000},async()=>{
+ assert.match(new URL(process.env.TEST_POSTGRES_URL).pathname,/^\/bansir_test_[a-f0-9]+$/);
+ const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL}),admin=new pg.Client({connectionString:process.env.TEST_POSTGRES_ADMIN_URL});
+ await admin.connect();let server;
+ try{
+  const initial=randomBytes(20).toString('hex'),next=randomBytes(20).toString('hex'),email='platform@example.invalid';
+  await admin.query('INSERT INTO bansir.platform_admins(email,name,password_hash) VALUES($1,$2,$3)',[email,'Bansir Test',await bcrypt.hash(initial,12)]);
+  const customerEmail='platform-customer@example.invalid',customerPassword=randomBytes(20).toString('hex');
+  const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'platform-customer',name:'Cliente do painel',adminName:'Cliente',email:customerEmail,password:customerPassword});
+  const another=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'platform-other',name:'Outro cliente',adminName:'Outro',email:'platform-other@example.invalid',password:customerPassword});
+  server=createPostgresApp({database:db,jwtSecret:randomBytes(48).toString('hex'),nodeEnv:'test'}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+  const base=`http://127.0.0.1:${server.address().port}/api/v1`;
+  const send=async(path,method='GET',body,token)=>{const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
+  const login=async password=>(await send('/platform/login','POST',{email,password})).body.data;
+  assert.equal((await send('/platform/overview')).status,401);
+  const customer=(await send('/auth/login','POST',{email:customerEmail,password:customerPassword})).body.data;
+  assert.equal((await send('/platform/overview','GET',null,customer.token)).status,401);
+  const first=await login(initial),second=await login(initial);
+  assert.equal(first.user.mustChangePassword,true);
+  assert.equal((await send('/platform/overview','GET',null,first.token)).status,403);
+  assert.equal((await send('/products','GET',null,first.token)).status,401);
+  assert.equal((await send('/platform/password','POST',{currentPassword:'wrong',newPassword:next},first.token)).status,400);
+  assert.equal((await send('/platform/password','POST',{currentPassword:initial,newPassword:next},first.token)).status,200);
+  assert.equal((await send('/platform/me','GET',null,second.token)).status,401);
+  assert.equal((await send('/platform/login','POST',{email,password:initial})).status,401);
+  const fresh=await login(next);assert.equal(fresh.user.mustChangePassword,false);
+  const overview=(await send('/platform/overview','GET',null,fresh.token)).body.data;
+  assert.ok(overview.tenants.some(t=>t.id===another.id));
+  const contract={active:true,planCode:'migration-single',monthlyCents:19990,nextDue:'2026-11-10',features:{whatsapp:true,orderLink:false,financialIntelligence:true},notes:'Teste'};
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,nextDue:'2026-02-31'},fresh.token)).status,400);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,planCode:'missing'},fresh.token)).status,409);
+  const charge={tenantId:tenant.id,reference:'2026-11',dueDate:'2026-11-10',amountCents:19990};
+  const invoice=await send('/platform/invoices','POST',charge,fresh.token);assert.equal(invoice.status,201);
+  assert.equal((await send('/platform/invoices','POST',charge,fresh.token)).status,409);
+  assert.equal((await send(`/platform/invoices/${invoice.body.data.id}/paid`,'POST',{tenantId:another.id},fresh.token)).status,409);
+  assert.equal((await send(`/platform/invoices/${invoice.body.data.id}/paid`,'POST',{tenantId:tenant.id},fresh.token)).status,200);
+  assert.equal((await send(`/platform/invoices/${invoice.body.data.id}/paid`,'POST',{tenantId:tenant.id},fresh.token)).status,409);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,active:false},fresh.token)).status,200);
+  assert.ok([401,403].includes((await send('/products','GET',null,customer.token)).status));
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
+  assert.equal((await send('/products','GET',null,customer.token)).status,401);
+  await assert.rejects(db.pool.query('SELECT * FROM bansir.platform_admins'),e=>e.code==='42501');
+  await assert.rejects(db.pool.query('UPDATE bansir.tenants SET active=false WHERE id=$1',[another.id]),e=>e.code==='42501');
+  await admin.query("UPDATE bansir.platform_sessions SET expires_at=now()-interval '1 second'");
+  assert.equal((await send('/platform/overview','GET',null,fresh.token)).status,401);
+ }finally{if(server){server.closeAllConnections();await new Promise(r=>server.close(r));}await db.close();await admin.end();}
+});

@@ -1,4 +1,5 @@
 import {mountBridge} from './bridge.js';
+import {mountPlatformAdmin} from './platform-admin.js';
 import {mountAccess} from './access.js';
 import {mountMetaOnboarding} from './meta-onboarding.js';
 import {mountManagement} from './management.js';
@@ -61,6 +62,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/login', loginLimit, route(async req => ({ data: await auth.login(req.body) })));
   app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => ({ data: await auth.select(req.body) })));
   app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>({data:await auth.refresh(req.body)})));
+  mountPlatformAdmin(app,{database,route});
   mountPublicStorefront(app,{database,route,clock});
   app.use('/api/v1', auth.protect);
   app.post('/api/v1/auth/logout',route(async req=>({data:await auth.logout(req.identity)})));
