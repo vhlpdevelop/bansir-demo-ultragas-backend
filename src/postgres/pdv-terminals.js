@@ -1,3 +1,4 @@
+import {delegatedSetting} from './settings-permissions.js';
 import {createHash,randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import rateLimit from 'express-rate-limit';
@@ -5,7 +6,7 @@ import {httpError} from './database.js';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const fail=(message,code='TERMINAL_REQUIRED',status=409)=>{throw httpError(status,message,code);};
-const admin=member=>{if(!['admin','superadmin'].includes(member.role))fail('Somente administradores podem gerenciar terminais.','FORBIDDEN',403);};
+const admin=member=>{if(!delegatedSetting(member,'settings-terminals'))fail('Somente administradores podem gerenciar terminais.','FORBIDDEN',403);};
 const unitLock=(c,i)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`pdv-terminals:${i.tenantId}:${i.establishmentId}`]);
 const audit=(c,i,id,event,reason='')=>c.query('INSERT INTO bansir.pdv_terminal_events(tenant_id,establishment_id,terminal_id,user_id,event,reason) VALUES($1,$2,$3,$4,$5,$6)',[i.tenantId,i.establishmentId,id,i.userId,event,reason]);
 export async function terminalRequired(c){return (await c.query('SELECT EXISTS(SELECT 1 FROM bansir.pdv_terminals WHERE paired_at IS NOT NULL) AS required')).rows[0].required;}
@@ -30,21 +31,21 @@ export function assertCashTerminal(cash,terminal){
  if(!cash.terminal_id&&terminal)fail('Feche o caixa anterior, sem terminal identificado, e abra um novo caixa neste terminal.','LEGACY_CASH_CLOSE_REQUIRED');
 }
 export function mountPdvTerminals(app,{scoped}){
- app.get('/api/v1/pdv/terminals',scoped('sales',true,async(c,r)=>{
+ app.get('/api/v1/pdv/terminals',scoped('settings-terminals',true,async(c,r)=>{
   let current=null,bindingError='';try{current=await currentTerminal(c,r.identity);}catch(e){if(e.code!=='TERMINAL_REVOKED')throw e;bindingError=e.message;}
   const terminals=(await c.query(`SELECT t.id,t.name,t.active,t.paired_at,t.created_at,c.id AS cash_session_id,c.id AS open_cash_id,c.user_id AS open_cash_user_id,c.opened_at,u.name AS operator_name,u.name AS open_cash_operator_name,CASE WHEN t.active THEN 'active' ELSE 'inactive' END AS status,t.smartpos_last_seen_at AS last_seen_at,(t.smartpos_hash IS NOT NULL) AS smartpos_paired
    FROM bansir.pdv_terminals t LEFT JOIN bansir.cash_sessions c ON (c.tenant_id,c.establishment_id,c.terminal_id)=(t.tenant_id,t.establishment_id,t.id) AND c.closed_at IS NULL
    LEFT JOIN bansir.users u ON u.id=c.user_id ORDER BY t.created_at,t.id`)).rows;
   return {data:{terminals,current,required:await terminalRequired(c),bindingError,bindingErrorDetail:bindingError?{code:'TERMINAL_REVOKED',message:bindingError}:null}};
  }));
- app.post('/api/v1/pdv/terminals',scoped('sales',false,async(c,r,m)=>{
+ app.post('/api/v1/pdv/terminals',scoped('settings-terminals',false,async(c,r,m)=>{
   admin(m);const {name}=z.object({name:z.string().trim().min(1).max(80)}).strict().parse(r.body),i=r.identity;await unitLock(c,i);
   if(Number((await c.query('SELECT count(*) FROM bansir.pdv_terminals')).rows[0].count)>=100)fail('Limite de 100 terminais por estabelecimento.','TERMINAL_LIMIT');
   if((await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE lower(name)=lower($1)',[name])).rowCount)fail('Já existe um terminal com este nome.','TERMINAL_NAME_EXISTS');
   const row=(await c.query('INSERT INTO bansir.pdv_terminals(tenant_id,establishment_id,name,created_by) VALUES($1,$2,$3,$4) RETURNING id,name,active',[i.tenantId,i.establishmentId,name,i.userId])).rows[0];
   await audit(c,i,row.id,'created');return {status:201,data:row};
  }));
- app.post('/api/v1/pdv/terminals/:id/activation',scoped('sales',false,async(c,r,m)=>{
+ app.post('/api/v1/pdv/terminals/:id/activation',scoped('settings-terminals',false,async(c,r,m)=>{
   admin(m);const {recoveryReason}=z.object({recoveryReason:z.string().trim().min(10).max(500).optional()}).strict().parse(r.body),id=z.uuid().parse(r.params.id),i=r.identity;await unitLock(c,i);
   const row=(await c.query('SELECT id FROM bansir.pdv_terminals WHERE id=$1 AND active FOR UPDATE',[id])).rows[0];if(!row)fail('Terminal não encontrado ou desativado.','NOT_FOUND',404);
   if(!recoveryReason&&(await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[id])).rowCount)fail('Feche o caixa deste terminal antes de alterar seu vínculo. Se perdeu o navegador, use a recuperação administrativa.','TERMINAL_BUSY');
@@ -70,14 +71,14 @@ export function mountPdvTerminals(app,{scoped}){
   if(!updated)fail('Diagnóstico exige vínculo SmartPOS.','SMARTPOS_REQUIRED',403);
   return {data:{id:terminal.id,lastSeenAt:updated.smartpos_last_seen_at}};
  }));
- app.patch('/api/v1/pdv/terminals/:id',scoped('sales',false,async(c,r,m)=>{
+ app.patch('/api/v1/pdv/terminals/:id',scoped('settings-terminals',false,async(c,r,m)=>{
   admin(m);const {active}=z.object({active:z.boolean()}).strict().parse(r.body),id=z.uuid().parse(r.params.id),i=r.identity;await unitLock(c,i);
   if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1 FOR UPDATE',[id])).rowCount)fail('Terminal não encontrado.','NOT_FOUND',404);
   if((await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[id])).rowCount)fail('Feche o caixa antes de desativar o terminal.','TERMINAL_BUSY');
   await c.query('UPDATE bansir.pdv_terminals SET active=$2,device_hash=NULL,smartpos_hash=NULL,activation_hash=NULL,activation_expires_at=NULL,updated_at=now() WHERE id=$1',[id,active]);
   await audit(c,i,id,active?'enabled':'disabled');return {data:{id,active}};
  }));
- app.get('/api/v1/pdv/terminals/events',scoped('sales',true,async(c,r,m)=>{admin(m);return {data:(await c.query('SELECT e.id,e.terminal_id,t.name AS terminal_name,e.event,e.reason,e.created_at,u.name AS user_name FROM bansir.pdv_terminal_events e JOIN bansir.pdv_terminals t ON (t.tenant_id,t.establishment_id,t.id)=(e.tenant_id,e.establishment_id,e.terminal_id) JOIN bansir.users u ON u.id=e.user_id ORDER BY e.created_at DESC LIMIT 100')).rows};}));
+ app.get('/api/v1/pdv/terminals/events',scoped('settings-terminals',true,async(c,r,m)=>{admin(m);return {data:(await c.query('SELECT e.id,e.terminal_id,t.name AS terminal_name,e.event,e.reason,e.created_at,u.name AS user_name FROM bansir.pdv_terminal_events e JOIN bansir.pdv_terminals t ON (t.tenant_id,t.establishment_id,t.id)=(e.tenant_id,e.establishment_id,e.terminal_id) JOIN bansir.users u ON u.id=e.user_id ORDER BY e.created_at DESC LIMIT 100')).rows};}));
  app.get('/api/v1/pdv/terminals/:id/cash-history',scoped('sales',true,async(c,r,m)=>{
   admin(m);const id=z.uuid().parse(r.params.id);
   if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1',[id])).rowCount)fail('Terminal não encontrado.','NOT_FOUND',404);

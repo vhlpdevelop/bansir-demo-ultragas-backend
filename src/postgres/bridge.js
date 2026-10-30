@@ -1,3 +1,4 @@
+import {delegatedSetting} from './settings-permissions.js';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {WebSocketServer,WebSocket} from 'ws';
 import {z} from 'zod';
@@ -56,7 +57,7 @@ export function createBridge(database){
 }
 export function mountBridge(app,{scoped,database,nodeEnv}){
  const bridge=createBridge(database);app.locals.bridge=bridge;
- const admin=fn=>scoped('settings',false,async(c,r,m)=>{if(!['admin','superadmin'].includes(m.role))denied();return fn(c,r);});
+ const admin=fn=>scoped('settings',false,async(c,r,m)=>{if(!delegatedSetting(m,'settings-terminals'))denied();return fn(c,r);});
  app.get('/api/v1/bridge/tokens',admin(async c=>({data:(await c.query('SELECT id AS _id,label,created_at AS "createdAt",expires_at AS "expiresAt",revoked_at AS "revokedAt",last_used_at AS "lastUsedAt",last_machine AS "lastMachine" FROM bansir.bridge_credentials ORDER BY created_at DESC')).rows})));
  app.post('/api/v1/bridge/tokens',admin(async(c,r)=>{
   const {label}=z.object({label:z.string().trim().min(1).max(100)}).strict().parse(r.body),i=r.identity;

@@ -1,3 +1,4 @@
+import {settingsModule} from './settings-permissions.js';
 import {mountDeliveries} from './deliveries.js';
 import {mountNotificationStream} from './notification-stream.js';
 import {createLoginThrottle} from './login-throttle.js';
@@ -87,7 +88,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/return-to-selection', route(async req => {browserSessions.checkRefreshMutation(req);const data=await auth.returnToSelection(req.identity);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
   const scoped = (module, read, fn) => route(async req => database.transaction(req.identity, async (client, member) => {
-    requirePermission(member, module, read);
+    requirePermission(member, module==='settings'?(settingsModule(req.path)||module):module, read);
     req.identity.pdvTerminalToken=req.get('X-Pdv-Terminal');
     return fn(client, req,member);
   }));
@@ -99,12 +100,12 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);
-    return { data: row ? { storeName: row.store_name, pixKey: row.pix_key, documentId: row.document_id, address: row.address, merchantCity: row.merchant_city } : {} };
+    return { data: row ? { storeName: row.store_name, contact:row.contact, pixKey: row.pix_key, documentId: row.document_id, address: row.address, merchantCity: row.merchant_city } : {} };
   }));
   app.put('/api/v1/settings', scoped('settings', false, async (client, req) => {
     const data = settingsInput.parse(req.body);
     await client.query('INSERT INTO bansir.store_settings(tenant_id,establishment_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [req.identity.tenantId,req.identity.establishmentId]);
-    const mapping = { storeName: 'store_name', pixKey: 'pix_key', documentId: 'document_id', address: 'address', merchantCity: 'merchant_city' };
+    const mapping = { storeName: 'store_name', contact:'contact', pixKey: 'pix_key', documentId: 'document_id', address: 'address', merchantCity: 'merchant_city' };
     const entries = Object.entries(data);
     if (entries.length) await client.query(`UPDATE bansir.store_settings SET ${entries.map(([k], i) => `${mapping[k]}=$${i + 2}`).join(',')}, updated_at=now() WHERE tenant_id=$1`, [req.identity.tenantId, ...entries.map(([, v]) => v)]);
     return { data };

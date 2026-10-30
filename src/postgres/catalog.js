@@ -15,7 +15,7 @@ export const productInput = z.object({
 export const categoryInput = z.object({ name: text.min(1), description: z.string().max(2000).optional(), color: text.optional() }).strict();
 export const movementInput = z.object({ productId: z.string().uuid(), type: z.enum(['in', 'out']),
   quantity: z.number().int().positive().max(100000000), reason: z.string().trim().min(1).max(1000), notes: z.string().max(2000).optional() }).strict();
-export const settingsInput = z.object({ storeName: text, pixKey: text, documentId: text, address: z.string().max(1000), merchantCity: text }).partial().strict();
+export const settingsInput = z.object({ storeName: text, pixKey: text, contact:text, documentId: text, address: z.string().max(1000), merchantCity: text }).partial().strict();
 
 export const presentProduct = row => ({ _id: row.id, id: row.id, name: row.name, barcode: row.barcode,
   price: Number(row.price_cents) / 100, costPrice: Number(row.cost_cents) / 100, stock: row.stock,
@@ -30,7 +30,7 @@ export function catalogView(row,member) {
 }
 export function requirePermission(member, module, read = false) {
   const routes = member.allowed_routes || [];
-  if (['admin', 'superadmin'].includes(member.role) || routes.some(r => r === module || r.startsWith(`${module}-`)) ||
+  if (['admin', 'superadmin'].includes(member.role) || routes.some(r => r === module || (!module.startsWith('settings')&&module!=='fiscal'&&r.startsWith(`${module}-`))) || (module.startsWith('settings-')&&routes.includes('settings')) || (read&&['settings-store','settings-terminals'].includes(module)&&routes.includes('sales')) ||
       (read && module === 'products' && routes.includes('sales'))) return;
   throw httpError(403, 'Você não tem permissão para esta ação nesta empresa.', 'FORBIDDEN');
 }

@@ -1,8 +1,9 @@
+import {delegatedSetting} from './settings-permissions.js';
 import {z} from 'zod';
 import {LambdaClient,InvokeCommand} from '@aws-sdk/client-lambda';
 import {httpError} from './database.js';
 import {seal,secretContext} from './secrets.js';
-const admin=m=>{if(!['admin','superadmin'].includes(m.role))throw httpError(403,'Somente administrador pode conectar o WhatsApp.','FORBIDDEN');};
+const admin=m=>{if(!delegatedSetting(m,'settings-whatsapp'))throw httpError(403,'Somente administrador pode conectar o WhatsApp.','FORBIDDEN');};
 const ready=()=>process.env.META_EMBEDDED_SIGNUP_ENABLED==='true'&&!!(process.env.META_CONNECT_FUNCTION_ARN&&process.env.META_APP_ID&&process.env.META_EMBEDDED_SIGNUP_CONFIG_ID&&process.env.META_GRAPH_VERSION);
 const invoke=async body=>{try{const r=await new LambdaClient({region:process.env.AWS_REGION||'sa-east-1',maxAttempts:1}).send(new InvokeCommand({FunctionName:process.env.META_CONNECT_FUNCTION_ARN,Payload:Buffer.from(JSON.stringify(body))}));const data=JSON.parse(Buffer.from(r.Payload||[]).toString());if(r.FunctionError||!data.ok)throw Error(data.code||'META_CONNECTION_FAILED');return data;}catch(e){throw httpError(409,['MISSING_PERMISSIONS','SELECT_AUTHORIZED_WABA','SELECT_AUTHORIZED_PHONE'].includes(e.message)?'A Meta não concedeu uma conta/número único. Selecione explicitamente os ativos e autorize as permissões de mensagens e gestão.':'Não foi possível concluir a conexão Meta. Confira a configuração AWS/Meta e repita o cadastro se o código expirou.','META_CONNECTION_FAILED');}};
 export async function disconnectMeta(c,i,call=invoke){const a=(await c.query('SELECT * FROM bansir.meta_accounts FOR UPDATE')).rows[0];if(a?.onboarding_id){if(!ready())throw httpError(409,'Configure o serviço central para desconectar.','META_SETUP_REQUIRED');await call({action:'disconnect',tenantId:i.tenantId,establishmentId:i.establishmentId,attemptId:a.onboarding_id,phoneNumberId:a.phone_number_id});}await c.query('DELETE FROM bansir.meta_accounts');}
