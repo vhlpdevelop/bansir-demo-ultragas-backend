@@ -2,11 +2,11 @@ import {z} from 'zod';
 import rateLimit from 'express-rate-limit';
 import {httpError} from './database.js';
 import {requireFeature} from './features.js';
-import {manageDeliveries,monitorDeliveries} from './delivery-permissions.js';
+import {manageDeliveries,monitorDeliveries,driveDeliveries} from './delivery-permissions.js';
 import {activeTasks,storePoint} from './delivery-route-state.js';
 import {driverPlan,recommend,point} from './delivery-planner.js';
 const allowed=(m,kind)=>manageDeliveries(m)||(kind==='order'&&m.allowed_routes?.includes('sales'));
-export function mountDeliveryRouting(app,{database,route,drivers,router}){
+export function mountDeliveryRouting(app,{database,route,drivers,ownDriver,router}){
  const limit=rateLimit({windowMs:60000,limit:12,keyGenerator:r=>`${r.identity.tenantId}:${r.identity.establishmentId}`,standardHeaders:'draft-7',legacyHeaders:false});
  const check=async(i,kind)=>database.transaction(i,async(c,m)=>{await requireFeature(c,'deliveries');if(kind==='map'?!monitorDeliveries(m):!allowed(m,kind))throw httpError(403,'Sem permissão para esta operação de entregas.','FORBIDDEN');});
  for(const [kind,path] of [['task','tasks'],['order','orders']])app.get(`/api/v1/deliveries/${path}/:id/recommendations`,limit,route(async req=>{
@@ -22,6 +22,18 @@ export function mountDeliveryRouting(app,{database,route,drivers,router}){
   });
   const data=await recommend(snapshot.plans,snapshot.target,router,scope);await check(i,kind);
   return {data:{...data,usesLivePositions:snapshot.usesLivePositions,targetId:id,targetVersion:snapshot.target.version??null}};
+ }));
+ const mine=async i=>database.transaction(i,async(c,m)=>{
+  await requireFeature(c,'deliveries');if(!driveDeliveries(m))throw httpError(403,'Sem permissão para operar entregas.','FORBIDDEN');
+  const d=await ownDriver(c,i);if(!d)throw httpError(404,'Vincule sua conta a um entregador.','DRIVER_NOT_LINKED');
+  const row=(await c.query('SELECT d.map_color,d.map_color_index,w.* FROM bansir.deliverers d LEFT JOIN bansir.driver_work w ON w.driver_id=d.id AND w.user_id=$2 WHERE d.id=$1',[d.id,i.userId])).rows[0];
+  const position=row.active&&row.on_duty&&row.latitude!=null?{latitude:row.latitude,longitude:row.longitude,accuracy:row.accuracy,capturedAt:row.captured_at,receivedAt:row.received_at}:null;
+  const store=await storePoint(c),plan=driverPlan({...row,id:d.id,name:d.name,driver_active:true,account_active:true,position},await activeTasks(c,d.id),store);return {store,plan};
+ });
+ app.get('/api/v1/deliveries/mine/map',route(async req=>{
+  const i=req.identity,scope=i.tenantId+':'+i.establishmentId,initial=await mine(i),geometry=await router.geometry(initial.plan,scope),{store,plan}=await mine(i);
+  const valid=initial.plan.driverId===plan.driverId&&initial.plan.revision===plan.revision&&initial.plan.originSource===plan.originSource;
+  return {data:{store,routes:[{driverId:plan.driverId,name:plan.name,color:plan.color,onDuty:plan.onDuty,sharing:plan.sharing,position:plan.position,incompleteStops:plan.incompleteStops,stops:plan.stops.map((t,n)=>({saleId:t.sale_id,status:t.status,address:t.address,point:point(t),order:t.route_order||n+1})),geometry:valid&&geometry||{model:'approximate',coordinates:plan.origin?[plan.origin,...plan.stops.map(point).filter(Boolean)].map(p=>[p.longitude,p.latitude]):[]}}],updatedAt:new Date().toISOString(),activeStops:plan.stops.length}};
  }));
  app.get('/api/v1/deliveries/map',route(async req=>{
   const i=req.identity,scope=i.tenantId+':'+i.establishmentId;

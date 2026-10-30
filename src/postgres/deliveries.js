@@ -68,7 +68,7 @@ async function prior(c,i,key,payload){
 const audit=(c,i,key,payload,saleId)=>c.query('INSERT INTO bansir.delivery_events(tenant_id,establishment_id,sale_id,user_id,request_key,request_hash,action,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,saleId,i.userId,key,hash({...payload,userId:i.userId}),payload.action,payload.reason||'']);
 export function mountDeliveries(app,{database,route,deliveryRouter}){
  const router=deliveryRouter||createDeliveryRouter();database.onClose(()=>router.close());
- mountDeliveryRouting(app,{database,route,drivers,router});
+ mountDeliveryRouting(app,{database,route,drivers,ownDriver,router});
  const own=fn=>route(req=>database.transaction(req.identity,(c,m)=>fn(c,req,m)));
  const manager=fn=>own((c,r,m)=>{if(!manageDeliveries(m))fail('Sem permissão para gerenciar entregas.','FORBIDDEN',403);return fn(c,r,m);});
  const driver=(fn,history=false)=>own(async(c,r,m)=>{if(!(history?viewDeliveryHistory(m):driveDeliveries(m)))fail('Acesso exclusivo ao entregador.','FORBIDDEN',403);const d=await ownDriver(c,r.identity);if(!d)fail('Peça ao administrador para vincular seu usuário a um entregador ativo.','DRIVER_NOT_LINKED',404);return fn(c,r,m,d);});
