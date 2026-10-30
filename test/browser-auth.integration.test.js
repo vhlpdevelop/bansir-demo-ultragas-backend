@@ -57,6 +57,23 @@ test('browser cookie rotation, separate sessions, CSRF, admin restore and persis
   const native=await send('/auth/login',{email,password},{'X-Bansir-Client':''});assert.ok(native.data.refreshToken);assert.equal(native.headers.getSetCookie().length,0);
   const migrated=await send('/auth/refresh',{refreshToken:native.data.refreshToken});assert.equal(migrated.status,200);assert.equal(migrated.data.refreshToken,undefined);assert.ok(migrated.data.cookieSession);
   assert.equal((await send('/auth/refresh',{}, {Cookie:cookie(migrated),'X-Bansir-Client':''})).status,400);
+  const full=await send('/auth/login',{email,password},{'X-Bansir-Session-Mode':'cookie'});
+  assert.equal(full.status,200);assert.equal(full.data.token,undefined);assert.equal(full.data.refreshToken,undefined);
+  assert.equal(full.headers.getSetCookie().length,2);assert.equal(full.data.cookieSession.mode,'cookie');
+  const cookies=full.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
+  const fullHeaders={...context(full,cookies),'X-Bansir-Session-Mode':'cookie'};
+  assert.equal((await send('/auth/me',undefined,fullHeaders)).status,200);
+  assert.equal((await send('/products',undefined,fullHeaders)).status,200);
+  assert.equal((await send('/products',undefined,{...fullHeaders,'X-CSRF-Token':''})).status,403);
+  assert.equal((await send('/products',undefined,{...fullHeaders,Origin:'https://evil.invalid'})).status,403);
+  assert.equal((await send('/products',undefined,{...fullHeaders,Origin:'',Referer:origin+'/pdv'})).status,200);
+  assert.equal((await send('/auth/me',{name:'Cookie User',phone:''},fullHeaders,'PUT')).status,200);
+  assert.equal((await send('/auth/me',{name:'Denied',phone:''},{...fullHeaders,'X-CSRF-Token':''},'PUT')).status,403);
+  // Cookies never authenticate native requests implicitly, nor does Bearer bypass cookie-mode CSRF.
+  assert.equal((await send('/products',undefined,{Cookie:cookies,'X-Bansir-Client':''})).status,401);
+  assert.equal((await send('/products',undefined,{...fullHeaders,'X-CSRF-Token':'',Authorization:'Bearer '+native.data.token})).status,403);
+  const logoutFull=await send('/auth/logout',{},fullHeaders);assert.equal(logoutFull.status,200);assert.equal(logoutFull.headers.getSetCookie().length,2);
+  assert.equal((await send('/products',undefined,fullHeaders)).status,401);
   await assignPlan(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:'browser-auth',code:'browser-two',name:'Browser test plan',maxEstablishments:2});
   const userId=(await admin.query('SELECT id FROM bansir.users WHERE email=$1',[email])).rows[0].id;
   await createEstablishment(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:'browser-auth',name:'Second cookie unit',documentId:'',memberships:[{userId,role:'admin',allowedRoutes:['products','settings']}]});

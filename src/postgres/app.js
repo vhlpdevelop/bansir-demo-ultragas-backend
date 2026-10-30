@@ -40,6 +40,8 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   const auth = createAuth(database, { jwtSecret, expiresIn });
   const browserSessions=createBrowserSessions({secret:jwtSecret,nodeEnv,allowedOrigins:allowed});
   const loginThrottle=createLoginThrottle(database,jwtSecret);
+  const bearerProtect=auth.protect;
+  auth.protect=(req,res,next)=>{try{if(browserSessions.isBrowser(req))res.set('Cache-Control','no-store');browserSessions.authenticate(req);bearerProtect(req,res,next);}catch(error){next(error);}};
   app.disable('x-powered-by');
   // No proxy is trusted implicitly; set TRUST_PROXY_HOPS for the deployed topology.
   app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
@@ -47,7 +49,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use(cors({ origin(origin, cb) {
     const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
     cb(null, !origin || allowed.includes(origin) || (nodeEnv !== 'production' && local));
-  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token','X-Pdv-Terminal','X-Bansir-Client','X-Bansir-Session','X-CSRF-Token'], credentials:true, exposedHeaders: ['Content-Disposition'] }));
+  }, allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id','X-Checkout-Token','X-Pdv-Terminal','X-Bansir-Client','X-Bansir-Session','X-CSRF-Token','X-Bansir-Session-Mode'], credentials:true, exposedHeaders: ['Content-Disposition'] }));
   mountMetaWebhook(app,{database});
   const uploads=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
