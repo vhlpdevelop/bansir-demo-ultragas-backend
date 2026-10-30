@@ -38,6 +38,10 @@ test('SSE shares one listener, isolates units and synchronizes independent brows
    await until(()=>stream.events.includes('ready'));return stream;
   };
   const first=await connect(a),second=await connect(b),foreign=await connect(other);
+  // Delivery wakeups share the existing listener and never cross unit boundaries.
+  await admin.query("SELECT pg_notify('bansir_notification_events',$1)",[JSON.stringify({delivery:true,tenantId:tenant.id,establishmentId:tenant.establishmentId})]);
+  await until(()=>first.events.includes('delivery')&&second.events.includes('delivery'));
+  await sleep(50);assert.equal(foreign.events.includes('delivery'),false);
   const count=s=>s.events.filter(e=>e==='changed').length;
   const insert=async unit=>{const id=randomUUID();await admin.query('INSERT INTO bansir.notifications(tenant_id,establishment_id,id,user_id,title,body) VALUES($1,$2,$3,$4,$5,$6)',[tenant.id,unit,id,user.id,'Private test','Never in SSE']);return id;};
   const id=await insert(tenant.establishmentId);await until(()=>count(first)===1&&count(second)===1);await sleep(50);assert.equal(count(foreign),0);

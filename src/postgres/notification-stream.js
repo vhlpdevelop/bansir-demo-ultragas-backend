@@ -1,3 +1,4 @@
+import {manageDeliveries,driveDeliveries,monitorDeliveries} from './delivery-permissions.js';
 import pg from 'pg';
 import {httpError} from './database.js';
 
@@ -17,6 +18,7 @@ export function mountNotificationStream(app,{database}){
     if(!event||typeof event!=='object')return;
     for(const p of peers){
      if(event.sessionId===p.identity.sessionId){p.end();continue;}
+     if(event.delivery&&p.deliveryEnabled&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed('delivery');
      if(event.userId===p.identity.userId&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed();
     }
    });
@@ -30,20 +32,22 @@ export function mountNotificationStream(app,{database}){
  app.get('/api/v1/notifications/stream',async(req,res,next)=>{
   try{
    const identity=req.identity;
-   await database.transaction(identity,async()=>{});
+   const deliveryEnabled=await database.transaction(identity,async(c,m)=>!!(manageDeliveries(m)||driveDeliveries(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard')));
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
    await ensureListener();
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
    if(req.destroyed)return;
    res.status(200).set({'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no'});
    res.setTimeout(0);res.flushHeaders();
-   let ended=false,busy=false,dirty=false;
+   let ended=false,busy=false;
    const write=value=>{if(!ended&&!res.write(value))end();};
    const end=()=>{if(ended)return;ended=true;clearInterval(heartbeat);clearTimeout(deadline);peers.delete(peer);res.end();};
-   const peer={identity,end,async changed(){
-    if(ended)return;if(busy){dirty=true;return;}busy=true;
-    try{do{dirty=false;await database.transaction(identity,async()=>{});write('event: changed\ndata: {}\n\n');}while(dirty&&!ended);}
-    catch{end();}finally{busy=false;}
+   const pending=new Set();
+   const peer={identity,end,deliveryEnabled,async changed(kind='changed'){
+    if(ended)return;pending.add(kind);if(busy)return;busy=true;
+    try{while(pending.size&&!ended){const kinds=[...pending];pending.clear();const permitted=await database.transaction(identity,async(c,m)=>!!(manageDeliveries(m)||driveDeliveries(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard')));
+     for(const event of kinds)if(event!=='delivery'||permitted)write(`event: ${event}\ndata: {}\n\n`);
+    }}catch{end();}finally{busy=false;}
    }};
    const heartbeat=setInterval(()=>write(': heartbeat\n\n'),20000);
    const deadline=setTimeout(end,Math.max(1,Math.min(300000,identity.accessExpiresAt-Date.now())));

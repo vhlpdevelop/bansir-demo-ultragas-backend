@@ -1,6 +1,6 @@
 # Proposta: pedidos, distribuição de entregas e indicadores
 
-Estado: preparação para revisão, sem criar página, tabelas ou endpoints de entregas nesta etapa. Escopo atualizado em 30/10/2026: localização opcional do destino no link e compartilhamento de posição pelo entregador durante o expediente no PWA, preservando operação por endereço quando não houver posição recente. Isso substitui a decisão anterior de iniciar sem coleta de localização. Rastreamento contínuo em segundo plano não é promessa desta proposta PWA.
+Estado: primeira versão operacional implementada em 30/10/2026. O guia [DELIVERY-OPERATIONS.md](DELIVERY-OPERATIONS.md) descreve o que foi entregue, os endpoints e os limites. Esta proposta permanece como roteiro para evolução: roteamento por vias, agrupamento de paradas e custos ainda não foram implementados. Por decisão do usuário, guardamos SOMENTE a última posição do entregador, sem histórico de coordenadas. O PWA acompanha durante uso ativo; não garante coleta com tela bloqueada.
 
 ## O que existe e o que falta
 
@@ -88,13 +88,13 @@ Administrador da unidade acompanha as posições do expediente. Outros usuários
 
 Usar watchPosition no cliente e limitar envio HTTPS: como ponto inicial de ajuste, no máximo uma atualização a cada 15–30 segundos em movimento; reduzir quando parado e nunca gerar posição nova por falta de amostra. Atualizar imediatamente o status de pausa/encerramento quando houver conexão. São metas de amostragem enquanto o PWA estiver executando, não garantias de frequência do sistema operacional.
 
-Backend mantém última posição por entregador e sessão de trabalho; histórico usa amostragem limitada, validade e política de retenção a definir antes de habilitar em produção. Evitar gravar um ponto por segundo, recalcular todas as rotas em cada movimento ou chamar serviço pago de mapas a cada posição. Alterar só o marcador não requer recalcular o trajeto. Manter cache de geocodificação/rotas conforme regras do fornecedor escolhido.
+Backend mantém somente a última posição por entregador/unidade, vinculada ao coletor e à sessão autenticada. Não há tabela, fila ou buffer de histórico de posições. Pausa, encerramento e logout do coletor apagam o ponto operacional. Evitar gravar um ponto por segundo, recalcular todas as rotas em cada movimento ou chamar serviço pago de mapas a cada posição. Alterar só o marcador não requer recalcular o trajeto. Manter cache de geocodificação/rotas conforme regras do fornecedor escolhido.
 
 Autenticar como o próprio entregador; tenant/unidade/identidade vêm da sessão. Um único coletor ativo por entregador/unidade evita dois celulares sobrescrevendo posições. Outro navegador pode consultar as próprias entregas; assumir a coleta exige transferência explícita e revoga o identificador do coletor anterior. Dois navegadores do administrador podem acompanhar sem disputar a coleta. Sessão de trabalho não é caixa nem depende de token de terminal PDV.
 
 Amostras têm sequência/idempotência, capturadoEm e recebidoEm do servidor, precisão e identificação do coletor. Validar limites geográficos numéricos, timestamps futuros/antigos, tamanho de lote e frequência; amostra atrasada não substitui uma mais recente. Dados enviados por software são declarações do dispositivo, não prova antifraude de localização. Logout do coletor/revogação de acesso impede novos envios; expiração/ausência de contato deixa a última posição desatualizada. Logout em um navegador de consulta não encerra outra sessão de trabalho autorizada.
 
-O entregador envia posições por HTTPS; SSE pode avisar as dashboards autorizadas de mudanças e REST entrega o snapshot privado, com agrupamento de atualizações para evitar uma consulta por ponto. O stream atual sinaliza apenas notificações; o tópico de entregas e suas permissões ainda terão de ser implementados. Sem Redis/WebSocket novo nesta proposta. Sem rede, conclusão pode ficar pendente de sincronização com chave estável; não exibir como confirmada no servidor antes do aceite. Buffer de posições, se houver, é limitado e nunca mantém histórico indefinido no dispositivo.
+O entregador envia posições por HTTPS; SSE pode avisar as dashboards autorizadas de mudanças e REST entrega o snapshot privado, com agrupamento de atualizações para evitar uma consulta por ponto. O tópico de entregas foi implementado no SSE existente, com aviso vazio e snapshot privado obtido por REST. Sem Redis/WebSocket novo nesta proposta. Sem rede, conclusão pode ficar pendente de sincronização com chave estável; não exibir como confirmada no servidor antes do aceite. Buffer de posições, se houver, é limitado e nunca mantém histórico indefinido no dispositivo.
 
 ## Validação adicional antes de habilitar localização
 

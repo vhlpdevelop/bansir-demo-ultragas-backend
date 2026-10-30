@@ -87,6 +87,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    assert.equal((await publicSend('/orders','POST',{...body,items:[{productId:foreignProduct.id,quantity:1,expectedUnitPriceCents:100}]},checkoutA.token)).status,400);
    assert.equal((await publicSend('/orders','POST',{...body,customerId:randomUUID()},checkoutA.token)).status,400);
    const before=Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock);
+   body.deliveryLocation={latitude:-15.5,longitude:-56.2,accuracy:12,capturedAt:new Date().toISOString(),confirmed:true};
    const created=await publicSend('/orders','POST',body,checkoutA.token);assert.equal(created.status,201,JSON.stringify(created.body));order=created.body.data;assert.equal(order.totalCents,24790);assert.equal(order.status,'new');assert.deepEqual(Object.keys(order).sort(),['id','status','totalCents']);
    assert.equal((await publicSend('/orders','POST',body,checkoutA.token)).body.data.id,order.id);assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before);
    assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutB.token)).status,404);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).status,200);
@@ -100,6 +101,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const before=Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock);
    const results=await Promise.all([send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true,deliveryEmployeeId:deliverer.id}),send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true,deliveryEmployeeId:deliverer.id})]);assert.ok(results.every(r=>[200,201].includes(r.status)),JSON.stringify(results));assert.equal(results[0].body.data.id,results[1].body.data.id);
    const sale=results[0].body.data;assert.equal(sale.status,'pending');assert.equal(sale.outstanding_cents,24790);assert.equal(sale.delivery_fee_cents,700);assert.equal(sale.delivery_employee_id,deliverer.id);assert.equal(sale.customer_name,'Maria de Teste');assert.equal(sale.delivery_address,'Rua de entrega informada 200');assert.equal(sale.payments.length,0);assert.equal(sale.invoiceIssued,false);
+   const target=(await admin.query('SELECT latitude,longitude FROM bansir.delivery_tasks WHERE sale_id=$1',[sale.id])).rows[0];assert.equal(target.latitude,-15.5);assert.equal(target.longitude,-56.2);
    assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before-2);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).body.data.status,'accepted');
    assert.equal((await send(`/storefront/orders/${order.id}/reject`,'POST',{reason:'Cannot reject accepted'})).status,409);
   });

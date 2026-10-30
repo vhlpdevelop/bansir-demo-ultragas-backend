@@ -1,3 +1,4 @@
+import {mountDeliveries} from './deliveries.js';
 import {mountNotificationStream} from './notification-stream.js';
 import {createLoginThrottle} from './login-throttle.js';
 import {createBrowserSessions} from './browser-sessions.js';
@@ -94,6 +95,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountProductImages(app,{scoped,database,imageStorage});
   mountPdvTerminals(app,{scoped});
   mountAccess(app,{scoped});
+  mountDeliveries(app,{database,route});
   mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);
