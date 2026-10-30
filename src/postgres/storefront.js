@@ -135,6 +135,19 @@ export function mountStorefrontAdmin(app,{scoped}){
    ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[search,page*30]);
   return {data:result.rows.map(({total,...r})=>r),meta:{total:Number(result.rows[0]?.total||0),serverNow:new Date().toISOString()}};
  }));
+ app.get('/api/v1/storefront/orders/map',scoped('sales',true,async c=>{
+  const store=point((await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config?.location);
+  const rows=(await c.query(`SELECT o.id,o.customer_name,o.delivery_address,o.delivery_location,d.latitude,d.longitude,d.status AS delivery_status,d.delivered_at,
+   o.status AS order_status,count(*) OVER()::int AS total
+   FROM bansir.storefront_orders o LEFT JOIN bansir.delivery_tasks d ON (d.tenant_id,d.establishment_id,d.sale_id)=(o.tenant_id,o.establishment_id,o.sale_id)
+   WHERE o.fulfillment='delivery' AND o.status IN('new','accepted')
+   AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE(x.tenant_id,x.establishment_id,x.sale_id)=(o.tenant_id,o.establishment_id,o.sale_id))
+   AND (d.status IS NULL OR d.status<>'cancelled')
+   AND (d.status IS DISTINCT FROM 'delivered' OR d.delivered_at>now()-interval '5 minutes')
+   ORDER BY (o.status='new') DESC,o.created_at,id LIMIT 1000`)).rows;
+  const data=rows.map(o=>({id:o.id,name:o.customer_name,address:o.delivery_address,point:point(o)||point(o.delivery_location),status:o.delivery_status==='delivered'?'delivered':o.delivery_status==='en_route'?'en_route':o.delivery_status==='failed'?'failed':o.order_status==='accepted'?'accepted':'new',deliveredAt:o.delivered_at}));
+  return {data:{store,orders:data,total:rows[0]?.total||0,limited:(rows[0]?.total||0)>1000,updatedAt:new Date().toISOString()}};
+ }));
  app.get('/api/v1/storefront/orders',scoped('sales',true,async(c,req)=>{
   const q=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','new','accepted','rejected','cancelled']).default('all'),search:z.string().trim().max(200).default('')}).parse(req.query);
   const where="($1='all' OR status=$1) AND($2='' OR strpos(lower(customer_name||' '||phone||' '||delivery_address||' '||id::text),lower($2))>0)";

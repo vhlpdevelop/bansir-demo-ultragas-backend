@@ -104,6 +104,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const customer=(await admin.query('SELECT name,address FROM bansir.customers WHERE phone=$1 AND active',[checkoutA.phone])).rows[0];assert.equal(customer.name,'Maria de Teste');assert.match(customer.address,/Rua Um/);
   });
   await t.test('staff acceptance binds order to one sale and deliverer; receipt, stock and pending payment stay scoped',async()=>{
+   const initialMap=await send('/storefront/orders/map');assert.equal(initialMap.status,200,JSON.stringify(initialMap.body));assert.equal(initialMap.body.data.orders.find(o=>o.id===order.id).status,'new');assert.equal(initialMap.body.data.store.latitude,-15.6);
    const privateOrder=(await send('/storefront/orders')).body.data.find(o=>o.id===order.id);assert.ok(privateOrder.customer_id);assert.equal(privateOrder.customer_name,'Nome informado no pedido');
    assert.deepEqual((await send('/storefront/orders','GET',undefined,{token:s2.token})).body.data,[]);
    assert.equal((await send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true},{token:s2.token})).status,404);
@@ -114,6 +115,20 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const target=(await admin.query('SELECT latitude,longitude FROM bansir.delivery_tasks WHERE sale_id=$1',[sale.id])).rows[0];assert.equal(target.latitude,-15.61);assert.equal(target.longitude,-56.11);
    assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before-2);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).body.data.status,'accepted');
    assert.equal((await send(`/storefront/orders/${order.id}/reject`,'POST',{reason:'Cannot reject accepted'})).status,409);
+  });
+  await t.test('order map stays scoped, tracks delivery state and expires completed deliveries',async()=>{
+   assert.equal((await send('/storefront/orders/map','GET',undefined,{token:null})).status,401);
+   assert.deepEqual((await send('/storefront/orders/map','GET',undefined,{token:s2.token})).body.data.orders,[]);
+   const task=(await admin.query('SELECT sale_id FROM bansir.storefront_orders WHERE id=$1',[order.id])).rows[0];
+   const mapped=async()=>{const r=await send('/storefront/orders/map');assert.equal(r.status,200,JSON.stringify(r.body));return r.body.data.orders.find(o=>o.id===order.id);};
+   assert.equal((await mapped()).status,'accepted');assert.equal((await mapped()).point.latitude,-15.61);
+   await admin.query("UPDATE bansir.storefront_orders SET status='rejected' WHERE id=$1",[order.id]);assert.equal(await mapped(),undefined);
+   await admin.query("UPDATE bansir.storefront_orders SET status='accepted' WHERE id=$1",[order.id]);
+   await admin.query("UPDATE bansir.delivery_tasks SET status='en_route' WHERE sale_id=$1",[task.sale_id]);assert.equal((await mapped()).status,'en_route');
+   await admin.query("UPDATE bansir.delivery_tasks SET status='delivered',delivered_at=now()-interval '4 minutes' WHERE sale_id=$1",[task.sale_id]);assert.equal((await mapped()).status,'delivered');
+   await admin.query("UPDATE bansir.delivery_tasks SET delivered_at=now()-interval '5 minutes' WHERE sale_id=$1",[task.sale_id]);assert.equal(await mapped(),undefined);
+   await admin.query("UPDATE bansir.delivery_tasks SET status='cancelled' WHERE sale_id=$1",[task.sale_id]);assert.equal(await mapped(),undefined);
+   await admin.query("UPDATE bansir.delivery_tasks SET status='assigned',delivered_at=NULL WHERE sale_id=$1",[task.sale_id]);
   });
   await t.test('customer profile shows scoped sale and order history, contact data and balances',async()=>{
    const customer=(await send('/customers')).body.data.find(r=>r.name==='Maria de Teste');
@@ -127,6 +142,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const created=await publicSend('/orders','POST',body,checkoutB.token);assert.equal(created.status,201,JSON.stringify(created.body));
    const rejected=await send(`/storefront/orders/${created.body.data.id}/reject`,'POST',{reason:'Internal test note'});assert.equal(rejected.status,200);
    assert.equal((await send(`/storefront/orders/${created.body.data.id}/reject`,'POST',{reason:'Internal test note'})).status,200);
+   assert.equal((await send('/storefront/orders/map')).body.data.orders.some(o=>o.id===created.body.data.id),false);
    const status=await publicSend(`/orders/${created.body.data.id}`,'GET',undefined,checkoutB.token);assert.equal(status.body.data.status,'rejected');assert.equal(JSON.stringify(status.body).includes('Internal test note'),false);
    assert.equal((await send(`/storefront/orders/${created.body.data.id}/accept`,'POST',{customerConfirmed:true})).status,409);
    const pickup=await publicSend('/orders','POST',{...body,requestKey:randomUUID()},checkoutB.token);
