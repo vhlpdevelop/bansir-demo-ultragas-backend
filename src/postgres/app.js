@@ -1,3 +1,4 @@
+import {mountNotificationStream} from './notification-stream.js';
 import {createLoginThrottle} from './login-throttle.js';
 import {createBrowserSessions} from './browser-sessions.js';
 import {mountBridge} from './bridge.js';
@@ -76,6 +77,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountPlatformAdmin(app,{database,route,browserSessions,loginThrottle});
   mountPublicStorefront(app,{database,route,clock,imageStorage});
   app.use('/api/v1', auth.protect);
+  mountNotificationStream(app,{database});
   app.use(async(req,res,next)=>{try{const feature=routeFeature(req.path);if(feature)await database.transaction(req.identity,async c=>{await requireFeature(c,feature);if(req.path==='/api/v1/storefront/conversations')await requireFeature(c,'whatsapp');});next();}catch(e){next(e);}});
   app.post('/api/v1/auth/logout',route(async req=>{browserSessions.checkRefreshMutation(req);const data=await auth.logout(req.identity);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
   app.get('/api/v1/auth/me', route(async req => ({ data: (await auth.session(req.identity)).user })));

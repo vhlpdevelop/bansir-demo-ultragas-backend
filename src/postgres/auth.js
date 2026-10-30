@@ -128,7 +128,7 @@ export function createAuth(database,{ jwtSecret,expiresIn='10m' }) {
       try {
         const token=req.headers.authorization?.startsWith('Bearer ')?req.headers.authorization.slice(7).trim():'';
         const payload=verify(token,'access');
-        req.identity={userId:payload.id,tenantId:payload.tenantId,establishmentId:payload.establishmentId,sessionId:payload.jti};
+        req.identity={accessExpiresAt:payload.exp*1000,userId:payload.id,tenantId:payload.tenantId,establishmentId:payload.establishmentId,sessionId:payload.jti};
         next();
       } catch (error) {next(error);}
     }

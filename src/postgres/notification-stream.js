@@ -1,0 +1,55 @@
+import pg from 'pg';
+import {httpError} from './database.js';
+
+// One dedicated LISTEN connection per API process, never one DB connection per tab.
+export function mountNotificationStream(app,{database}){
+ const peers=new Set();let listener,starting,closed=false;
+ const disconnect=()=>{const old=listener;listener=null;for(const p of [...peers])p.end();old?.end().catch(()=>{});};
+ const ensureListener=async()=>{
+  if(closed)throw httpError(503,'Canal de avisos indisponível.','STREAM_UNAVAILABLE');
+  if(listener)return;
+  if(!starting)starting=(async()=>{
+   const client=new pg.Client({...database.pool.options,application_name:'bansir-notification-listener',connectionTimeoutMillis:5000,keepAlive:true});
+   client.on('error',()=>{if(listener===client)disconnect();});
+   client.on('end',()=>{if(listener===client)disconnect();});
+   client.on('notification',message=>{
+    let event;try{event=JSON.parse(message.payload);}catch{return;}
+    if(!event||typeof event!=='object')return;
+    for(const p of peers){
+     if(event.sessionId===p.identity.sessionId){p.end();continue;}
+     if(event.userId===p.identity.userId&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed();
+    }
+   });
+   try{await client.connect();await client.query('LISTEN bansir_notification_events');if(closed){await client.end();throw new Error('STREAM_CLOSED');}listener=client;}
+   catch(error){await client.end().catch(()=>{});throw error;}
+  })().finally(()=>{starting=null;});
+  await starting;
+ };
+ database.onClose(async()=>{closed=true;disconnect();await starting?.catch(()=>{});});
+ app.locals.notificationStream={close:()=>{closed=true;disconnect();}};
+ app.get('/api/v1/notifications/stream',async(req,res,next)=>{
+  try{
+   const identity=req.identity;
+   await database.transaction(identity,async()=>{});
+   if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
+   await ensureListener();
+   if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
+   if(req.destroyed)return;
+   res.status(200).set({'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no'});
+   res.setTimeout(0);res.flushHeaders();
+   let ended=false,busy=false,dirty=false;
+   const write=value=>{if(!ended&&!res.write(value))end();};
+   const end=()=>{if(ended)return;ended=true;clearInterval(heartbeat);clearTimeout(deadline);peers.delete(peer);res.end();};
+   const peer={identity,end,async changed(){
+    if(ended)return;if(busy){dirty=true;return;}busy=true;
+    try{do{dirty=false;await database.transaction(identity,async()=>{});write('event: changed\ndata: {}\n\n');}while(dirty&&!ended);}
+    catch{end();}finally{busy=false;}
+   }};
+   const heartbeat=setInterval(()=>write(': heartbeat\n\n'),20000);
+   const deadline=setTimeout(end,Math.max(1,Math.min(300000,identity.accessExpiresAt-Date.now())));
+   res.on('close',end);peers.add(peer);
+   // Always resync on connection/reconnection: NOTIFY is only a wakeup signal.
+   write('event: ready\ndata: {}\n\n');
+  }catch(error){if(!res.headersSent)next(error);else res.end();}
+ });
+}

@@ -13,7 +13,7 @@ const password = randomBytes(24).toString('hex');
 const allowedTests=['test/postgres.integration.test.js','test/workers.integration.test.js','test/pdv.integration.test.js','test/storefront.integration.test.js','test/jasley-import.integration.test.js','test/password.integration.test.js','test/suppliers-fiscal.integration.test.js','test/product-pricing.integration.test.js','test/refresh.integration.test.js'];
 allowedTests.push('test/bridge-postgres.integration.test.js','test/meta-vouchers-fleet.integration.test.js','test/management.integration.test.js','test/platform-admin.integration.test.js');
 allowedTests.push('test/pdv-terminals.integration.test.js');
-allowedTests.push('test/browser-auth.integration.test.js');
+allowedTests.push('test/browser-auth.integration.test.js','test/notification-stream.integration.test.js');
 const selectedTests=process.argv.length>2?process.argv.slice(2):allowedTests;
 if(selectedTests.some(file=>!allowedTests.includes(file)))throw new Error('Arquivo de teste não permitido.');
 let created = false;

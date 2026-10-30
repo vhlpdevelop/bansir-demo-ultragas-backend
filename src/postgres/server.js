@@ -20,6 +20,7 @@ export async function startPostgresServer() {
       const timeout = setTimeout(() => { server.closeAllConnections(); }, 15000);
       timeout.unref();
       app.locals.bridge.close().catch(()=>{});
+      app.locals.notificationStream.close();
       server.close(async () => { clearTimeout(timeout); await database.close(); });
     };
     process.once('SIGTERM', stop);

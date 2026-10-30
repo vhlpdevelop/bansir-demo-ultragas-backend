@@ -62,7 +62,9 @@ export function createDatabase({ connectionString, max = 10 }) {
     } finally { client.release(discard); }
   }
 
+  const closeHooks=[];
   return {
+    onClose:fn=>closeHooks.push(fn),
     pool, transaction,
     async ready() {
       const { rows: [role] } = await pool.query(`SELECT r.rolsuper, r.rolbypassrls,
@@ -77,6 +79,6 @@ export function createDatabase({ connectionString, max = 10 }) {
       await pool.query('SELECT 1 FROM bansir.products LIMIT 0');
     },
     async ping() { await pool.query('SELECT 1'); },
-    close: () => pool.end()
+    close: async () => {await Promise.allSettled(closeHooks.map(fn=>fn()));await pool.end();}
   };
 }
