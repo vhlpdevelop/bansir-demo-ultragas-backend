@@ -36,7 +36,7 @@ import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -96,7 +96,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountProductImages(app,{scoped,database,imageStorage});
   mountPdvTerminals(app,{scoped});
   mountAccess(app,{scoped});
-  mountDeliveries(app,{database,route});
+  mountDeliveries(app,{database,route,deliveryRouter});
   mountBridge(app,{scoped,database,nodeEnv});
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);

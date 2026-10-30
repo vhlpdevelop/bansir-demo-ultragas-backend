@@ -1,3 +1,6 @@
+import {routePlanInput,routeUnitLock,applySuggestedInsertion} from './delivery-route-state.js';
+import {mountDeliveryRouting} from './delivery-routing-routes.js';
+import {createDeliveryRouter} from './delivery-router.js';
 import {z} from 'zod';
 import {createHash} from 'node:crypto';
 import rateLimit from 'express-rate-limit';
@@ -22,7 +25,7 @@ export function positionState(d,now=Date.now()){
  if(age>300000)return 'stale';if(age>90000)return 'outdated';if(d.accuracy>100)return 'imprecise';return 'recent';
 }
 async function drivers(c,positions){
- const rows=(await c.query(`SELECT d.id,d.name,d.phone,d.active AS driver_active,d.employee_id,${accountSql} AS user_id,u.name AS account_name,u.active AS account_active,
+ const rows=(await c.query(`SELECT d.id,d.name,d.phone,d.map_color_index,d.active AS driver_active,d.employee_id,${accountSql} AS user_id,u.name AS account_name,u.active AS account_active,
   w.on_duty,w.active,w.gps_state,w.latitude,w.longitude,w.accuracy,w.captured_at,w.received_at,w.started_at,
   (SELECT count(*)::int FROM bansir.delivery_tasks t WHERE t.driver_id=d.id AND t.status IN('assigned','en_route')) AS assigned,
   (SELECT count(*)::int FROM bansir.delivery_tasks t WHERE t.driver_id=d.id AND t.status='delivered') AS completed
@@ -43,7 +46,7 @@ async function tasks(c,{driverId,legacy=false,mode='all',zone='America/Cuiaba',f
  const rows=(await c.query(`SELECT t.*,s.customer_name,s.customer_phone,d.name AS driver_name,
  coalesce((SELECT jsonb_agg(jsonb_build_object('name',product_name,'quantity',quantity) ORDER BY position) FROM bansir.sale_items WHERE sale_id=t.sale_id),'[]') AS items
  FROM bansir.delivery_tasks t JOIN bansir.sales s ON s.id=t.sale_id LEFT JOIN bansir.deliverers d ON d.id=t.driver_id WHERE ${filter}
- ORDER BY CASE WHEN $3='all' AND t.status IN('pending','assigned','en_route','failed') THEN 0 ELSE 1 END,
+ ORDER BY CASE WHEN $3='active' THEN CASE WHEN t.status='en_route' THEN 0 WHEN t.status='assigned' THEN 1 ELSE 2 END END,CASE WHEN $3='active' THEN t.route_order END,CASE WHEN $3='all' AND t.status IN('pending','assigned','en_route','failed') THEN 0 ELSE 1 END,
  CASE WHEN $3 IN('today','history') THEN coalesce(t.delivered_at,t.updated_at) ELSE t.updated_at END DESC,t.sale_id DESC LIMIT $8 OFFSET $9`,[...params,limit,offset])).rows;
  if(mode!=='history')return rows;
  const total=Number((await c.query(`SELECT count(*) FROM bansir.delivery_tasks t WHERE ${filter}`,params)).rows[0].count);
@@ -63,7 +66,9 @@ async function prior(c,i,key,payload){
  if(row&&row.request_hash!==hash({...payload,userId:i.userId}))fail('Esta tentativa já foi usada com outros dados.','IDEMPOTENCY_CONFLICT');return !!row;
 }
 const audit=(c,i,key,payload,saleId)=>c.query('INSERT INTO bansir.delivery_events(tenant_id,establishment_id,sale_id,user_id,request_key,request_hash,action,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,saleId,i.userId,key,hash({...payload,userId:i.userId}),payload.action,payload.reason||'']);
-export function mountDeliveries(app,{database,route}){
+export function mountDeliveries(app,{database,route,deliveryRouter}){
+ const router=deliveryRouter||createDeliveryRouter();database.onClose(()=>router.close());
+ mountDeliveryRouting(app,{database,route,drivers,router});
  const own=fn=>route(req=>database.transaction(req.identity,(c,m)=>fn(c,req,m)));
  const manager=fn=>own((c,r,m)=>{if(!manageDeliveries(m))fail('Sem permissão para gerenciar entregas.','FORBIDDEN',403);return fn(c,r,m);});
  const driver=(fn,history=false)=>own(async(c,r,m)=>{if(!(history?viewDeliveryHistory(m):driveDeliveries(m)))fail('Acesso exclusivo ao entregador.','FORBIDDEN',403);const d=await ownDriver(c,r.identity);if(!d)fail('Peça ao administrador para vincular seu usuário a um entregador ativo.','DRIVER_NOT_LINKED',404);return fn(c,r,m,d);});
@@ -118,24 +123,24 @@ export function mountDeliveries(app,{database,route}){
   await c.query(`UPDATE bansir.driver_work SET latitude=$2,longitude=$3,accuracy=$4,captured_at=$5,received_at=now(),sequence=$6,point_hash=$7,gps_state='ok',updated_at=now() WHERE driver_id=$1`,[d.id,b.latitude,b.longitude,b.accuracy,b.capturedAt,b.sequence,fingerprint]);return {data:{accepted:true,sequence:b.sequence}};
  }));
  app.post('/api/v1/deliveries/tasks/:id/assign',manager(async(c,r)=>{
-  const b=z.object({requestKey:uuid,driverId:uuid,version:z.number().int().min(1),reason:text.default('')}).strict().parse(r.body),i=r.identity,payload={...b,action:'assign',saleId:r.params.id};
-  const t=await lockedTask(c,r.params.id);if(await prior(c,i,b.requestKey,payload))return {data:true};
+  const b=z.object({requestKey:uuid,driverId:uuid,version:z.number().int().min(1),reason:text.default(''),routePlan:routePlanInput.optional()}).strict().parse(r.body),i=r.identity,payload={...b,action:'assign',saleId:r.params.id};
+  await routeUnitLock(c,r.identity);const t=await lockedTask(c,r.params.id);if(await prior(c,i,b.requestKey,payload))return {data:true};
   if(t.version!==b.version)fail('Entrega alterada. Atualize antes de distribuir.','STALE_DELIVERY');
   if(['delivered','cancelled'].includes(t.status))fail('Esta entrega já foi encerrada.');
   if(t.status==='en_route'&&b.reason.length<5)fail('Justifique a reatribuição de entrega em rota.','REASON_REQUIRED',400);
   if(!(await c.query('SELECT id FROM bansir.deliverers WHERE id=$1 AND active FOR SHARE',[b.driverId])).rowCount)fail('Entregador inativo ou de outra unidade.','INVALID_DRIVER',400);
-  await c.query("UPDATE bansir.delivery_tasks SET driver_id=$2,status='assigned',version=version+1,departed_at=NULL,delivered_at=NULL,updated_at=now() WHERE sale_id=$1",[t.sale_id,b.driverId]);await audit(c,i,b.requestKey,payload,t.sale_id);return {data:true};
+  await c.query("UPDATE bansir.delivery_tasks SET driver_id=$2,status='assigned',version=version+1,departed_at=NULL,delivered_at=NULL,updated_at=now() WHERE sale_id=$1",[t.sale_id,b.driverId]);await applySuggestedInsertion(c,i,t.sale_id,b.driverId,b.routePlan);await audit(c,i,b.requestKey,payload,t.sale_id);return {data:true};
  }));
  app.patch('/api/v1/deliveries/tasks/:id/destination',manager(async(c,r)=>{
   const b=z.object({requestKey:uuid,version:z.number().int(),address:text.min(5),location:deliveryLocation.nullable()}).strict().parse(r.body),i=r.identity;
   // Audit stores only a digest, never the destination coordinates as historical payload.
-  const payload={...b,action:'destination',saleId:r.params.id};const t=await lockedTask(c,r.params.id);if(await prior(c,i,b.requestKey,payload))return {data:true};
+  const payload={...b,action:'destination',saleId:r.params.id};await routeUnitLock(c,i);const t=await lockedTask(c,r.params.id);if(await prior(c,i,b.requestKey,payload))return {data:true};
   if(t.version!==b.version)fail('Atualize a entrega antes de alterar.','STALE_DELIVERY');if(['delivered','cancelled'].includes(t.status))fail('Entrega encerrada.');
   await c.query('UPDATE bansir.delivery_tasks SET address=$2,latitude=$3,longitude=$4,accuracy=$5,destination_source=$6,version=version+1,updated_at=now() WHERE sale_id=$1',[t.sale_id,b.address,b.location?.latitude??null,b.location?.longitude??null,b.location?.accuracy??null,b.location?'confirmed':'address']);await audit(c,i,b.requestKey,payload,t.sale_id);return {data:true};
  }));
  app.post('/api/v1/deliveries/tasks/:id/actions',own(async(c,r,m)=>{
   const b=z.object({requestKey:uuid,version:z.number().int().min(1),action:z.enum(['depart','complete','failed']),reason:text.default('')}).strict().parse(r.body),i=r.identity;
-  const t=await lockedTask(c,r.params.id);const d=driveDeliveries(m)?await ownDriver(c,i):null;
+  await routeUnitLock(c,r.identity);const t=await lockedTask(c,r.params.id);const d=driveDeliveries(m)?await ownDriver(c,i):null;
   if(!manageDeliveries(m)&&(!d||d.id!==t.driver_id))fail('Entrega não encontrada.','NOT_FOUND',404);
   const payload={...b,saleId:t.sale_id};if(await prior(c,i,b.requestKey,payload))return {data:true};
   if(t.version!==b.version)fail('Entrega alterada. Atualize antes de confirmar.','STALE_DELIVERY');
