@@ -106,6 +106,25 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    const after=(await open(session.token,binding1)).body.data;assert.equal(after.id,before.id);assert.equal(after.user_id,before.user_id);assert.equal(after.opened_at,before.opened_at);
    assert.equal((await close(session.token,binding1)).status,200);
   });
+  await t.test('SmartPOS coexists with browser, rotates independently and preserves scoped cash identity',async()=>{
+   const code=(await activate(first.id)).body.data.code;
+   const smart=(await send('/pdv/terminals/pair','POST',{code,clientType:'smartpos'})).body.data;
+   assert.match(smart.token,/^pdvt_/);
+   assert.equal((await send('/pdv/terminals','GET',undefined,session.token,binding1)).body.data.current.id,first.id);
+   assert.equal((await send('/pdv/terminals','GET',undefined,session.token,smart.token)).body.data.current.id,first.id);
+   assert.equal((await send('/pdv/terminals/heartbeat','POST',{acquirerProvider:'PAGBANK',appVersion:'test',plugPagAvailable:true},session.token,smart.token)).status,200);
+   assert.equal((await send('/pdv/terminals/heartbeat','POST',{},session.token,binding1)).status,403);
+   assert.equal((await send('/pdv/terminals/heartbeat','POST',{},foreign.token,smart.token)).body.code,'TERMINAL_REVOKED');
+   const cash=(await open(session.token,binding1)).body.data;
+   assert.equal((await open(session.token,smart.token)).body.data.id,cash.id);
+   assert.equal((await open(operator.token,smart.token)).body.code,'TERMINAL_BUSY');
+   assert.equal((await close(session.token,smart.token)).status,200);
+   const replacement=(await send('/pdv/terminals/pair','POST',{code:(await activate(first.id)).body.data.code,clientType:'smartpos'})).body.data;
+   assert.equal((await open(session.token,smart.token)).body.code,'TERMINAL_REVOKED');
+   assert.equal((await send('/pdv/terminals','GET',undefined,session.token,binding1)).body.data.current.id,first.id);
+   assert.equal((await send('/pdv/terminals','GET',undefined,session.token,replacement.token)).body.data.current.id,first.id);
+   assert.equal((await send('/pdv/terminals/capabilities')).body.data.independentBindings,true);
+  });
   await t.test('re-enrollment revokes old credential, disabling never bypasses enforcement, audit is append-only',async()=>{
    const code=(await activate(first.id)).body.data.code,newBinding=(await pair(code)).body.data.token;
    assert.equal((await open(session.token,binding1)).body.code,'TERMINAL_REVOKED');

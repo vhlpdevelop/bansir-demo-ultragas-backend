@@ -103,7 +103,8 @@ export function createAuth(database,{ jwtSecret,expiresIn='10m' }) {
         const hash=await bcrypt.hash(data.newPassword,12);
         const result=(await client.query('SELECT bansir.change_own_password($1,$2) AS changed',[row.password_hash,hash])).rows[0];
         if(!result.changed)throw httpError(409,'Credenciais alteradas. Entre novamente.','PASSWORD_CHANGED');
-        return {changed:true,requiresLogin:true};
+        const user=(await client.query('SELECT id,name,email,phone,must_change_password AS "mustChangePassword" FROM bansir.users WHERE id=$1',[context.userId])).rows[0];
+        return {changed:true,requiresLogin:true,user};
       });
     },
     async login({email,password}) {
