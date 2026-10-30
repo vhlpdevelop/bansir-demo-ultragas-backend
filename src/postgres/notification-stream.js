@@ -1,10 +1,12 @@
 import {tenantFeatures} from './features.js';
+import {requirePermission} from './catalog.js';
 import {manageDeliveries,driveDeliveries,monitorDeliveries,viewDeliveryHistory} from './delivery-permissions.js';
 import pg from 'pg';
 import {httpError} from './database.js';
 
 // One dedicated LISTEN connection per API process, never one DB connection per tab.
 export function mountNotificationStream(app,{database}){
+ const permissions=(identity)=>database.transaction(identity,async(c,m)=>{const f=await tenantFeatures(c);let orders=false;try{requirePermission(m,'sales',true);orders=!!f.orderLink;}catch(e){if(e.status!==403)throw e;}return {orders,delivery:!!(f.deliveries&&(manageDeliveries(m)||driveDeliveries(m)||viewDeliveryHistory(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard')))};});
  const peers=new Set();let listener,starting,closed=false;
  const disconnect=()=>{const old=listener;listener=null;for(const p of [...peers])p.end();old?.end().catch(()=>{});};
  const ensureListener=async()=>{
@@ -20,6 +22,7 @@ export function mountNotificationStream(app,{database}){
     for(const p of peers){
      if(event.sessionId===p.identity.sessionId){p.end();continue;}
      if(event.delivery&&p.deliveryEnabled&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed('delivery');
+     if(event.orders&&p.ordersEnabled&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed('orders');
      if(event.userId===p.identity.userId&&event.tenantId===p.identity.tenantId&&event.establishmentId===p.identity.establishmentId)p.changed();
     }
    });
@@ -33,7 +36,7 @@ export function mountNotificationStream(app,{database}){
  app.get('/api/v1/notifications/stream',async(req,res,next)=>{
   try{
    const identity=req.identity;
-   const deliveryEnabled=await database.transaction(identity,async(c,m)=>!!((await tenantFeatures(c)).deliveries&&(manageDeliveries(m)||driveDeliveries(m)||viewDeliveryHistory(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard'))));
+   const permitted=await permissions(identity),deliveryEnabled=permitted.delivery,ordersEnabled=permitted.orders;
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
    await ensureListener();
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
@@ -44,10 +47,10 @@ export function mountNotificationStream(app,{database}){
    const write=value=>{if(!ended&&!res.write(value))end();};
    const end=()=>{if(ended)return;ended=true;clearInterval(heartbeat);clearTimeout(deadline);peers.delete(peer);res.end();};
    const pending=new Set();
-   const peer={identity,end,deliveryEnabled,async changed(kind='changed'){
+   const peer={identity,end,deliveryEnabled,ordersEnabled,async changed(kind='changed'){
     if(ended)return;pending.add(kind);if(busy)return;busy=true;
-    try{while(pending.size&&!ended){const kinds=[...pending];pending.clear();const permitted=await database.transaction(identity,async(c,m)=>!!((await tenantFeatures(c)).deliveries&&(manageDeliveries(m)||driveDeliveries(m)||viewDeliveryHistory(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard'))));
-     for(const event of kinds)if(event!=='delivery'||permitted)write(`event: ${event}\ndata: {}\n\n`);
+    try{while(pending.size&&!ended){const kinds=[...pending];pending.clear();const permitted=await permissions(identity);
+     for(const event of kinds)if((event!=='delivery'||permitted.delivery)&&(event!=='orders'||permitted.orders))write(`event: ${event}\ndata: {}\n\n`);
     }}catch{end();}finally{busy=false;}
    }};
    const heartbeat=setInterval(()=>write(': heartbeat\n\n'),20000);

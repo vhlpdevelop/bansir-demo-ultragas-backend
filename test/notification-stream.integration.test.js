@@ -42,6 +42,13 @@ test('SSE shares one listener, isolates units and synchronizes independent brows
   await admin.query("SELECT pg_notify('bansir_notification_events',$1)",[JSON.stringify({delivery:true,tenantId:tenant.id,establishmentId:tenant.establishmentId})]);
   await until(()=>first.events.includes('delivery')&&second.events.includes('delivery'));
   await sleep(50);assert.equal(foreign.events.includes('delivery'),false);
+  await admin.query("SELECT pg_notify('bansir_notification_events',$1)",[JSON.stringify({orders:true,tenantId:tenant.id,establishmentId:tenant.establishmentId})]);
+  await until(()=>first.events.includes('orders')&&second.events.includes('orders'));assert.equal(foreign.events.includes('orders'),false);
+  const beforeOrders=first.events.filter(e=>e==='orders').length;
+  await admin.query("UPDATE bansir.establishment_memberships SET role='entregador',allowed_routes=ARRAY['my-deliveries']::text[] WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
+  await admin.query("SELECT pg_notify('bansir_notification_events',$1)",[JSON.stringify({orders:true,tenantId:tenant.id,establishmentId:tenant.establishmentId})]);
+  await sleep(100);assert.equal(first.events.filter(e=>e==='orders').length,beforeOrders);
+  await admin.query("UPDATE bansir.establishment_memberships SET role='admin',allowed_routes=ARRAY[]::text[] WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
   const count=s=>s.events.filter(e=>e==='changed').length;
   const insert=async unit=>{const id=randomUUID();await admin.query('INSERT INTO bansir.notifications(tenant_id,establishment_id,id,user_id,title,body) VALUES($1,$2,$3,$4,$5,$6)',[tenant.id,unit,id,user.id,'Private test','Never in SSE']);return id;};
   const id=await insert(tenant.establishmentId);await until(()=>count(first)===1&&count(second)===1);await sleep(50);assert.equal(count(foreign),0);

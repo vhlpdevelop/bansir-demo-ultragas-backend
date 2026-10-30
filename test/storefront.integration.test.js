@@ -14,7 +14,7 @@ import {rowsFromPdfLines} from '../src/postgres/customers.js';
 async function clientPdf(){const doc=new PDFDocument({margin:40});const chunks=[];const done=new Promise(resolve=>{doc.on('data',chunk=>chunks.push(chunk));doc.on('end',()=>resolve(Buffer.concat(chunks)));});doc.fontSize(10).text('Nome',40,50).text('Telefone',220,50).text('Endereco',380,50);doc.text('Maria de Teste',40,90).text('(65) 99999-1111',220,90).text('Rua Um 10 Centro',380,90);doc.text('Pedro de Teste',40,120).text('(65) 99998-8888',220,120).text('Rua Dois 20 Centro',380,120);doc.end();return done;}
 test('Deliverers, customer PDF import and public order link',{skip:!process.env.TEST_POSTGRES_URL,timeout:90000},async t=>{
  assert.match(new URL(process.env.TEST_POSTGRES_URL).pathname,/^\/bansir_test_[a-f0-9]+$/);
- const admin=new pg.Client({connectionString:process.env.TEST_POSTGRES_ADMIN_URL});await admin.connect();const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL,max:8});let server;
+ const admin=new pg.Client({connectionString:process.env.TEST_POSTGRES_ADMIN_URL});await admin.connect();const signals=[];admin.on('notification',n=>signals.push(JSON.parse(n.payload)));await admin.query('LISTEN bansir_notification_events');const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL,max:8});let server;
  try{
   const password=randomBytes(20).toString('hex'),secret=randomBytes(48).toString('hex');
   const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'shop-test',name:'Shop A',adminName:'Admin',email:'shop@test.invalid',password});
@@ -99,6 +99,8 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    await admin.query("UPDATE bansir.storefronts SET config=jsonb_set(config,'{deliveryRadiusKm}','10') WHERE tenant_id=$1",[tenant.id]);
    assert.equal(Number((await admin.query('SELECT count(*) FROM bansir.storefront_orders WHERE tenant_id=$1',[tenant.id])).rows[0].count),beforeOrders);
    const created=await publicSend('/orders','POST',body,checkoutA.token);assert.equal(created.status,201,JSON.stringify(created.body));order=created.body.data;assert.equal(order.totalCents,24790);assert.equal(order.status,'new');assert.deepEqual(Object.keys(order).sort(),['id','status','totalCents']);
+   for(let n=0;n<50&&!signals.some(s=>s.orders&&s.establishmentId===tenant.establishmentId);n++)await new Promise(r=>setTimeout(r,10));
+   assert.ok(signals.some(s=>s.orders&&s.establishmentId===tenant.establishmentId));assert.ok(signals.filter(s=>s.orders).every(s=>Object.keys(s).sort().join(',')==='establishmentId,orders,tenantId'));
    assert.equal((await publicSend('/orders','POST',body,checkoutA.token)).body.data.id,order.id);assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before);
    assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutB.token)).status,404);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).status,200);
    const customer=(await admin.query('SELECT name,address FROM bansir.customers WHERE phone=$1 AND active',[checkoutA.phone])).rows[0];assert.equal(customer.name,'Maria de Teste');assert.match(customer.address,/Rua Um/);
