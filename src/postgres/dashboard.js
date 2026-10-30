@@ -16,6 +16,21 @@ export async function dashboard(c,query,member){
  const daily=(await c.query(`WITH days AS (SELECT (now() AT TIME ZONE $1)::date-n AS day FROM generate_series(6,0,-1) n)
  SELECT to_char(d.day,'YYYY-MM-DD') AS day,coalesce(sum(s.total_cents),0)::text AS cents,count(s.id)::int AS count FROM days d LEFT JOIN bansir.sales s ON (s.created_at AT TIME ZONE $1)::date=d.day AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) GROUP BY d.day ORDER BY d.day`,[zone])).rows.map(r=>({day:r.day,revenue:Number(r.cents)/100,count:r.count}));
  const vouchers=(await c.query(`SELECT count(*) FILTER(WHERE v.status='ACTIVE' AND v.sale_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=v.sale_id) AND s.total_cents=(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.sale_payments p WHERE p.sale_id=v.sale_id))::int AS active,count(*) FILTER(WHERE v.status='REDEEMED' AND (v.redeemed_at AT TIME ZONE $1)::date=(now() AT TIME ZONE $1)::date)::int AS redeemed_today FROM bansir.vouchers v LEFT JOIN bansir.sales s ON s.id=v.sale_id`,[zone])).rows[0];
+ const terminalCash=await terminalCashSnapshot(c);
  const revenue=Number(sales.revenue)/100,previous=Number(sales.previous)/100;
- return {sales:sales.sales,revenue,previousRevenue:previous,variation:previous>0?Math.round((revenue-previous)/previous*1000)/10:null,ticket:sales.sales?revenue/sales.sales:0,today:{sales:sales.today_count,revenue:Number(sales.today_revenue)/100},outstanding:Number(sales.outstanding)/100,...stock,latest:latest.map(r=>({...r,total:Number(r.total_cents)/100})),lowStock,topProducts,daily,vouchers,timezone:zone,updatedAt:new Date().toISOString()};
+ return {terminalCash,sales:sales.sales,revenue,previousRevenue:previous,variation:previous>0?Math.round((revenue-previous)/previous*1000)/10:null,ticket:sales.sales?revenue/sales.sales:0,today:{sales:sales.today_count,revenue:Number(sales.today_revenue)/100},outstanding:Number(sales.outstanding)/100,...stock,latest:latest.map(r=>({...r,total:Number(r.total_cents)/100})),lowStock,topProducts,daily,vouchers,timezone:zone,updatedAt:new Date().toISOString()};
+}
+
+export async function terminalCashSnapshot(c){
+ const terminals=(await c.query(`SELECT t.id,t.name,t.active,c.id AS cash_id,c.opened_at,u.name AS operator_name,
+  c.opening_cents,CASE WHEN c.id IS NOT NULL THEN c.opening_cents+coalesce(m.delta,0) END AS expected_cents
+  FROM bansir.pdv_terminals t LEFT JOIN bansir.cash_sessions c ON(c.tenant_id,c.establishment_id,c.terminal_id)=(t.tenant_id,t.establishment_id,t.id) AND c.closed_at IS NULL
+  LEFT JOIN bansir.users u ON u.id=c.user_id LEFT JOIN LATERAL(
+   SELECT sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END) AS delta FROM bansir.cash_movements WHERE cash_session_id=c.id
+  )m ON true ORDER BY t.created_at,t.id`)).rows.map(t=>({...t,opening_cents:t.opening_cents===null?null:Number(t.opening_cents),expected_cents:t.expected_cents===null?null:Number(t.expected_cents)}));
+ const legacy=(await c.query(`SELECT count(*)::int AS count,coalesce(sum(c.opening_cents+coalesce(m.delta,0)),0)::text AS expected FROM bansir.cash_sessions c
+  LEFT JOIN LATERAL(SELECT sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END) AS delta FROM bansir.cash_movements WHERE cash_session_id=c.id)m ON true
+  WHERE c.closed_at IS NULL AND c.terminal_id IS NULL`)).rows[0];
+ const terminalCash={updatedAt:new Date().toISOString(),terminals,totalExpectedCents:terminals.reduce((sum,t)=>sum+(t.expected_cents||0),0),legacyCount:legacy.count,legacyExpectedCents:Number(legacy.expected)};
+ return terminalCash;
 }

@@ -7,7 +7,7 @@ import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
 import {pixCode} from './pix.js';
 import {createCustomer} from './customers.js';
 import {queueWhatsapp} from './whatsapp.js';
-import {requireTerminal,assertCashTerminal} from './pdv-terminals.js';
+import {currentTerminal,requireTerminal,assertCashTerminal} from './pdv-terminals.js';
 
 const cents=z.number().int().min(0).max(1000000000),text=z.string().trim().max(200),uuid=z.uuid();
 const hash=fiscalDraftHash;
@@ -113,6 +113,13 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
 }
 
 export function mountSales(app,{scoped}){
+ app.get('/api/v1/pdv/terminal-notice',scoped('sales',true,async(c,req)=>{
+  const terminal=await currentTerminal(c,req.identity);if(!terminal)return {data:null};
+  const cash=(await c.query('SELECT c.id,c.user_id,c.opened_at,u.name AS operator_name FROM bansir.cash_sessions c JOIN bansir.users u ON u.id=c.user_id WHERE c.terminal_id=$1 AND c.closed_at IS NULL',[terminal.id])).rows[0];
+  const other=(await c.query('SELECT EXISTS(SELECT 1 FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL AND terminal_id IS DISTINCT FROM $2) AS open',[req.identity.userId,terminal.id])).rows[0].open;
+  const config=(await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config||{};
+  return {data:{terminal,cash:cash?{id:cash.id,openedAt:cash.opened_at,operatorName:cash.operator_name,own:cash.user_id===req.identity.userId}:null,operatorHasOtherCash:other,timeZone:config.timeZone||'America/Cuiaba',businessHours:config.businessHours||{enabled:false,days:[]}}};
+ }));
  app.get('/api/v1/pdv/business-hours',scoped('sales',true,async c=>{const config=(await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config||{};return {data:{timeZone:config.timeZone||'America/Cuiaba',businessHours:config.businessHours||{enabled:false,days:[]}}};}));
  app.get('/api/v1/pdv/cash',scoped('sales',true,async(c,req)=>({data:await cashView(c,await lockCash(c,req.identity))})));
  app.post('/api/v1/pdv/cash/open',scoped('sales',false,async(c,req)=>{

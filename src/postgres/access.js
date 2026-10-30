@@ -1,7 +1,8 @@
-import {dashboard} from './dashboard.js';
+import {dashboard,terminalCashSnapshot} from './dashboard.js';
 import {z} from 'zod';
 import bcrypt from 'bcryptjs';
 export function mountAccess(app,{scoped}){
+ app.get('/api/v1/dashboard/terminal-cash',scoped('dashboard',true,async c=>({data:await terminalCashSnapshot(c)})));
  app.get('/api/v1/dashboard',scoped('dashboard',true,async(c,req,m)=>({data:await dashboard(c,req.query,m)})));
  app.get('/api/v1/access/users',scoped('rbac',true,async c=>({data:(await c.query('SELECT * FROM bansir.rbac_members()')).rows})));
  const save=scoped('rbac',false,async(c,req)=>{

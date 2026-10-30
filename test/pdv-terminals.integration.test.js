@@ -88,6 +88,24 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.equal((await send(`/pdv/cash/${cash1.id}/close`,'POST',{countedCents:0,note:''},session.token,binding2)).status,409);
    await assert.rejects(db.transaction({userId:owner.id,tenantId:tenant.id,establishmentId:tenant.establishmentId},c=>c.query('UPDATE bansir.cash_sessions SET terminal_id=$2 WHERE id=$1',[cash1.id,second.id])),e=>e.code==='23514');
   });
+  await t.test('terminal-local notices and dashboard cash respect binding, balances and dashboard RBAC',async()=>{
+   assert.equal((await send('/pdv/terminal-notice')).body.data,null);
+   const notice=(await send('/pdv/terminal-notice','GET',undefined,session.token,binding1)).body.data;
+   assert.equal(notice.terminal.id,first.id);assert.equal(notice.cash.id,cash1.id);assert.equal(notice.cash.own,true);
+   assert.equal((await send('/pdv/terminal-notice','GET',undefined,foreign.token,binding1)).body.code,'TERMINAL_REVOKED');
+   assert.equal((await send('/pdv/terminal-notice','GET',undefined,session.token,binding2)).body.data.cash.own,false);
+   assert.equal((await send('/dashboard','GET',undefined,operator.token)).status,403);
+   assert.equal((await send('/dashboard/terminal-cash','GET',undefined,operator.token)).status,403);
+   assert.equal((await send('/pdv/cash/movements','POST',{requestKey:randomUUID(),kind:'deposit',amountCents:100,reason:'Dashboard test deposit'},session.token,binding1)).status,201);
+   assert.equal((await send('/pdv/cash/movements','POST',{requestKey:randomUUID(),kind:'withdrawal',amountCents:40,reason:'Dashboard test withdrawal'},session.token,binding1)).status,201);
+   const summary=(await send('/dashboard')).body.data.terminalCash;
+   assert.equal((await send('/dashboard/terminal-cash')).body.data.totalExpectedCents,60);
+   assert.equal(summary.totalExpectedCents,60);assert.equal(summary.terminals.find(t=>t.id===first.id).expected_cents,60);
+   assert.equal(summary.terminals.find(t=>t.id===first.id).cash_id,cash1.id);assert.equal(summary.legacyCount,0);
+   assert.deepEqual((await send('/dashboard','GET',undefined,foreign.token)).body.data.terminalCash.terminals,[]);
+   await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['sales','dashboard'] WHERE user_id=$1 AND tenant_id=$2 AND establishment_id=$3",[operator.user.id,tenant.id,tenant.establishmentId]);
+   assert.equal((await send('/dashboard','GET',undefined,operator.token)).status,200);
+  });
   await t.test('terminal reuse never grants access to another operator receipt (SEC-01)',async()=>{
    assert.equal((await send(`/sales/${sale.id}/receipt`,'GET',undefined,operator.token,binding2)).status,404);
    assert.equal((await close(session.token,binding1)).status,200);assert.equal((await close(operator.token,binding2)).status,200);
