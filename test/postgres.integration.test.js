@@ -208,7 +208,9 @@ test('PostgreSQL: tenant isolation, SQL constraints, auth and catalog HTTP', { s
       assert.equal((await send('/settings', { method: 'PUT', token: tokenB, body: { storeName: 'Store B' } })).status, 200);
       assert.equal((await send('/settings', { token: tokenA })).body.data.storeName, 'Store A');
       const stillA2=await choose(a,a2);
-      assert.equal((await send('/settings',{token:stillA2})).status,403);
+      assert.equal((await send('/settings',{token:stillA2})).status,200);
+      assert.notEqual((await send('/settings',{token:stillA2})).body.data.storeName,'Store A');
+      assert.equal((await send('/settings',{method:'PUT',token:stillA2,body:{storeName:'Forbidden'}})).status,403);
       await admin.query('UPDATE bansir.establishment_memberships SET active=false WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3',[a,a1,user]);
       assert.equal((await send('/products',{token:tokenA})).status,403);
       assert.equal((await send('/products',{token:stillA2})).status,200);

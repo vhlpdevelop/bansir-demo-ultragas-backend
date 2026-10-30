@@ -1,4 +1,4 @@
-import {calculatePricing} from '../modules/financial/pricing-calculator.js';
+import {calculatePricing} from '../shared/pricing-calculator.js';
 export function validate(config) {
   const numeric = (value, min, max, label) => {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${label} inválido.`);

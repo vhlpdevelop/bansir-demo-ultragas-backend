@@ -1,7 +1,7 @@
 {
   "name": "bansir-backend",
   "version": "1.0.0",
-  "description": "Bansir SaaS Backend - Node.js API modular para gestÃ£o de negÃ³cios de artesanato",
+  "description": "Bansir Gás API PostgreSQL multi-tenant",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
@@ -14,21 +14,12 @@
     "db:provision": "node scripts/provision-postgres.js",
     "db:establishment:create": "node scripts/manage-establishments.js create",
     "db:plan:assign": "node scripts/manage-establishments.js plan",
-    "db:export:foundation": "node scripts/export-mongo-foundation.js",
     "db:import:foundation": "node scripts/import-postgres-foundation.js",
     "test:postgres": "node scripts/test-postgres.js",
     "preview:pdv": "node scripts/preview-pdv.js",
     "dev": "node --watch src/server.js",
-    "seed": "node src/utils/seed.js",
     "push:keys": "node scripts/generate-vapid-keys.js",
-    "test": "node --test",
-    "test:operations": "node scripts/check-operations.js",
-    "preview:operations": "node scripts/preview-operations.js",
-    "db:check": "node scripts/check-mongo.js",
-    "seed:plan": "node src/utils/seed.js --dry-run",
-    "seed:demo": "node src/utils/seed.js --demo",
-    "test:mongo": "node scripts/check-mongo-integration.js",
-    "test:bridge-live": "node scripts/check-bridge-live.js"
+    "test": "node scripts/test-unit.js"
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.1159.0",
@@ -44,7 +35,6 @@
     "fast-xml-parser": "^5.11.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.9.5",
     "nfewizard-io": "1.1.4",
     "node-forge": "^1.4.1",
     "pdfjs-dist": "^6.4.299",
@@ -58,7 +48,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "mongodb-memory-server": "11.3.0",
     "morgan": "^1.10.0"
   },
   "engines": {
