@@ -22,7 +22,7 @@ test('Route recommendations respect RBAC, apply ordered stops atomically and rej
    await admin.query('INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes) VALUES($1,$2,$3,$4,$5)',[tenant.id,tenant.establishmentId,id,role,routes]);
   }
   let onGeometry;const fakeRouter={close(){},info:()=>({configured:true,status:'ready'}),matrix:async points=>({distances:points.map(a=>points.map(b=>Math.hypot(a.latitude-b.latitude,a.longitude-b.longitude)*100000)),durations:points.map(a=>points.map(b=>Math.hypot(a.latitude-b.latitude,a.longitude-b.longitude)*10000))}),geometry:async()=>{await onGeometry?.();return null;}};
-  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',deliveryRouter:fakeRouter,onError:e=>{if(!e.status)console.error(e.stack);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',deliveryRouter:fakeRouter,onError:e=>{if(!e.status&&!e.issues)console.error(e.stack);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const auth=createAuth(db,{jwtSecret:secret}),sessions={};for(const name of ['owner','other','driver','driver2','viewer','manager','cashier'])sessions[name]=await auth.login({email:`routing-${name}@example.invalid`,password});
   const send=async(path,body,who='owner',method=body===undefined?'GET':'POST')=>{const r=await fetch(`http://127.0.0.1:${server.address().port}/api/v1${path}`,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+sessions[who].token},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,body:await r.json()};};
   const d=(await send('/deliverers',{name:'Driver test',phone:''})).body.data;
@@ -37,6 +37,11 @@ test('Route recommendations respect RBAC, apply ordered stops atomically and rej
   const sale=(await send('/sales',{requestKey:randomUUID(),items:[{productId:p.id,quantity:1,expectedUnitPriceCents:1000}],customerName:'Delivery customer',customerPhone:'65999998888',deliveryMode:'delivery',deliveryAddress:'Test destination street 100',payment:{method:'pending',term:'delivery'}})).body.data;
 
   await admin.query("INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,config) VALUES($1,$2,'routing-store',$3)",[tenant.id,tenant.establishmentId,{location:{latitude:-15.6,longitude:-56.1}}]);
+  assert.equal((await send(`/deliveries/drivers/${d.id}/color`,{color:'#e11d48'},'manager','PUT')).status,403);
+  assert.equal((await send(`/deliveries/drivers/${d.id}/color`,{color:'#e11d48'},'other','PUT')).status,404);
+  assert.equal((await send(`/deliveries/drivers/${d.id}/color`,{color:'red'},'owner','PUT')).status,400);
+  assert.equal((await send(`/deliveries/drivers/${d.id}/color`,{color:'#e11d48'},'owner','PUT')).status,200);
+  assert.equal((await send(`/deliveries/drivers/${d2.id}/color`,{color:'#E11D48'},'owner','PUT')).body.code,'COLOR_IN_USE');
   const collector=randomUUID();await send('/deliveries/work/start',{collector},'driver');
   await send('/deliveries/work/position',{collector,sequence:1,latitude:-15.61,longitude:-56.11,accuracy:15,capturedAt:new Date().toISOString()},'driver');
   await admin.query("UPDATE bansir.delivery_tasks SET latitude=-15.62,longitude=-56.12,accuracy=0 WHERE sale_id=$1",[sale.id]);
@@ -45,7 +50,7 @@ test('Route recommendations respect RBAC, apply ordered stops atomically and rej
   assert.equal((await send(`/deliveries/tasks/${sale.id}/recommendations`,undefined,'cashier')).status,403);
   assert.equal((await send(`/deliveries/tasks/${sale.id}/recommendations`,undefined,'other')).status,404);
   assert.equal((await send('/deliveries/map',undefined,'viewer')).status,403);assert.equal((await send('/deliveries/map',undefined,'manager')).status,403);
-  const map=await send('/deliveries/map');assert.equal(map.status,200,JSON.stringify(map.body));assert.equal(map.body.data.routes.find(r=>r.driverId===d.id).position.latitude,-15.61);assert.notEqual(map.body.data.routes[0].color,map.body.data.routes[1].color);assert.equal(JSON.stringify(map.body).includes('collector_hash'),false);
+  const map=await send('/deliveries/map');assert.equal(map.status,200,JSON.stringify(map.body));assert.equal(map.body.data.routes.find(r=>r.driverId===d.id).color,'#e11d48');assert.equal(map.body.data.routes.find(r=>r.driverId===d.id).position.latitude,-15.61);assert.notEqual(map.body.data.routes[0].color,map.body.data.routes[1].color);assert.equal(JSON.stringify(map.body).includes('collector_hash'),false);
   onGeometry=async()=>{onGeometry=null;await send('/deliveries/work/stop',{collector},'driver');};const pausedMap=await send('/deliveries/map');assert.equal(pausedMap.body.data.routes.find(r=>r.driverId===d.id).position,null);
   await send('/deliveries/work/start',{collector},'driver');await send('/deliveries/work/position',{collector,sequence:1,latitude:-15.61,longitude:-56.11,accuracy:15,capturedAt:new Date().toISOString()},'driver');
   const c=recommendation.body.data.candidates.find(c=>c.driverId===d.id),routePlan={destinationRevision:recommendation.body.data.destinationRevision,routeRevision:c.routeRevision,insertionIndex:c.insertionIndex,expiresAt:recommendation.body.data.expiresAt};

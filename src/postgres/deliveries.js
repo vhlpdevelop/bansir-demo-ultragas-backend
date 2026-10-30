@@ -25,7 +25,7 @@ export function positionState(d,now=Date.now()){
  if(age>300000)return 'stale';if(age>90000)return 'outdated';if(d.accuracy>100)return 'imprecise';return 'recent';
 }
 async function drivers(c,positions){
- const rows=(await c.query(`SELECT d.id,d.name,d.phone,d.map_color_index,d.active AS driver_active,d.employee_id,${accountSql} AS user_id,u.name AS account_name,u.active AS account_active,
+ const rows=(await c.query(`SELECT d.id,d.name,d.phone,d.map_color_index,d.map_color,d.active AS driver_active,d.employee_id,${accountSql} AS user_id,u.name AS account_name,u.active AS account_active,
   w.on_duty,w.active,w.gps_state,w.latitude,w.longitude,w.accuracy,w.captured_at,w.received_at,w.started_at,
   (SELECT count(*)::int FROM bansir.delivery_tasks t WHERE t.driver_id=d.id AND t.status IN('assigned','en_route')) AS assigned,
   (SELECT count(*)::int FROM bansir.delivery_tasks t WHERE t.driver_id=d.id AND t.status='delivered') AS completed
@@ -72,9 +72,17 @@ export function mountDeliveries(app,{database,route,deliveryRouter}){
  const own=fn=>route(req=>database.transaction(req.identity,(c,m)=>fn(c,req,m)));
  const manager=fn=>own((c,r,m)=>{if(!manageDeliveries(m))fail('Sem permissão para gerenciar entregas.','FORBIDDEN',403);return fn(c,r,m);});
  const driver=(fn,history=false)=>own(async(c,r,m)=>{if(!(history?viewDeliveryHistory(m):driveDeliveries(m)))fail('Acesso exclusivo ao entregador.','FORBIDDEN',403);const d=await ownDriver(c,r.identity);if(!d)fail('Peça ao administrador para vincular seu usuário a um entregador ativo.','DRIVER_NOT_LINKED',404);return fn(c,r,m,d);});
- app.get('/api/v1/deliveries/snapshot',manager(async(c,r,m)=>({data:{tasks:await tasks(c,{legacy:r.query.legacy==='true'}),drivers:await drivers(c,!!monitorDeliveries(m)),canMonitor:!!monitorDeliveries(m),updatedAt:new Date().toISOString()}})));
+ app.get('/api/v1/deliveries/snapshot',manager(async(c,r,m)=>({data:{tasks:await tasks(c,{legacy:r.query.legacy==='true'}),drivers:await drivers(c,!!monitorDeliveries(m)),canMonitor:!!monitorDeliveries(m),canConfigureColors:['admin','superadmin'].includes(m.role),updatedAt:new Date().toISOString()}})));
  app.get('/api/v1/deliveries/summary',own(async(c,r,m)=>{if(!['admin','superadmin'].includes(m.role)&&!m.allowed_routes?.includes('dashboard'))fail('Sem acesso à dashboard.','FORBIDDEN',403);return {data:await deliverySummary(c,m)};}));
  app.get('/api/v1/deliveries/accounts',manager(async c=>({data:(await c.query('SELECT id,name,email FROM bansir.delivery_accounts() WHERE active ORDER BY name')).rows})));
+ app.put('/api/v1/deliveries/drivers/:id/color',own(async(c,r,m)=>{
+  if(!['admin','superadmin'].includes(m.role))fail('Somente o administrador pode alterar cores dos entregadores.','FORBIDDEN',403);
+  const {color}=z.object({color:z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable()}).strict().parse(r.body),id=uuid.parse(r.params.id);
+  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`delivery-color:${r.identity.tenantId}:${r.identity.establishmentId}`]);
+  if(color&&(await c.query('SELECT id FROM bansir.deliverers WHERE lower(map_color)=lower($1) AND id<>$2',[color,id])).rowCount)fail('Esta cor já está sendo usada por outro entregador. Escolha uma cor diferente.','COLOR_IN_USE');
+  if(!(await c.query('UPDATE bansir.deliverers SET map_color=$2 WHERE id=$1 RETURNING id',[id,color?.toLowerCase()||null])).rowCount)fail('Entregador não encontrado.','NOT_FOUND',404);
+  return {data:true};
+ }));
  app.put('/api/v1/deliveries/drivers/:id/account',manager(async(c,r)=>{
   const {userId}=z.object({userId:uuid.nullable()}).strict().parse(r.body),id=uuid.parse(r.params.id);
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`driver-accounts:${r.identity.tenantId}:${r.identity.establishmentId}`]);

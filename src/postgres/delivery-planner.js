@@ -9,7 +9,7 @@ export const routeRevision=stops=>digest(stops.map(t=>[t.sale_id,t.version,t.rou
 export function driverPlan(d,tasks,store,{allowPosition=true}={}){
  const stops=orderedStops(tasks,d.id),fresh=d.active&&d.on_duty&&d.gps_state==='ok'&&d.position&&Math.max(Date.now()-new Date(d.position.capturedAt),Date.now()-new Date(d.position.receivedAt))<=90000&&d.position.accuracy<=100;
  const origin=allowPosition&&fresh?point(d.position):point(store),originSource=allowPosition&&fresh?'position':'store';
- return {driverId:d.id,name:d.name,color:color(d.map_color_index),origin,originSource,position:allowPosition?d.position:null,positionState:d.locationState,onDuty:!!d.on_duty,sharing:!!d.active,driverActive:!!d.driver_active,accountActive:!!d.account_active,stops,revision:routeRevision(stops),incompleteStops:stops.filter(t=>!point(t)).length,pinned:stops.filter(t=>t.status==='en_route').length};
+ return {driverId:d.id,name:d.name,color:d.map_color||color(d.map_color_index),origin,originSource,position:allowPosition?d.position:null,positionState:d.locationState,onDuty:!!d.on_duty,sharing:!!d.active,driverActive:!!d.driver_active,accountActive:!!d.account_active,stops,revision:routeRevision(stops),incompleteStops:stops.filter(t=>!point(t)).length,pinned:stops.filter(t=>t.status==='en_route').length};
 }
 function insertion(plan,target,distance,duration){
  const base=[plan.origin,...plan.stops.map(point)],cost=(path,fn)=>path.slice(1).reduce((n,p,i)=>n+fn(path[i],p),0),baseline=cost(base,distance);let best;
