@@ -118,6 +118,17 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[result.body.data.id])).rows[0].status,'manual_review');await queue.finish(job,'done');
    process.env.FISCAL_PRODUCTION_ENABLED='false';assert.equal((await send('/fiscal/documents','POST',{requestKey:randomUUID(),draft})).status,409);process.env.FISCAL_PRODUCTION_ENABLED='true';
   });
+  await t.test('financial digests persist without push, deduplicate and enforce recipient permissions',async()=>{
+   for(const type of ['income','expense'])await admin.query("INSERT INTO bansir.financial_entries(tenant_id,establishment_id,request_key,request_hash,title,type,category,amount_cents,status,payment_method,due_date,created_by) VALUES($1,$2,$3,'test','Test due',$4,'test',1000,'pending','pix',current_date-1,$5)",[tenant.id,tenant.establishmentId,randomUUID(),type,u.id]);
+   await queue.pool.query('SELECT bansir.schedule_financial_alerts()');await queue.pool.query('SELECT bansir.schedule_financial_alerts()');
+   const jobs=(await admin.query("SELECT * FROM bansir.jobs WHERE tenant_id=$1 AND payload->>'category'='financial'",[tenant.id])).rows;
+   assert.equal(jobs.length,2);assert.ok(jobs.every(j=>j.establishment_id===tenant.establishmentId&&j.payload.userId===u.id));
+   const inbox=await send('/notifications');assert.ok(inbox.body.data.some(n=>n.title.includes('Contas a pagar')));assert.ok(inbox.body.data.some(n=>n.title.includes('Contas a receber')));
+   let sent=0;await deliverNotification(queue,jobs[0],{pushEnabled:false,send:async()=>sent++});assert.equal(sent,0);
+   await admin.query("UPDATE bansir.establishment_memberships SET role='operador',allowed_routes=ARRAY['sales'] WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3",[tenant.id,tenant.establishmentId,u.id]);
+   const allowed=await queue.pool.query('SELECT bansir.financial_recipient_allowed($1,$2,$3,$4) AS ok',[tenant.id,tenant.establishmentId,u.id,'expense']);assert.equal(allowed.rows[0].ok,false);
+   await queue.pool.query('SELECT bansir.schedule_financial_alerts()');assert.equal((await admin.query("SELECT count(*) FROM bansir.jobs WHERE tenant_id=$1 AND payload->>'category'='financial'",[tenant.id])).rows[0].count,'2');
+  });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([queue.close(),db.close(),admin.end()]);}
 });
 

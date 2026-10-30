@@ -12,7 +12,8 @@ const monitorOnly=kind==='fiscal'&&process.env.FISCAL_MONITOR_ONLY==='true';
 if(!['notification','fiscal'].includes(kind))throw new Error('Use notification ou fiscal.');
 if(process.env.DATABASE_ADMIN_URL)throw new Error('Remova DATABASE_ADMIN_URL do worker.');
 if(!process.env.WORKER_DATABASE_URL)throw new Error('WORKER_DATABASE_URL obrigatória (login separado com bansir_worker).');
-if(kind==='notification' && !configureVapid(webpush,process.env).configured)throw new Error('Configure VAPID antes de iniciar o worker.');
+const pushReady=kind==='notification'&&configureVapid(webpush,process.env).configured;
+if(kind==='notification'&&!pushReady)console.log('[worker:notification] VAPID ausente; caixa de entrada ativa, push indisponivel.');
 if(kind==='fiscal'){
  seal('startup-validation','worker');
  if(!monitorOnly&&(!process.env.FISCAL_S3_BUCKET || !process.env.AWS_REGION))throw new Error('Configure bucket privado e região AWS para os documentos fiscais.');
@@ -25,12 +26,12 @@ try{
  while(!stopping){
   let job;
   try{
-   if(kind==='notification'&&Date.now()-lastFleetCheck>=60000){await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');lastFleetCheck=Date.now();}
+   if(kind==='notification'&&Date.now()-lastFleetCheck>=60000){lastFleetCheck=Date.now();try{await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');if(process.env.FINANCIAL_ALERTS_ENABLED==='true')await queue.pool.query('SELECT bansir.schedule_financial_alerts()');}catch{console.error('[worker:notification] Falha ao agendar alertas; entrega da fila continua.');}}
    if(kind==='fiscal')await queue.pool.query('SELECT bansir.schedule_fiscal_monitors()');
    job=monitorOnly?undefined:await queue.claim(kind);
    if(!job){await new Promise(resolve=>{const timer=setTimeout(resolve,2000);wake=()=>{clearTimeout(timer);resolve();};});continue;}
    const renewal=setInterval(()=>queue.renew(job).catch(()=>{}),30000);
-   try{await (kind==='notification'?deliverNotification(queue,job):(['inbound','science'].includes(job.payload.action)?processInbound(queue,job,{wizard:runWizard}):processFiscal(queue,job)));await queue.finish(job,'done',null);}
+   try{await (kind==='notification'?deliverNotification(queue,job,{pushEnabled:pushReady}):(['inbound','science'].includes(job.payload.action)?processInbound(queue,job,{wizard:runWizard}):processFiscal(queue,job)));await queue.finish(job,'done',null);}
    catch(error){const code=/^[A-Z_]{3,80}$/.test(error.message)?error.message:'WORKER_FAILED';await queue.finish(job,error.terminal?'dead':'retry',code);console.error(`[worker:${kind}] ${job.id}: ${code}`);}
    finally{clearInterval(renewal);}
   }catch{console.error(`[worker:${kind}] Falha de conexão; nova tentativa em 5s.`);await new Promise(resolve=>{const timer=setTimeout(resolve,5000);wake=()=>{clearTimeout(timer);resolve();};});}

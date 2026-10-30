@@ -36,7 +36,7 @@ services:
   notifications:
     <<: *service
     env_file: [deploy/notifications.env]
-    environment: {NODE_ENV: production}
+    environment: {NODE_ENV: production, FINANCIAL_ALERTS_ENABLED: 'true'}
     command: [node, scripts/worker-postgres.js, notification]
   fiscal:
     <<: *service

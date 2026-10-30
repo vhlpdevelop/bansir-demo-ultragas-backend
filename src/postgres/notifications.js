@@ -55,13 +55,15 @@ export function mountNotifications(app,{scoped,route,database}) {
  app.get('/api/v1/workers/jobs',scoped('settings',false,async c=>({data:(await c.query('SELECT id,kind,state,attempts,max_attempts,last_error,created_at,completed_at FROM bansir.jobs ORDER BY created_at DESC LIMIT 100')).rows})));
 }
 
-export async function deliverNotification(queue,job,{send=webpush.sendNotification.bind(webpush)}={}) {
+export async function deliverNotification(queue,job,{send=webpush.sendNotification.bind(webpush),pushEnabled=true}={}) {
+ if(!pushEnabled)return;
  const devices=await queue.scope(job,async c=>{
   const active=(await c.query('SELECT bansir.push_recipient_active($1,$2,$3) AS active',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].active;
   if(!active)return [];
   if(!(await c.query('SELECT id FROM bansir.notifications WHERE id=$1 AND user_id=$2',[job.payload.notificationId,job.payload.userId])).rowCount)return [];
   if(job.payload.category==='fleet'&&!(await c.query('SELECT bansir.fleet_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
   if(job.payload.category==='fiscal'&&!(await c.query('SELECT bansir.fiscal_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
+  if(job.payload.category==='financial'&&!(await c.query('SELECT bansir.financial_recipient_allowed($1,$2,$3,$4) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId,job.payload.financialPart])).rows[0].allowed)return [];
   return (await c.query('SELECT * FROM bansir.push_devices WHERE user_id=$1 AND enabled AND ($2::text IS NULL OR device_id=$2)',[job.payload.userId,job.payload.deviceId||null])).rows;
  });
  let transient=false;
