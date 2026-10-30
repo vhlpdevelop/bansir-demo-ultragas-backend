@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {createHash} from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import {httpError} from './database.js';
-import {manageDeliveries,driveDeliveries,monitorDeliveries} from './delivery-permissions.js';
+import {manageDeliveries,driveDeliveries,monitorDeliveries,viewDeliveryHistory} from './delivery-permissions.js';
 const fail=(message,code='DELIVERY_CONFLICT',status=409)=>{throw httpError(status,message,code);};
 const hash=x=>createHash('sha256').update(typeof x==='string'?x:JSON.stringify(x)).digest('hex');
 const uuid=z.uuid(),text=z.string().trim().max(1000);
@@ -30,12 +30,24 @@ async function drivers(c,positions){
   LEFT JOIN bansir.driver_work w ON w.driver_id=d.id AND w.user_id=${accountSql} ORDER BY d.name`)).rows;
  return rows.map(d=>{const {latitude,longitude,accuracy,captured_at,received_at,...rest}=d;if(!d.driver_active||!d.account_active){rest.active=false;rest.on_duty=false;}return {...rest,position:positions&&d.driver_active&&d.account_active&&latitude!==null&&latitude!==undefined?{latitude,longitude,accuracy,capturedAt:captured_at,receivedAt:received_at}:null,locationState:positions?(d.driver_active&&d.account_active?positionState(d):'ended'):'restricted'};});
 }
-async function tasks(c,{driverId,legacy=false}={}){
- return (await c.query(`SELECT t.*,s.customer_name,s.customer_phone,d.name AS driver_name,
-  coalesce((SELECT jsonb_agg(jsonb_build_object('name',product_name,'quantity',quantity) ORDER BY position) FROM bansir.sale_items WHERE sale_id=t.sale_id),'[]') AS items
-  FROM bansir.delivery_tasks t JOIN bansir.sales s ON s.id=t.sale_id LEFT JOIN bansir.deliverers d ON d.id=t.driver_id
-  WHERE($1::uuid IS NULL OR t.driver_id=$1) AND($2 OR t.status<>'unverified')
-  ORDER BY CASE WHEN t.status IN('pending','assigned','en_route','failed') THEN 0 ELSE 1 END,t.updated_at DESC LIMIT 200`,[driverId||null,legacy])).rows;
+async function deliveryZone(c){return (await c.query("SELECT coalesce((SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1),'America/Cuiaba') AS zone")).rows[0].zone;}
+const historyDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v=>!Number.isNaN(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v,'Data inválida.');
+async function tasks(c,{driverId,legacy=false,mode='all',zone='America/Cuiaba',from=null,to=null,status='delivered',offset=0,limit=200}={}){
+ const filter=`($1::uuid IS NULL OR t.driver_id=$1) AND($2 OR t.status<>'unverified')
+ AND($3='all' OR $3='active' AND t.status IN('assigned','en_route','failed')
+ OR $3='today' AND t.status='delivered' AND (t.delivered_at AT TIME ZONE $4)::date=(now() AT TIME ZONE $4)::date
+ OR $3='history' AND t.status IN('delivered','failed','cancelled') AND($7='all' OR t.status=$7)
+ AND($5::date IS NULL OR(coalesce(t.delivered_at,t.updated_at) AT TIME ZONE $4)::date >= $5)
+ AND($6::date IS NULL OR(coalesce(t.delivered_at,t.updated_at) AT TIME ZONE $4)::date <= $6))`;
+ const params=[driverId||null,legacy,mode,zone,from,to,status];
+ const rows=(await c.query(`SELECT t.*,s.customer_name,s.customer_phone,d.name AS driver_name,
+ coalesce((SELECT jsonb_agg(jsonb_build_object('name',product_name,'quantity',quantity) ORDER BY position) FROM bansir.sale_items WHERE sale_id=t.sale_id),'[]') AS items
+ FROM bansir.delivery_tasks t JOIN bansir.sales s ON s.id=t.sale_id LEFT JOIN bansir.deliverers d ON d.id=t.driver_id WHERE ${filter}
+ ORDER BY CASE WHEN $3='all' AND t.status IN('pending','assigned','en_route','failed') THEN 0 ELSE 1 END,
+ CASE WHEN $3 IN('today','history') THEN coalesce(t.delivered_at,t.updated_at) ELSE t.updated_at END DESC,t.sale_id DESC LIMIT $8 OFFSET $9`,[...params,limit,offset])).rows;
+ if(mode!=='history')return rows;
+ const total=Number((await c.query(`SELECT count(*) FROM bansir.delivery_tasks t WHERE ${filter}`,params)).rows[0].count);
+ return {items:rows,total,page:offset/limit+1,pageSize:limit,hasMore:offset+rows.length<total,timeZone:zone};
 }
 export async function deliverySummary(c,m){
  const stats=(await c.query(`SELECT count(*) FILTER(WHERE status='pending')::int AS pending,count(*) FILTER(WHERE status='assigned')::int AS assigned,
@@ -54,7 +66,7 @@ const audit=(c,i,key,payload,saleId)=>c.query('INSERT INTO bansir.delivery_event
 export function mountDeliveries(app,{database,route}){
  const own=fn=>route(req=>database.transaction(req.identity,(c,m)=>fn(c,req,m)));
  const manager=fn=>own((c,r,m)=>{if(!manageDeliveries(m))fail('Sem permissão para gerenciar entregas.','FORBIDDEN',403);return fn(c,r,m);});
- const driver=fn=>own(async(c,r,m)=>{if(!driveDeliveries(m))fail('Acesso exclusivo ao entregador.','FORBIDDEN',403);const d=await ownDriver(c,r.identity);if(!d)fail('Peça ao administrador para vincular seu usuário a um entregador ativo.','DRIVER_NOT_LINKED',404);return fn(c,r,m,d);});
+ const driver=(fn,history=false)=>own(async(c,r,m)=>{if(!(history?viewDeliveryHistory(m):driveDeliveries(m)))fail('Acesso exclusivo ao entregador.','FORBIDDEN',403);const d=await ownDriver(c,r.identity);if(!d)fail('Peça ao administrador para vincular seu usuário a um entregador ativo.','DRIVER_NOT_LINKED',404);return fn(c,r,m,d);});
  app.get('/api/v1/deliveries/snapshot',manager(async(c,r,m)=>({data:{tasks:await tasks(c,{legacy:r.query.legacy==='true'}),drivers:await drivers(c,!!monitorDeliveries(m)),canMonitor:!!monitorDeliveries(m),updatedAt:new Date().toISOString()}})));
  app.get('/api/v1/deliveries/summary',own(async(c,r,m)=>{if(!['admin','superadmin'].includes(m.role)&&!m.allowed_routes?.includes('dashboard'))fail('Sem acesso à dashboard.','FORBIDDEN',403);return {data:await deliverySummary(c,m)};}));
  app.get('/api/v1/deliveries/accounts',manager(async c=>({data:(await c.query('SELECT id,name,email FROM bansir.delivery_accounts() WHERE active ORDER BY name')).rows})));
@@ -70,7 +82,16 @@ export function mountDeliveries(app,{database,route}){
   await c.query('UPDATE bansir.deliverers SET user_id=$2 WHERE id=$1',[id,userId]);
   await c.query("UPDATE bansir.driver_work SET active=false,on_duty=false,collector_hash=NULL,latitude=NULL,longitude=NULL,accuracy=NULL,captured_at=NULL,received_at=NULL,gps_state='stopped',ended_at=now() WHERE driver_id=$1",[id]);return {data:true};
  }));
- app.get('/api/v1/deliveries/mine',driver(async(c,r,m,d)=>({data:{driver:d,tasks:await tasks(c,{driverId:d.id}),work:workView((await c.query('SELECT * FROM bansir.driver_work WHERE driver_id=$1 AND user_id=$2',[d.id,r.identity.userId])).rows[0])}})));
+ app.get('/api/v1/deliveries/mine',driver(async(c,r,m,d)=>{
+  const zone=await deliveryZone(c),completedToday=await tasks(c,{driverId:d.id,mode:'today',zone,limit:10});
+  const total=Number((await c.query("SELECT count(*) FROM bansir.delivery_tasks WHERE driver_id=$1 AND status='delivered' AND(delivered_at AT TIME ZONE $2)::date=(now() AT TIME ZONE $2)::date",[d.id,zone])).rows[0].count);
+  return {data:{driver:d,tasks:await tasks(c,{driverId:d.id,mode:'active'}),completedToday,completedTodayCount:total,timeZone:zone,work:workView((await c.query('SELECT * FROM bansir.driver_work WHERE driver_id=$1 AND user_id=$2',[d.id,r.identity.userId])).rows[0])}};
+ }));
+ app.get('/api/v1/deliveries/mine/history',driver(async(c,r,m,d)=>{
+  const q=z.object({from:historyDate.optional(),to:historyDate.optional(),status:z.enum(['delivered','failed','cancelled','all']).default('delivered'),page:z.coerce.number().int().min(1).max(10000).default(1)}).strict().parse(r.query);
+  if(q.from&&q.to&&q.from>q.to)fail('A data inicial deve ser anterior à final.','INVALID_RANGE',400);
+  return {data:await tasks(c,{driverId:d.id,mode:'history',zone:await deliveryZone(c),from:q.from,to:q.to,status:q.status,offset:(q.page-1)*20,limit:20})};
+ },true));
  app.post('/api/v1/deliveries/work/start',driver(async(c,r,m,d)=>{
   const body=z.object({collector:uuid,transfer:z.boolean().default(false)}).strict().parse(r.body),i=r.identity;
   await c.query('INSERT INTO bansir.driver_work(tenant_id,establishment_id,driver_id,user_id,session_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[i.tenantId,i.establishmentId,d.id,i.userId,i.sessionId]);

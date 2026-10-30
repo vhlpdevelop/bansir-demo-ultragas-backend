@@ -1,4 +1,5 @@
-import {manageDeliveries,driveDeliveries,monitorDeliveries} from './delivery-permissions.js';
+import {tenantFeatures} from './features.js';
+import {manageDeliveries,driveDeliveries,monitorDeliveries,viewDeliveryHistory} from './delivery-permissions.js';
 import pg from 'pg';
 import {httpError} from './database.js';
 
@@ -32,7 +33,7 @@ export function mountNotificationStream(app,{database}){
  app.get('/api/v1/notifications/stream',async(req,res,next)=>{
   try{
    const identity=req.identity;
-   const deliveryEnabled=await database.transaction(identity,async(c,m)=>!!(manageDeliveries(m)||driveDeliveries(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard')));
+   const deliveryEnabled=await database.transaction(identity,async(c,m)=>!!((await tenantFeatures(c)).deliveries&&(manageDeliveries(m)||driveDeliveries(m)||viewDeliveryHistory(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard'))));
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
    await ensureListener();
    if(peers.size>=500||[...peers].filter(p=>p.identity.userId===identity.userId).length>=12){res.set('Retry-After','60');throw httpError(429,'Limite de conexões de avisos.','STREAM_LIMIT');}
@@ -45,7 +46,7 @@ export function mountNotificationStream(app,{database}){
    const pending=new Set();
    const peer={identity,end,deliveryEnabled,async changed(kind='changed'){
     if(ended)return;pending.add(kind);if(busy)return;busy=true;
-    try{while(pending.size&&!ended){const kinds=[...pending];pending.clear();const permitted=await database.transaction(identity,async(c,m)=>!!(manageDeliveries(m)||driveDeliveries(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard')));
+    try{while(pending.size&&!ended){const kinds=[...pending];pending.clear();const permitted=await database.transaction(identity,async(c,m)=>!!((await tenantFeatures(c)).deliveries&&(manageDeliveries(m)||driveDeliveries(m)||viewDeliveryHistory(m)||monitorDeliveries(m)||m.allowed_routes?.includes('dashboard'))));
      for(const event of kinds)if(event!=='delivery'||permitted)write(`event: ${event}\ndata: {}\n\n`);
     }}catch{end();}finally{busy=false;}
    }};

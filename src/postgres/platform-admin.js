@@ -7,7 +7,7 @@ import {httpError} from './database.js';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const password=z.string().min(12,'Use pelo menos 12 caracteres.').max(72).refine(v=>Buffer.byteLength(v)<=72,'Senha muito longa.');
 const date=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v=>!Number.isNaN(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v,'Data inválida.');
-const tenant=z.object({tenantId:z.uuid(),active:z.boolean(),planCode:z.string().min(1).max(100),monthlyCents:z.number().int().min(0).max(100000000),nextDue:date.nullable(),notes:z.string().max(4000),features:z.object({whatsapp:z.boolean(),orderLink:z.boolean(),financialIntelligence:z.boolean()}).strict()}).strict();
+const tenant=z.object({tenantId:z.uuid(),active:z.boolean(),planCode:z.string().min(1).max(100),monthlyCents:z.number().int().min(0).max(100000000),nextDue:date.nullable(),notes:z.string().max(4000),features:z.object({whatsapp:z.boolean(),orderLink:z.boolean(),financialIntelligence:z.boolean(),deliveries:z.boolean()}).strict()}).strict();
 export function mountPlatformAdmin(app,{database,route,browserSessions,loginThrottle}){
  const base='/api/v1/platform';
  const command=async(req,operation,payload={})=>{

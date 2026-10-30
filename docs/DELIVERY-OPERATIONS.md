@@ -1,11 +1,12 @@
 # Entregas e última localização — primeira versão
 
-Implementado em 30/10/2026. Migração PostgreSQL `040_delivery_operations.sql`.
+Implementado em 30/10/2026. Migrações PostgreSQL `040_delivery_operations.sql` e `041_delivery_contract.sql`.
 
 ## Operação
 
 - Crie o acesso com cargo **Entregador**, trocando a senha temporária no primeiro login. Para funcionário, vincule esse usuário em **Funcionários**; o vínculo do entregador acompanha o funcionário. Freelancers continuam cadastrados separadamente: vincule o usuário na seção de equipe em **Distribuição de entregas**.
 - Vendas com entrega, inclusive pedidos do link aceitos pela loja, entram na fila. O gestor confirma a distribuição. Endereço funciona sem coordenadas; o cliente pode enviar um ponto opcional, conferido e confirmado no checkout. A loja pode corrigir o destino operacional.
+- A inicial separa pedidos ativos das **10 últimas entregas concluídas hoje**, com total diário e horário da loja (fuso do link de pedidos; padrão America/Cuiaba). **Histórico de entregas** consulta períodos e situações com 20 registros por página, sempre das próprias entregas.
 - O entregador entra em **Minhas entregas**, inicia o compartilhamento voluntariamente e permite localização. Pode pausar, encerrar o expediente, abrir navegação, registrar saída, confirmar entrega ou informar tentativa sem sucesso. A conclusão NÃO recebe pagamento, baixa dívida ou movimenta caixa.
 - Administrador acompanha os pedidos, a carga de cada entregador e sua última posição na distribuição/dashboard. Outras contas precisam de **Dashboard + Monitorar entregas** para posições individuais. Gestão de entregas sozinha não libera posições.
 - Ordenação de candidatos: em expediente, menor carga atribuída e proximidade quando há ponto recente e preciso. Proximidade usa linha reta, explicitamente aproximada. Não calcula trajeto por ruas, sequência ótima de paradas, combustível ou economia real.
@@ -39,7 +40,8 @@ SSE reaproveita o canal existente, com uma conexão LISTEN dedicada por processo
 | GET `/summary` | Dashboard: agregados; equipe/posição com monitoramento |
 | GET `/accounts` | Gestão: usuários entregadores elegíveis da unidade |
 | PUT `/drivers/:id/account` | Gestão: vincular freelancer; funcionário via Funcionários |
-| GET `/mine` | Entregador: identidade, expediente e entregas próprias |
+| GET `/mine` | Direito my-deliveries: identidade, expediente, tarefas ativas e últimas 10 concluídas hoje |
+| GET `/mine/history?from=AAAA-MM-DD&to=AAAA-MM-DD&status=delivered&page=1` | Direito my-deliveries-history: histórico próprio paginado; datas opcionais; status delivered/failed/cancelled/all |
 | POST `/work/start` | Entregador: collector UUID, transfer opcional explícito |
 | POST `/work/stop` | Entregador coletor: pausa ou end=true para encerrar |
 | POST `/work/status` | Entregador coletor: estado da coleta |
@@ -48,10 +50,16 @@ SSE reaproveita o canal existente, com uma conexão LISTEN dedicada por processo
 | PATCH `/tasks/:saleId/destination` | Gestão: versão, endereço e ponto confirmado opcional |
 | POST `/tasks/:saleId/actions` | Gestão ou entregador atribuído: depart, complete ou failed com motivo |
 
-RBAC novo: `deliveries-manage`, `my-deliveries`, `delivery-monitor`. Administrador já possui gestão/monitoramento; `sales-manage` também libera a gestão, sem posição individual automática.
+RBAC em Controle de acesso do estabelecimento: `deliveries-manage`, `my-deliveries`, `my-deliveries-history`, `delivery-monitor`. Operação e histórico próprio são direitos independentes; perfil Entregador preseleciona ambos ao cadastrar, e o gestor pode removê-los. A migração preserva os direitos das contas entregadoras existentes. Remover o direito de operar limpa a posição e encerra o compartilhamento. Administrador já possui gestão/monitoramento; `sales-manage` também libera a gestão, sem posição individual automática.
 
 ## Verificação e publicação
 
 Testes com PostgreSQL descartável cobrem isolamento, RBAC, destino do link, idempotência, sequência/idade dos pontos, transferência entre sessões, logout, conclusão sem pagamento, SSE e regressões de caixa. Playwright usa contas e coordenadas fictícias, nunca dados de produção. Nenhuma assinatura ou fornecedor pago de mapas foi contratado.
 
-API requer migração 040 antes de recriar o serviço. Frontend: `npm run prepare:s3`; publicar TODO o conteúdo de `PUBLICAR-BANSIR-GAS`, com `assets/` preservado, assets antes de index e sem excluir assets antigos no bucket. API deve apontar para AWS. Só considerar o frontend publicado após validar URLs públicas e seus JS/CSS.
+API requer migrações 040 e 041 antes de recriar o serviço. Frontend: `npm run prepare:s3`; publicar TODO o conteúdo de `PUBLICAR-BANSIR-GAS`, com `assets/` preservado, assets antes de index e sem excluir assets antigos no bucket. API deve apontar para AWS. Só considerar o frontend publicado após validar URLs públicas e seus JS/CSS.
+
+## Habilitar por empresa
+
+No painel **Bansir → Empresas → Gerenciar → Funções contratadas**, a opção **Entregas e localização dos entregadores** controla `deliveries`. O bloqueio da API é imediato, inclui histórico/gestão/coleta e remove os pontos operacionais. Interfaces abertas sincronizam contrato e direitos em até 15 segundos quando visíveis; o stream também verifica o contrato antes de sinalizar entregas. Reabilitar não reinicia a coleta: o entregador deve ativá-la. Dados de entregas anteriores são preservados. A venda/checkout com entrega por endereço e o link de pedidos continuam sob seus controles independentes.
+
+A opção inicia habilitada para empresas existentes para preservar o acesso atual. Para salvamento de contrato, a API exige as quatro chaves de funções; um painel antigo precisa ser atualizado antes de salvar. Nenhuma tabela de histórico de posições foi criada. Histórico de entregas é histórico operacional de pedidos, sem trajetos do entregador.

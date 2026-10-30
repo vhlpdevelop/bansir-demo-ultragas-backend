@@ -16,7 +16,7 @@ test('Delivery assignment, last position, collectors and completion preserve sco
   const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'delivery-test',name:'Delivery test',adminName:'Owner',email:'delivery-owner@example.invalid',password});
   await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'delivery-other',name:'Other',adminName:'Other',email:'delivery-other@example.invalid',password});
   const owner=(await admin.query("SELECT id,password_hash FROM bansir.users WHERE email='delivery-owner@example.invalid'")).rows[0];
-  const users={};for(const [name,role,routes] of [['driver','entregador',[]],['driver2','entregador',[]],['viewer','operador',['dashboard']],['manager','operador',['deliveries-manage']]]){
+  const users={};for(const [name,role,routes] of [['driver','entregador',['my-deliveries','my-deliveries-history']],['driver2','entregador',['my-deliveries','my-deliveries-history']],['viewer','operador',['dashboard']],['manager','operador',['deliveries-manage']]]){
    const id=randomUUID();users[name]=id;await admin.query('INSERT INTO bansir.users(id,name,email,password_hash) VALUES($1,$2,$3,$4)',[id,name,`delivery-${name}@example.invalid`,owner.password_hash]);
    await admin.query('INSERT INTO bansir.tenant_memberships(tenant_id,user_id,role,allowed_routes) VALUES($1,$2,$3,$4)',[tenant.id,id,role,routes]);
    await admin.query('INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes) VALUES($1,$2,$3,$4,$5)',[tenant.id,tenant.establishmentId,id,role,routes]);
@@ -79,11 +79,44 @@ test('Delivery assignment, last position, collectors and completion preserve sco
   assert.equal((await send(`/deliveries/tasks/${sale.id}/actions`,finish,'device2')).status,200);assert.equal((await send(`/deliveries/tasks/${sale.id}/actions`,finish,'device2')).status,200);
   const after=(await send(`/sales/${sale.id}`)).body.data;assert.equal(after.outstanding_cents,1000);assert.equal(after.payments.length,0);assert.equal((await send('/pdv/cash')).body.data.expected_cents,5000);
   assert.equal((await send('/deliveries/summary')).body.data.stats.delivered_last_24h,1);
+  // Main screen contains only today's last ten completed tasks; history remains paged and private.
+  const copies=(await admin.query("INSERT INTO bansir.sales SELECT (jsonb_populate_record(NULL::bansir.sales,to_jsonb(s)||jsonb_build_object('id',gen_random_uuid(),'request_key',gen_random_uuid()))).* FROM bansir.sales s CROSS JOIN generate_series(1,24) WHERE s.id=$1 RETURNING id",[sale.id])).rows;
+  for(let n=0;n<copies.length;n++)await admin.query("UPDATE bansir.delivery_tasks SET driver_id=$2,status='delivered',delivered_at=((date_trunc('day',now() AT TIME ZONE 'America/Cuiaba')-($3::int*interval '1 day')+($4::int*interval '1 minute')) AT TIME ZONE 'America/Cuiaba') WHERE sale_id=$1",[copies[n].id,d.id,n<12?0:1,n+1]);
+  const main=(await send('/deliveries/mine',undefined,'device2')).body.data;
+  assert.equal(main.tasks.length,0);assert.equal(main.completedToday.length,10);assert.equal(main.completedTodayCount,13);
+  const h1=(await send('/deliveries/mine/history',undefined,'device2')).body.data,h2=(await send('/deliveries/mine/history?page=2',undefined,'device2')).body.data;
+  assert.equal(h1.total,25);assert.equal(h1.items.length,20);assert.equal(h2.items.length,5);assert.equal(h1.hasMore,true);assert.equal(h2.hasMore,false);
+  assert.equal(h1.items.some(x=>h2.items.some(y=>x.sale_id===y.sale_id)),false);
+  assert.equal((await send('/deliveries/mine/history',undefined,'driver2')).body.data.total,0);
+  assert.equal((await send('/deliveries/mine/history',undefined,'manager')).status,403);
+  assert.equal((await send(`/access/users/${users.driver2}`,{name:'driver2',email:'delivery-driver2@example.invalid',role:'entregador',allowedRoutes:['my-deliveries-history'],active:true},'owner','PUT')).status,200);
+  assert.equal((await send('/deliveries/mine',undefined,'driver2')).status,403);
+  assert.equal((await send('/deliveries/mine/history',undefined,'driver2')).status,200);
+
+  assert.equal((await send('/deliveries/mine/history?from=2026-02-31',undefined,'device2')).status,400);
+  assert.equal((await send('/deliveries/mine/history?from=2026-12-31&to=2026-01-01',undefined,'device2')).status,400);
+  const day=(await admin.query("SELECT to_char(now() AT TIME ZONE 'America/Cuiaba','YYYY-MM-DD') AS day")).rows[0].day;
+  assert.equal((await send(`/deliveries/mine/history?from=${day}&to=${day}`,undefined,'device2')).body.data.total,13);
+  // Removing the tenant feature immediately stops collection and clears its sole point.
+  await admin.query("INSERT INTO bansir.tenant_contracts(tenant_id,features) VALUES($1,'{\"deliveries\":false}') ON CONFLICT(tenant_id) DO UPDATE SET features=excluded.features",[tenant.id]);
+  assert.equal((await send('/deliveries/mine',undefined,'device2')).body.code,'FEATURE_DISABLED');
+  assert.equal((await send('/deliveries/work/position',{...point,collector:second,sequence:100},'device2')).body.code,'FEATURE_DISABLED');
+  const blocked=(await admin.query('SELECT active,latitude FROM bansir.driver_work WHERE driver_id=$1',[d.id])).rows[0];assert.equal(blocked.active,false);assert.equal(blocked.latitude,null);
+  await admin.query("UPDATE bansir.tenant_contracts SET features='{\"deliveries\":true}' WHERE tenant_id=$1",[tenant.id]);
+  assert.equal((await send('/deliveries/mine',undefined,'device2')).status,200);
+  assert.equal((await send('/deliveries/work/start',{collector:second},'device2')).status,200);
   assert.equal((await send('/deliveries/work/stop',{collector:second,end:true},'device2')).status,200);
   const stopped=(await admin.query('SELECT * FROM bansir.driver_work WHERE driver_id=$1',[d.id])).rows[0];assert.equal(stopped.latitude,null);assert.equal(stopped.longitude,null);assert.equal(stopped.on_duty,false);
   assert.equal((await send('/deliveries/work/position',{...point,collector:second,sequence:3},'device2')).body.code,'COLLECTOR_REVOKED');
   assert.equal((await send('/deliveries/work/start',{collector:second},'device2')).status,200);
   assert.equal((await send('/deliveries/work/position',{...point,collector:second,sequence:1,capturedAt:new Date().toISOString()},'device2')).status,200);
+  assert.equal((await send(`/access/users/${users.driver}`,{name:'driver',email:'delivery-driver@example.invalid',role:'entregador',allowedRoutes:['my-deliveries-history'],active:true},'owner','PUT')).status,200);
+  assert.equal((await send('/deliveries/work/position',{...point,collector:second,sequence:2},'device2')).status,403);
+  assert.equal((await send('/deliveries/mine/history',undefined,'device2')).status,200);
+  assert.equal((await admin.query('SELECT latitude FROM bansir.driver_work WHERE driver_id=$1',[d.id])).rows[0].latitude,null);
+  await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['my-deliveries','my-deliveries-history'] WHERE user_id=$1",[users.driver]);
+  await send('/deliveries/work/start',{collector:second},'device2');
+  await send('/deliveries/work/position',{...point,collector:second,sequence:1,capturedAt:new Date().toISOString()},'device2');
   assert.equal((await send('/auth/logout',{},'device2')).status,200);
   assert.equal((await admin.query('SELECT active,latitude FROM bansir.driver_work WHERE driver_id=$1',[d.id])).rows[0].latitude,null);
   assert.equal((await send(`/sales/${sale.id}/cancel`,{reason:'Cancelled synthetic delivery',refundConfirmed:true})).status,200);

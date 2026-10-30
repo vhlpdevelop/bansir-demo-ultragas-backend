@@ -36,7 +36,7 @@ test('Platform isolation, mandatory password change, contracts, invoices and rev
   const fresh=await login(next);assert.equal(fresh.user.mustChangePassword,false);
   const overview=(await send('/platform/overview','GET',null,fresh.token)).body.data;
   assert.ok(overview.tenants.some(t=>t.id===another.id));
-  const contract={active:true,planCode:'migration-single',monthlyCents:19990,nextDue:'2026-11-10',features:{whatsapp:true,orderLink:false,financialIntelligence:true},notes:'Teste'};
+  const contract={active:true,planCode:'migration-single',monthlyCents:19990,nextDue:'2026-11-10',features:{whatsapp:true,orderLink:false,financialIntelligence:true,deliveries:true},notes:'Teste'};
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,nextDue:'2026-02-31'},fresh.token)).status,400);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
   const current=await send('/auth/me','GET',null,customer.token);
@@ -45,7 +45,10 @@ test('Platform isolation, mandatory password change, contracts, invoices and rev
   assert.equal((await send('/financial/pricing-intelligence','GET',null,customer.token)).status,200);
   await admin.query("INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,'contract-test',true,'{}')",[tenant.id,tenant.establishmentId]);
   assert.equal((await send('/public/stores/contract-test')).status,403);
-  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,features:{whatsapp:false,orderLink:true,financialIntelligence:false}},fresh.token)).status,200);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,features:{whatsapp:false,orderLink:true,financialIntelligence:false,deliveries:false}},fresh.token)).status,200);
+  assert.equal((await send('/deliveries/snapshot','GET',null,customer.token)).body.code,'FEATURE_DISABLED');
+  assert.equal((await send('/deliveries/mine/history','GET',null,customer.token)).body.code,'FEATURE_DISABLED');
+  assert.equal((await send('/auth/me','GET',null,customer.token)).body.data.features.deliveries,false);
   assert.equal((await send('/whatsapp/status','GET',null,customer.token)).status,403);
   let transported=false;
   const scope={scope:(_job,fn)=>db.transaction({userId:customer.user.id,tenantId:tenant.id,establishmentId:tenant.establishmentId},fn)};
@@ -56,6 +59,7 @@ test('Platform isolation, mandatory password change, contracts, invoices and rev
   assert.equal((await send('/financial/summary','GET',null,customer.token)).status,200);
   assert.equal((await send('/storefront/settings','GET',null,customer.token)).status,200);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
+  assert.equal((await send('/deliveries/snapshot','GET',null,customer.token)).status,200);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,planCode:'missing'},fresh.token)).status,409);
   const charge={tenantId:tenant.id,reference:'2026-11',dueDate:'2026-11-10',amountCents:19990};
   const invoice=await send('/platform/invoices','POST',charge,fresh.token);assert.equal(invoice.status,201);
