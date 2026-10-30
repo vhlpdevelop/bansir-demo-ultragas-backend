@@ -1,3 +1,5 @@
+import {createDeliveryGeocoder} from './delivery-geocoder.js';
+import {point} from './delivery-planner.js';
 import {verifyDeliveryArea} from './delivery-area.js';
 import {routePlanInput,applySuggestedInsertion} from './delivery-route-state.js';
 import {deliveryLocation} from './deliveries.js';
@@ -38,7 +40,7 @@ async function checkout(c){const row=(await c.query('SELECT id,phone FROM bansir
 const checkoutToken=req=>{const value=req.get('X-Checkout-Token')||'';if(!/^[a-f0-9]{64}$/.test(value))throw httpError(401,'Informe seu celular para iniciar o pedido.','CHECKOUT_REQUIRED');return tokenHash(value);};
 const publicOrderInput=z.object({requestKey:z.uuid(),customerName:text.min(2).max(200),deliveryLocation:deliveryLocation.optional(),deliveryAddress:text.max(1000).default(''),fulfillment:z.enum(['pickup','delivery']),zoneId:text.max(60).default(''),expectedShippingCents:money,items:z.array(z.object({productId:z.uuid(),quantity:z.number().int().min(1).max(100),expectedUnitPriceCents:money.refine(n=>n>0)}).strict()).min(1).max(50)}).strict();
 
-export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),imageStorage}){
+export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),imageStorage,geocoder=createDeliveryGeocoder()}){
  const reads=rateLimit({windowMs:60000,limit:120,standardHeaders:'draft-7',legacyHeaders:false});
  const starts=rateLimit({windowMs:3600000,limit:20,standardHeaders:'draft-7',legacyHeaders:false});
  const writes=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
@@ -64,6 +66,12 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),i
    // Never return customer ID, name, document, address or even whether this phone is registered.
    return {token,phone:normalized};
   })};
+ }));
+ app.post('/api/v1/public/stores/:slug/geocode',rateLimit({windowMs:3600000,limit:20,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>{
+  const {address}=z.object({address:z.string().trim().min(8).max(300)}).strict().parse(req.body);
+  const origin=await publicStorefront(database,req.params.slug,checkoutToken(req),async(c,store)=>{await checkout(c);return point(store.config.location);});
+  const results=await geocoder.search(address,origin,req.params.slug);
+  await publicStorefront(database,req.params.slug,checkoutToken(req),async c=>{await checkout(c);});return {data:results};
  }));
  app.post('/api/v1/public/stores/:slug/orders',writes,route(async req=>{
   const data=publicOrderInput.parse(req.body),fingerprint=fiscalDraftHash(data);

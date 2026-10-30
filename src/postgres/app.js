@@ -36,7 +36,7 @@ import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter,geocoder }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -77,7 +77,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/select-establishment', loginLimit, route(async req => {browserSessions.loginOrigin(req);return {data:browserSessions.issue(req,await auth.select(req.body))};}));
   app.post('/api/v1/auth/refresh',rateLimit({windowMs:900000,limit:300,standardHeaders:'draft-7',legacyHeaders:false}),route(async req=>{browserSessions.loginOrigin(req);const cookieMode=browserSessions.isBrowser(req)&&req.get('X-Bansir-Session');const body=cookieMode?browserSessions.refresh(req):req.body;try{return {data:browserSessions.issue(req,await auth.refresh(body))};}catch(e){if(cookieMode&&e.status===401)browserSessions.clearRefresh(req,req.get('X-Bansir-Session'));throw e;}}));
   mountPlatformAdmin(app,{database,route,browserSessions,loginThrottle});
-  mountPublicStorefront(app,{database,route,clock,imageStorage});
+  mountPublicStorefront(app,{database,route,clock,imageStorage,geocoder});
   app.use('/api/v1', auth.protect);
   mountNotificationStream(app,{database});
   app.use(async(req,res,next)=>{try{const feature=routeFeature(req.path);if(feature)await database.transaction(req.identity,async c=>{await requireFeature(c,feature);if(req.path==='/api/v1/storefront/conversations')await requireFeature(c,'whatsapp');});next();}catch(e){next(e);}});
