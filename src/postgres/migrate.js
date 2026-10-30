@@ -19,7 +19,10 @@ export async function migrate(connectionString) {
       const checksum = createHash('sha256').update(sql).digest('hex');
       const { rows: [previous] } = await client.query('SELECT checksum FROM bansir.schema_migrations WHERE name=$1', [name]);
       if (previous) {
-        if (previous.checksum !== checksum) throw new Error(`Migração aplicada foi alterada: ${name}`);
+        // Git/ZIP builds can differ only in Windows vs Linux line endings.
+        // Keep the original ledger checksum and reject every other SQL change.
+        const encodings=[sql,sql.replace(/\r\n/g,'\n'),sql.replace(/\r?\n/g,'\r\n')];
+        if (!encodings.some(source=>createHash('sha256').update(source).digest('hex')===previous.checksum)) throw new Error(`Migração aplicada foi alterada: ${name}`);
         continue;
       }
       await client.query('BEGIN');

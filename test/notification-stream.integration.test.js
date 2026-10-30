@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import {migrate} from '../src/postgres/migrate.js';
 import pg from 'pg';
 import {createDatabase} from '../src/postgres/database.js';
 import {createPostgresApp} from '../src/postgres/app.js';
@@ -13,6 +16,14 @@ test('SSE shares one listener, isolates units and synchronizes independent brows
  const admin=new pg.Client({connectionString:process.env.TEST_POSTGRES_ADMIN_URL});await admin.connect();
  const db=createDatabase({connectionString:process.env.TEST_POSTGRES_URL}),streams=[];let server;
  try{
+  const migration='001_tenant_foundation.sql',original=(await admin.query('SELECT checksum FROM bansir.schema_migrations WHERE name=$1',[migration])).rows[0].checksum;
+  const sql=await readFile(new URL('../migrations/postgres/'+migration,import.meta.url),'utf8');
+  try{
+   await admin.query('UPDATE bansir.schema_migrations SET checksum=$2 WHERE name=$1',[migration,createHash('sha256').update(sql.replace(/\r?\n/g,'\r\n')).digest('hex')]);
+   await migrate(process.env.TEST_POSTGRES_ADMIN_URL);
+   await admin.query('UPDATE bansir.schema_migrations SET checksum=$2 WHERE name=$1',[migration,'0'.repeat(64)]);
+   await assert.rejects(migrate(process.env.TEST_POSTGRES_ADMIN_URL),/Migração aplicada foi alterada/);
+  }finally{await admin.query('UPDATE bansir.schema_migrations SET checksum=$2 WHERE name=$1',[migration,original]);}
   const password=randomBytes(20).toString('hex'),email='stream@example.invalid';
   const tenant=await provisionTenant(process.env.TEST_POSTGRES_ADMIN_URL,{slug:'stream-test',name:'Stream',adminName:'Stream test',email,password});
   const user=(await admin.query('SELECT id FROM bansir.users WHERE email=$1',[email])).rows[0];
