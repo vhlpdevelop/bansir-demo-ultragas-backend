@@ -177,7 +177,7 @@ export function mountSales(app,{scoped}){
   if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
   const input=z.object({reason:z.string().trim().min(5).max(1000),refundConfirmed:z.literal(true),refundReference:text.default('')}).strict().parse(req.body),i=req.identity;
   const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.cancelled_at)return {data:sale};if(sale.document_id)fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
+  if(sale.cancelled_at)return {data:sale};if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
   if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
   assertCashTerminal(cash,await requireTerminal(c,i));
   if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);

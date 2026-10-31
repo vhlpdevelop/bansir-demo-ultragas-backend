@@ -1,3 +1,4 @@
+import {processFiscalCancellation} from './fiscal-cancellation.js';
 import {fork} from 'node:child_process';
 import {XMLParser} from 'fast-xml-parser';
 import {S3Client,PutObjectCommand} from '@aws-sdk/client-s3';
@@ -51,6 +52,7 @@ export async function storeXml(job,doc,send) {
  try{await (send?send(command):s3.send(command));}finally{s3.destroy();}return key;
 }
 export async function processFiscal(queue,job,{wizard=runWizard,upload=storeXml}={}) {
+ if(job.payload.action==='cancel')return processFiscalCancellation(queue,job,{wizard});
  const scope={tenantId:job.tenant_id,establishmentId:job.establishment_id};
  let snapshot=await queue.scope(job,async c=>{
   const doc=(await c.query('SELECT * FROM bansir.fiscal_documents WHERE id=$1 FOR UPDATE',[job.payload.documentId])).rows[0];

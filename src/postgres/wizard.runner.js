@@ -50,7 +50,8 @@ process.once('message', async ({ action, model, key, payload, settings, certific
         transport.interceptors.response.use(response=>{raw=response.data;return response;});service.axios=transport;
         try{result=await wizard.NFE_CienciaDaOperacao(payload);}catch(error){if(!raw)throw error;}
         if(raw)result=raw;
-      }else result=await wizard[model==='65'?'NFCE_Autorizacao':'NFE_Autorizacao'](payload);
+      }else if(action==='cancel')result=await wizard[model==='65'?'NFCE_Cancelamento':'NFE_Cancelamento'](payload);
+      else result=await wizard[model==='65'?'NFCE_Autorizacao':'NFE_Autorizacao'](payload);
     }
     let xml;
     async function findXml(path) {
@@ -59,7 +60,7 @@ process.once('message', async ({ action, model, key, payload, settings, certific
         if (entry.isDirectory()) await findXml(file);
         else if (entry.name.endsWith('.xml')) {
           const value = await readFile(file, 'utf8');
-          if (value.includes('<nfeProc') && value.includes(key) && value.includes('<protNFe')) xml = value;
+          if(value.includes(key)&&((value.includes('<nfeProc')&&value.includes('<protNFe'))||(action==='cancel'&&value.includes('procEventoNFe')&&value.includes('110111'))))xml=value;
         }
       }
     }

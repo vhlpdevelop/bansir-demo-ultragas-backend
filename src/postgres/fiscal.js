@@ -1,3 +1,4 @@
+import {mountFiscalCancellation} from './fiscal-cancellation.js';
 import {z} from 'zod';
 import {randomInt,createHash} from 'node:crypto';
 import {httpError} from './database.js';
@@ -33,6 +34,7 @@ export function issuedTimestamp(timeZone,date=new Date()) {
  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${p.timeZoneName==='GMT'?'+00:00':p.timeZoneName.replace('GMT','')}`;
 }
 export function mountFiscal(app,{scoped}) {
+ mountFiscalCancellation(app,{scoped});
  app.get('/api/v1/fiscal/settings',scoped('settings',false,async c=>{
   const cert=(await c.query('SELECT subject,cnpj,valid_from,valid_until,fingerprint,active,name FROM bansir.fiscal_certificates')).rows[0];
   const cfg=(await c.query('SELECT data FROM bansir.fiscal_settings')).rows[0];

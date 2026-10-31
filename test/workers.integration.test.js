@@ -139,6 +139,20 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    assert.equal((await send('/fiscal/documents','POST',interstate)).status,202);
    const last=(await admin.query("SELECT payload FROM bansir.fiscal_documents WHERE tenant_id=$1 AND request_key=$2",[tenant.id,interstate.requestKey])).rows[0];assert.equal(last.payload.request.NFe.infNFe.ide.idDest,2);
   });
+  await t.test('fiscal cancellation is queued once, uses model-specific SDK and changes status only with SEFAZ evidence',async()=>{
+   const row=(await admin.query("SELECT * FROM bansir.fiscal_documents WHERE tenant_id=$1 AND status='authorized' LIMIT 1",[tenant.id])).rows[0];
+   const request={requestKey:randomUUID(),reason:'Cancelamento de teste sem circulacao de mercadoria'};
+   const response=await send(`/fiscal/documents/${row.id}/cancellation`,'POST',request);assert.equal(response.status,202,JSON.stringify(response.body));
+   assert.equal((await send(`/fiscal/documents/${row.id}/cancellation`,'POST',request)).status,200);
+   assert.equal((await send(`/fiscal/documents/${row.id}/cancellation`,'POST',{...request,requestKey:randomUUID()})).status,409);
+   // Select this cancellation explicitly: other scenarios deliberately leave emission jobs queued.
+   await admin.query("UPDATE bansir.jobs SET available_at=now()+interval '1 day' WHERE kind='fiscal' AND payload->>'action' IS DISTINCT FROM 'cancel'");
+   const job=await queue.claim('fiscal');assert.equal(job.payload.action,'cancel');let count=0;
+   await assert.rejects(processFiscal(queue,job,{wizard:async m=>{count++;assert.equal(m.action,'cancel');assert.equal(m.model,'65');assert.equal(m.payload.evento[0].detEvento.nProt,row.protocol);throw new Error('uncertain');}}),/CANCELLATION_CONSULT_REQUIRED/);
+   assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[row.id])).rows[0].status,'authorized');
+   await processFiscal(queue,job,{wizard:async m=>{assert.equal(m.action,'consult');return {result:{procEventoNFe:{retEvento:{infEvento:{chNFe:row.access_key,tpAmb:1,tpEvento:'110111',nSeqEvento:1,cStat:'135',nProt:'150260000000002'}}}}};}});
+   assert.equal(count,1);assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[row.id])).rows[0].status,'cancelled');await queue.finish(job,'done');
+  });
   await t.test('financial digests persist without push, deduplicate and enforce recipient permissions',async()=>{
    for(const type of ['income','expense'])await admin.query("INSERT INTO bansir.financial_entries(tenant_id,establishment_id,request_key,request_hash,title,type,category,amount_cents,status,payment_method,due_date,created_by) VALUES($1,$2,$3,'test','Test due',$4,'test',1000,'pending','pix',current_date-1,$5)",[tenant.id,tenant.establishmentId,randomUUID(),type,u.id]);
    await queue.pool.query('SELECT bansir.schedule_financial_alerts()');await queue.pool.query('SELECT bansir.schedule_financial_alerts()');
