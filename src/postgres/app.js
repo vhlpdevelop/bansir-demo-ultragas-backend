@@ -1,3 +1,4 @@
+import {mountFiscalStock} from './fiscal-stock.js';
 import {settingsModule} from './settings-permissions.js';
 import {mountDeliveries} from './deliveries.js';
 import {mountNotificationStream} from './notification-stream.js';
@@ -187,6 +188,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountCustomers(app,{scoped});
   mountSuppliers(app,{scoped});
   mountFiscalMonitor(app,{scoped});
+  mountFiscalStock(app,{scoped});
   mountCustomerProfile(app,{scoped});
   mountProductImport(app,{scoped});
   mountStorefrontAdmin(app,{scoped});

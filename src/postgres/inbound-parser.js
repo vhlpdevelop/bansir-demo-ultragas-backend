@@ -90,7 +90,7 @@ export function decodeDocument(docZip, monitor) {
         const p = item.prod, line = Number(item['@_nItem']);
         if (!p || !Number.isInteger(line) || line < 1 || line > 9999 || seen.has(line)) throw new Error('INVALID_NFE_LINE');
         seen.add(line);
-        return { line, supplierCode: text(p.cProd,60), barcode: text(p.cEAN,30), name: text(p.xProd), unit: text(p.uCom,6), quantity: decimal(p.qCom,6), unitPrice: decimal(p.vUnCom,10), totalCents: cents(p.vProd) };
+        return { line, ncm:/^\d{8}$/.test(String(p.NCM||''))?String(p.NCM):'', supplierCode: text(p.cProd,60), barcode: text(p.cEAN,30), name: text(p.xProd), unit: text(p.uCom,6), quantity: decimal(p.qCom,6), unitPrice: decimal(p.vUnCom,10), totalCents: cents(p.vProd) };
       });
       return { accessKey, supplierCnpj: issuer, supplierName: text(n.emit.xNome), number: text(n.ide.nNF,10), issuedAt: date(n.ide.dhEmi), totalCents: cents(n.total?.ICMSTot?.vNF), status: 'AVAILABLE', items: parsed, xml };
     }

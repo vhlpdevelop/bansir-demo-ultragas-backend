@@ -75,5 +75,29 @@ test('Suppliers, fiscal recipients and inbound monitoring',{skip:!process.env.TE
    const stored=(await admin.query('SELECT encrypted_xml FROM bansir.fiscal_inbound WHERE id=$1',[doc.id])).rows[0];assert.ok(!stored.encrypted_xml.includes('nfeProc'));
    const blocked=parseDistribution('<retDistDFeInt><tpAmb>2</tpAmb><cStat>656</cStat></retDistDFeInt>',{environment:2,ultNSU:'000000000000002',maxNSU:'000000000000002'});assert.equal(blocked.ultNSU,'000000000000002');assert.equal(blocked.documents.length,0);
   });
+  await t.test('stock receipt matches catalog, requires physical checking and never double credits',async()=>{
+   const doc=(await send('/fiscal/inbound')).body.data[0];
+   const product=(await send('/products','POST',{name:'Gás P13',barcode:'GAS-MATCH',price:190,stock:3,unit:'UN'})).body.data;
+   const preview=await send(`/fiscal/inbound/${doc.id}/stock-preview`);assert.equal(preview.status,200,JSON.stringify(preview.body));assert.equal(preview.body.data.items[0].candidates[0].id,product.id);
+   const body={revision:preview.body.data.revision,physicallyChecked:true,rows:[{line:1,action:'link',productId:product.id,stockQuantity:1}]};
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',{...body,physicallyChecked:false})).status,400);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',body,s2.token)).status,404);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',{...body,rows:[{...body.rows[0],stockQuantity:12}]})).body.code,'CONVERSION_REQUIRED');
+   const received=await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',body);assert.equal(received.status,201,JSON.stringify(received.body));assert.equal(received.body.data.rows[0].stock,4);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',body)).status,200);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',{...body,rows:[{...body.rows[0],stockQuantity:12,conversionConfirmed:true}]})).status,409);
+   const stocked=(await send('/products')).body.data.find(p=>p.id===product.id);assert.equal(stocked.stock,4);assert.equal(stocked.price,190);
+   assert.ok((await send(`/fiscal/inbound/${doc.id}/stock-preview`)).body.data.receipt);
+   const second=(await admin.query("INSERT INTO bansir.fiscal_inbound(tenant_id,establishment_id,monitor_id,access_key,supplier_cnpj,supplier_name,status,items,encrypted_xml) SELECT tenant_id,establishment_id,monitor_id,'50261022333444000155550010000000021000000022',supplier_cnpj,supplier_name,'AVAILABLE',items,encrypted_xml FROM bansir.fiscal_inbound WHERE id=$1 RETURNING id",[doc.id])).rows[0];
+   const plan=(await send(`/fiscal/inbound/${second.id}/stock-preview`)).body.data;assert.equal(plan.items[0].candidates[0].reason,'Vínculo conferido do fornecedor');
+   const create={revision:plan.revision,physicallyChecked:true,rows:[{line:1,action:'create',stockQuantity:2,conversionConfirmed:true,newProduct:{name:'Novo produto conferido',barcode:'NF-NEW',price:200,unit:'UN',ncm:'27111910'}}]};
+   assert.equal((await send(`/fiscal/inbound/${second.id}/stock-receipt`,'POST',{...create,revision:'0'.repeat(64)})).body.code,'INBOUND_CHANGED');
+   const created=await send(`/fiscal/inbound/${second.id}/stock-receipt`,'POST',create);assert.equal(created.status,201,JSON.stringify(created.body));assert.equal(created.body.data.rows[0].stock,2);
+   const counts=(await admin.query('SELECT count(*)::int AS n FROM bansir.fiscal_stock_receipts WHERE tenant_id=$1',[tenant.id])).rows[0];assert.equal(counts.n,2);
+   await admin.query("UPDATE bansir.establishment_memberships SET role='operador',allowed_routes=ARRAY['fiscal']::text[] WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
+   assert.equal((await send(`/fiscal/inbound/${second.id}/stock-receipt`,'POST',create)).status,403);
+   await admin.query("UPDATE bansir.establishment_memberships SET role='admin' WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
+  });
+
  }finally{if(server)await new Promise(r=>server.close(r));await queue.close();await db.close();await admin.end();}
 });

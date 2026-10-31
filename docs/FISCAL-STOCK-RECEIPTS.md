@@ -1,0 +1,11 @@
+# Conferência de NF-e de fornecedor
+
+O worker recebe resumos/XML pela distribuição SEFAZ do certificado da loja, valida destinatário, modelo55, ambiente, protocolo100/150, chave e limites de XML/itens; os documentos ficam em Minha empresa > Fiscal e geram alerta para destinatários autorizados. Resumo não autoriza entrada de estoque. Ciência da operação é um consentimento separado e não confirma recebimento físico.
+
+GET /fiscal/inbound/:id/stock-preview sugere produtos por vínculo de fornecedor/CNPJ/código já conferido, código de barras ou nome normalizado. Não cria produtos sozinho. A lista de seleção contém até5.000 ativos; o preview avisa se excedeu o limite. O usuário escolhe vincular/criar/ignorar cada linha; criação exige código interno/EAN e preço de venda. NCM do XML é sugerido quando disponível. Produtos existentes mantêm custo/preço.
+
+POST /fiscal/inbound/:id/stock-receipt exige permissão fiscal e produtos, physicallyChecked:true, revision do preview e todas as linhas únicas. Quantidade positiva inteira por linha, conversão expressamente confirmada se unidade/quantidade diferirem da nota. Não aceitar confirmação do frontend apenas: o backend exige literaltrue. Toda edição remove a confirmação visual. Uma entrada por chave NF-e/unidade, independente do monitor. Mesma requisição repete resultado sem duplicar; plano diferente após entrada recebe409. Linhas ignoradas não podem ser acrescentadas depois pela mesma nota; ajustes posteriores seguem movimentação normal autorizada.
+
+Transação bloqueia documento contra atualização simultânea, trava ledger por unidade/chave, cria produtos aprovados e adiciona movimentos de estoque com chave/item/conferência na origem. Qualquer falha desfaz tudo. Ledger imutável guarda responsável, confirmação física e resultado, com RLS. Vínculos fornecedor/produto são reutilizados como sugestões nas próximas notas. Não lança contas a pagar automaticamente nem altera ciência fiscal. Cancelamento posterior gera alerta para conferência dos registros; não desfaz estoque automaticamente.
+
+Testes usam PostgreSQL Docker descartável, SEFAZ/ORS/push simulados e XMLs fictícios, sem emitir nota ou movimentar clientes reais. Validação gráfica usa componentes reais/Leaflet com GPS e API simulados. Não substitui teste com aparelho físico, GPS real e documentos reais autorizados da loja.
