@@ -10,7 +10,7 @@ import {httpError} from './database.js';
 import {saleView,ownedSale} from './sales.js';
 const widthOf=req=>z.coerce.number().refine(n=>[58,80].includes(n)).default(80).parse(req.query.width);
 export async function danfePdf(doc,width=80){
- if(doc.status!=='authorized'||!doc.xml)throw httpError(409,'Documento fiscal autorizado ainda não disponível.','XML_NOT_AVAILABLE');
+ if(!['authorized','cancelled'].includes(doc.status)||!doc.xml)throw httpError(409,'Documento fiscal autorizado ainda não disponível.','XML_NOT_AVAILABLE');
  if(Buffer.byteLength(doc.xml)>2*1024*1024||/<!DOCTYPE|<!ENTITY/i.test(doc.xml)||XMLValidator.validate(doc.xml)!==true)throw httpError(409,'XML fiscal inválido.','INVALID_FISCAL_XML');
  const root=new XMLParser({removeNSPrefix:true,ignoreAttributes:false,parseTagValue:false}).parse(doc.xml).nfeProc;
  const n=root?.NFe?.infNFe,p=root?.protNFe?.infProt,model=doc.access_key.slice(20,22);
@@ -23,6 +23,7 @@ export async function danfePdf(doc,width=80){
    // The renderer formats dates in the server timezone. Preserve each XML clock value for display only.
    for(const [object,fields] of [[data.NFe.infNFe.ide,['dhEmi','dhSaiEnt']],[data.protNFe.infProt,['dhRecbto']]])for(const field of fields)if(object[field])object[field]=object[field].replace(/(Z|[+-]\d{2}:\d{2})$/,'');
    const renderer=new NFeGerarDanfe({data,chave:doc.access_key,outputPath}),chunks=[];
+   if(doc.status==='cancelled'){const header=renderer.drawHeader.bind(renderer);renderer.drawHeader=(...args)=>{header(...args);const x=renderer.doc.x,y=renderer.doc.y;renderer.doc.save().fontSize(42).fillColor('#d9a6a6').text('CANCELADA',160,420,{lineBreak:false});renderer.doc.restore();renderer.doc.x=x;renderer.doc.y=y;};}
    // The SDK resolves generatePDF before its file is flushed. Await the PDF stream instead.
    const result=new Promise((resolve,reject)=>{renderer.doc.on('data',chunk=>chunks.push(chunk));renderer.doc.once('end',()=>resolve(Buffer.concat(chunks)));renderer.doc.once('error',reject);});
    await renderer.generatePDF(false);return await result;
@@ -34,6 +35,7 @@ export async function danfePdf(doc,width=80){
  const line=(value,center=false)=>pdf.fontSize(width===58?8:9).text(String(value??''),{align:center?'center':'left'}),money=v=>Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
  line(n.emit.xNome,true);line('CNPJ: '+n.emit.CNPJ+'  IE: '+n.emit.IE,true);const a=n.emit.enderEmit;line([a.xLgr,a.nro,a.xBairro,a.xMun,a.UF].filter(Boolean).join(', '),true);
  pdf.moveDown();line('DANFE NFC-e',true);line('Documento Auxiliar da Nota Fiscal de Consumidor Eletrônica',true);
+ if(doc.status==='cancelled'){pdf.fillColor('#b91c1c');line('DOCUMENTO CANCELADO - SEM VALIDADE FISCAL',true);pdf.fillColor('black');}
  if(doc.environment===2)line('EMITIDA EM HOMOLOGAÇÃO - SEM VALOR FISCAL',true);
  pdf.moveDown();for(const i of items){const x=i.prod;line(x.cProd+' - '+x.xProd);line(x.qCom+' '+x.uCom+' x R$ '+money(x.vUnCom)+' = R$ '+money(Number(x.vProd)-Number(x.vDesc||0)));}
  const t=n.total.ICMSTot;pdf.moveDown();line('Qtd. total de itens: '+items.length);line('Valor dos produtos R$ '+money(t.vProd));line('Desconto R$ '+money(t.vDesc));line('Frete R$ '+money(t.vFrete));line('Outros R$ '+money(t.vOutro));line('VALOR A PAGAR R$ '+money(t.vNF));

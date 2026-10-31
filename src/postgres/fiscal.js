@@ -86,7 +86,7 @@ export function mountFiscal(app,{scoped}) {
  app.get('/api/v1/fiscal/documents/:id/xml',scoped('fiscal',true,async(c,req)=>{
   const doc=(await c.query('SELECT access_key,status,xml FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];
   if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');
-  if(doc.status!=='authorized' || !doc.xml)throw httpError(409,'XML autorizado ainda não disponível.','XML_NOT_AVAILABLE');
+  if(!['authorized','cancelled'].includes(doc.status) || !doc.xml)throw httpError(409,'XML autorizado ainda não disponível.','XML_NOT_AVAILABLE');
   return {data:{xml:doc.xml,filename:`${doc.access_key}.xml`}};
  }));
  // Fiscal draft includes accountant-approved taxes. Never invent GLP taxation from a product price.
