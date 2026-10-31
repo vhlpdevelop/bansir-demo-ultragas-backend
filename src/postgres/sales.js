@@ -1,3 +1,4 @@
+import {mountSaleCustomization} from './sale-customization.js';
 import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
@@ -37,11 +38,11 @@ export async function saleView(c,id){
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
  if(!s)return null;
  for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
- s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
+ s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
  s.payments=(await c.query(`SELECT p.id,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
   FROM bansir.sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
  s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
- s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=`V-${s.id.slice(0,8).toUpperCase()}`;return s;
+ s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=s.coupon_number?String(s.coupon_number):`V-${s.id.slice(0,8).toUpperCase()}`;return s;
 }
 function checkPayment(p,amount){
  if(p.method!=='credit_card'&&p.installments>1)fail('Parcelas permitidas somente no crédito.','INVALID_INSTALLMENTS',400);
@@ -114,6 +115,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
 }
 
 export function mountSales(app,{scoped}){
+ mountSaleCustomization(app,{scoped});
  app.get('/api/v1/pdv/terminal-notice',scoped('sales',true,async(c,req)=>{
   const terminal=await currentTerminal(c,req.identity);if(!terminal)return {data:null};
   const cash=(await c.query('SELECT c.id,c.user_id,c.opened_at,u.name AS operator_name FROM bansir.cash_sessions c JOIN bansir.users u ON u.id=c.user_id WHERE c.terminal_id=$1 AND c.closed_at IS NULL',[terminal.id])).rows[0];
@@ -208,7 +210,7 @@ function mountSaleFiscal(app,{scoped}){
  app.get('/api/v1/sales/:id/fiscal-draft',scoped('sales',true,async(c,req,member)=>{
   requirePermission(member,'fiscal');await ownedSale(c,req.identity,member,req.params.id);const sale=await saleView(c,req.params.id);
   if(sale.status!=='paid')fail('A venda precisa estar paga antes da emissão fiscal.','SALE_NOT_PAID');
-  return {data:saleFiscalDraft(sale)};
+  return {data:saleFiscalDraft(sale,fiscalModel.parse(req.query.model))};
  }));
  app.post('/api/v1/sales/:id/fiscal',scoped('sales',false,async(c,req,member)=>{
   requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
@@ -224,9 +226,9 @@ function mountSaleFiscal(app,{scoped}){
   const doc=await createFiscalDocument(c,i,body);await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)',[i.tenantId,i.establishmentId,sale.id,doc.id]);return {status:202,data:doc};
  }));
 }
-export function saleFiscalDraft(sale){
+export function saleFiscalDraft(sale,model='65'){
  const method={cash:'01',pix:'17',credit_card:'03',debit_card:'04'};
- return {det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.ncm,CFOP:'',uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:{ICMS:{},PIS:{},COFINS:{}}})),
+ return {det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
  total:{ICMSTot:{vBC:0,vICMS:0,vICMSDeson:0,vFCP:0,vBCST:0,vST:0,vFCPST:0,vFCPSTRet:0,vProd:sale.subtotal_cents/100,vFrete:sale.delivery_fee_cents/100,vSeg:0,vDesc:sale.discount_cents/100,vII:0,vIPI:0,vIPIDevol:0,vPIS:0,vCOFINS:0,vOutro:0,vNF:sale.total_cents/100}},
  pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:2,...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...(sale.customer_document?{dest:{CNPJCPF:sale.customer_document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
 }

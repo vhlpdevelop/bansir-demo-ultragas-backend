@@ -95,6 +95,20 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${pending.id}/cancel`,'POST',{reason:'External refund test',refundConfirmed:true})).status,400);
    assert.equal((await send(`/sales/${pending.id}/cancel`,'POST',{reason:'External refund test',refundConfirmed:true,refundReference:'REFUND TEST APPROVED'})).status,200);
   });
+  await t.test('coupon counters are per-unit, configurable, monotonic and fiscal profiles freeze with the sale',async()=>{
+   const cfg=await send('/sales/numbering/config','PUT',{nextNumber:75259});assert.equal(cfg.status,200,JSON.stringify(cfg.body));
+   const profile={'55':{cfop:'5405',cest:'',taxes:{ICMS:{ICMSSN500:{orig:0,CSOSN:'500'}},PIS:{PISNT:{CST:'07'}},COFINS:{COFINSNT:{CST:'07'}}}}};
+   assert.equal((await send(`/products/${product.id}/fiscal-profile`,'PUT',profile)).status,200);
+   const input=order(),a=await send('/sales','POST',input);assert.equal(a.body.data.saleNumber,'75259');
+   assert.equal((await send('/sales','POST',input)).body.data.saleNumber,'75259');
+   assert.equal((await send('/sales/numbering/config','PUT',{nextNumber:75259})).status,409);
+   assert.equal((await send(`/products/${product.id}/fiscal-profile`,'PUT',{})).status,200);
+   const draft=(await send(`/sales/${a.body.data.id}/fiscal-draft?model=55`)).body.data;assert.equal(draft.det[0].prod.CFOP,'5405');assert.equal(draft.det[0].imposto.ICMS.ICMSSN500.CSOSN,'500');
+   const b=await send('/sales','POST',order());assert.equal(b.body.data.saleNumber,'75260');
+   assert.equal((await send(`/sales/${b.body.data.id}/fiscal-draft?model=55`)).body.data.det[0].prod.CFOP,'');
+   assert.equal((await send('/sales/numbering/config','PUT',{nextNumber:80000},operatorSession.token)).status,403);
+   assert.equal((await send(`/products/${product.id}/fiscal-profile`,'PUT',profile,operatorSession.token)).status,403);
+  });
   await t.test('fiscal draft is bound to paid sale, item amounts and payment; queue never fabricates fiscal authorization',async()=>{
    process.env.FISCAL_ENCRYPTION_KEY=randomBytes(32).toString('base64');const identity={tenantId:tenant.id,establishmentId:tenant.establishmentId};
    await admin.query(`INSERT INTO bansir.fiscal_certificates(tenant_id,establishment_id,encrypted_bundle,subject,cnpj,fingerprint,valid_from,valid_until) VALUES($1,$2,$3,'TEST ONLY','11222333000181','test',now()-interval '1 day',now()+interval '1 day')`,[tenant.id,tenant.establishmentId,seal({base64:'TEST ONLY',password:'test'},secretContext(identity,'certificate'))]);
