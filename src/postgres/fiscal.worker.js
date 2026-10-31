@@ -73,17 +73,17 @@ export async function processFiscal(queue,job,{wizard=runWizard,upload=storeXml}
   return {doc,action,settings:{...cfg.data,environment:doc.environment},certificate:unseal(cert.encrypted_bundle,secretContext(scope,'certificate')),csc:unseal(cfg.encrypted_csc,secretContext(scope,'csc'))};
  });
  let {doc}=snapshot;
- if(['rejected','manual_review'].includes(doc.status)){await queue.scope(job,c=>c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':'+doc.status,'NFC-e precisa de atenção','Confira a situação do documento fiscal nas configurações da loja.']));return;}
+ if(['rejected','manual_review'].includes(doc.status)){await queue.scope(job,c=>c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':'+doc.status,'Documento fiscal precisa de atenção','Confira a situação do documento fiscal em Minha Empresa → Fiscal.']));return;}
  if(doc.status!=='authorized'){
   let data;
-  try{data=await wizard({action:snapshot.action,model:'65',key:doc.access_key,payload:doc.payload.request,settings:snapshot.settings,certificate:snapshot.certificate,csc:snapshot.csc});}
+  try{data=await wizard({action:snapshot.action,model:doc.access_key.slice(20,22),key:doc.access_key,payload:doc.payload.request,settings:snapshot.settings,certificate:snapshot.certificate,csc:snapshot.csc});}
   catch{
-   await queue.scope(job,async c=>{await c.query("UPDATE bansir.fiscal_documents SET status='unknown',updated_at=now() WHERE id=$1",[doc.id]);await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':unknown','NFC-e precisa de atenção','O retorno da emissão é incerto. Consulte a nota antes de tentar novamente.']);});throw new Error('FISCAL_CONSULT_REQUIRED');
+   await queue.scope(job,async c=>{await c.query("UPDATE bansir.fiscal_documents SET status='unknown',updated_at=now() WHERE id=$1",[doc.id]);await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':unknown','Documento fiscal precisa de atenção','O retorno da emissão é incerto. Consulte a nota antes de tentar novamente.']);});throw new Error('FISCAL_CONSULT_REQUIRED');
   }
   const evidence=fiscalEvidence(data,doc.access_key,doc.environment);
   const status=evidence.protocol?'authorized':evidence.rejection?(snapshot.action==='consult'?'manual_review':'rejected'):'unknown';
   doc=await queue.scope(job,async c=>{const updated=(await c.query(`UPDATE bansir.fiscal_documents SET status=$2,protocol=$3,xml=$4,rejection_code=$5,updated_at=now() WHERE id=$1 RETURNING *`,[doc.id,status,evidence.protocol||null,evidence.xml,evidence.rejection||null])).rows[0];
-   await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':'+status,status==='authorized'?'NFC-e autorizada':'NFC-e precisa de atenção',status==='authorized'?'A autorização fiscal foi registrada. Consulte o documento no sistema.':'Confira a situação da nota no sistema antes de tentar novamente.']);return updated;});
+   await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':'+status,status==='authorized'?'Documento fiscal autorizado':'Documento fiscal precisa de atenção',status==='authorized'?'A autorização fiscal foi registrada. Consulte o documento no sistema.':'Confira a situação da nota no sistema antes de tentar novamente.']);return updated;});
   if(status==='unknown')throw new Error('FISCAL_CONSULT_REQUIRED');
   if(status!=='authorized')return;
  }

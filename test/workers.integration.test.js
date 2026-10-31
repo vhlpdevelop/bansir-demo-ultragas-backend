@@ -118,6 +118,27 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[result.body.data.id])).rows[0].status,'manual_review');await queue.finish(job,'done');
    process.env.FISCAL_PRODUCTION_ENABLED='false';assert.equal((await send('/fiscal/documents','POST',{requestKey:randomUUID(),draft})).status,409);process.env.FISCAL_PRODUCTION_ENABLED='true';
   });
+  await t.test('NF-e 55 has independent counters, validated recipient, model-aware idempotency and worker endpoints',async()=>{
+   const body={requestKey:randomUUID(),model:'55',draft:structuredClone(draft)};
+   assert.equal((await send('/fiscal/documents','POST',body)).status,409);
+   const configured=await send('/fiscal/settings','PUT',{...config,nextNumber:3,nfeSeries:1,nfeNextNumber:1});assert.equal(configured.status,200,JSON.stringify(configured.body));
+   assert.equal((await send('/fiscal/documents','POST',body)).status,400);
+   body.draft.dest={CNPJCPF:'12345678909',xNome:'Cliente teste',indIEDest:9,enderDest:{xLgr:'Rua Teste',nro:'10',xBairro:'Centro',cMun:'5103403',xMun:'Cuiaba',UF:'MT',CEP:'78000000'}};
+   const invalid=structuredClone(body);invalid.draft.dest.indIEDest=1;assert.equal((await send('/fiscal/documents','POST',invalid)).status,400);
+   const foreign=structuredClone(body);foreign.draft.dest.enderDest={...foreign.draft.dest.enderDest,UF:'MS',cMun:'5002704'};assert.equal((await send('/fiscal/documents','POST',foreign)).status,400);
+   const issued=await send('/fiscal/documents','POST',body);assert.equal(issued.status,202,JSON.stringify(issued.body));
+   assert.equal((await send('/fiscal/documents','POST',body)).body.data.id,issued.body.data.id);
+   assert.equal((await send('/fiscal/documents','POST',{...body,model:'65'})).status,409);
+   assert.equal((await send('/fiscal/documents','POST',{...body,operation:{finalConsumer:false,presence:1}})).status,409);
+   const row=(await admin.query('SELECT * FROM bansir.fiscal_documents WHERE id=$1',[issued.body.data.id])).rows[0],ide=row.payload.request.NFe.infNFe.ide;
+   assert.equal(row.access_key.slice(20,22),'55');assert.equal(ide.mod,55);assert.equal(ide.tpImp,1);assert.equal(ide.nNF,1);assert.equal(ide.idDest,1);
+   const settings=(await send('/fiscal/settings')).body.data.settings;assert.equal(settings.nextNumber,3);assert.equal(settings.nfeNextNumber,2);
+   const job=await queue.claim('fiscal');assert.equal(job.payload.documentId,row.id);
+   let called=false;await processFiscal(queue,job,{wizard:async message=>{called=true;assert.equal(message.model,'55');assert.equal(message.payload.NFe.infNFe.ide.mod,55);return {result:{chNFe:row.access_key,tpAmb:1,cStat:'999'}};}});assert.equal(called,true);await queue.finish(job,'done');
+   const interstate=structuredClone(foreign);interstate.requestKey=randomUUID();interstate.draft.det[0].prod.CFOP='6656';
+   assert.equal((await send('/fiscal/documents','POST',interstate)).status,202);
+   const last=(await admin.query("SELECT payload FROM bansir.fiscal_documents WHERE tenant_id=$1 AND request_key=$2",[tenant.id,interstate.requestKey])).rows[0];assert.equal(last.payload.request.NFe.infNFe.ide.idDest,2);
+  });
   await t.test('financial digests persist without push, deduplicate and enforce recipient permissions',async()=>{
    for(const type of ['income','expense'])await admin.query("INSERT INTO bansir.financial_entries(tenant_id,establishment_id,request_key,request_hash,title,type,category,amount_cents,status,payment_method,due_date,created_by) VALUES($1,$2,$3,'test','Test due',$4,'test',1000,'pending','pix',current_date-1,$5)",[tenant.id,tenant.establishmentId,randomUUID(),type,u.id]);
    await queue.pool.query('SELECT bansir.schedule_financial_alerts()');await queue.pool.query('SELECT bansir.schedule_financial_alerts()');

@@ -110,13 +110,13 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${sale.id}/cancel`,'POST',{reason:'Must cancel fiscally',refundConfirmed:true})).status,409);
    assert.equal((await send(`/sales/${sale.id}/fiscal-draft`,'GET',undefined,operatorSession.token)).status,403);
   });
-  await t.test('invoice checkout requires CPF and paid sale; customer document edits stay scoped and lock after invoice',async()=>{
+  await t.test('invoice checkout opens fiscal review before identifying the recipient; customer edits lock after invoice',async()=>{
    const before=await stock(product);
-   assert.equal((await send('/sales','POST',{...order(),issueInvoice:true})).status,400);
-   assert.equal(await stock(product),before);
+   const unassigned=await send('/sales','POST',{...order(),issueInvoice:true});assert.equal(unassigned.status,201);assert.equal(unassigned.body.data.document_id,null);
+   assert.equal(await stock(product),before-1);
    const body={...order(),issueInvoice:true,customerDocument:'12345678909'};
    const a=await send('/sales','POST',body);assert.equal(a.status,201,JSON.stringify(a.body));
-   assert.equal((await send('/sales','POST',body)).body.data.id,a.body.data.id);assert.equal(await stock(product),before-1);
+   assert.equal((await send('/sales','POST',body)).body.data.id,a.body.data.id);assert.equal(await stock(product),before-2);
    const id=a.body.data.id;
    assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'98765432100'},session2.token)).status,403);
    assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'98765432100'},operatorSession.token)).status,403);
@@ -126,6 +126,18 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${id}/fiscal`,'POST',{requestKey:randomUUID(),draft})).status,202);
    assert.equal((await send(`/sales/${id}/customer-document`,'PATCH',{document:'12345678909'})).status,409);
    assert.equal((await send(`/sales/${id}`)).body.data.fiscal_model,'65');
+  });
+  await t.test('a paid sale can request NF-e 55 without changing stock or payments, but cannot also issue NFC-e',async()=>{
+   await admin.query("UPDATE bansir.fiscal_settings SET data=data||jsonb_build_object('nfeSeries',1,'nfeNextNumber',1) WHERE tenant_id=$1",[tenant.id]);
+   await admin.query('INSERT INTO bansir.fiscal_numbering(tenant_id,establishment_id,environment,series,last_number,model) VALUES($1,$2,2,1,0,55)',[tenant.id,tenant.establishmentId]);
+   const sale=(await send('/sales','POST',order())).body.data;
+   const before=await stock(product),draft=(await send(`/sales/${sale.id}/fiscal-draft`)).body.data;
+   draft.det[0].prod.CFOP='5102';draft.det[0].imposto={ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}};
+   draft.dest={CNPJCPF:'11222333000181',xNome:'Destinatario teste',indIEDest:1,IE:'123456789',enderDest:{xLgr:'Rua Teste',nro:'10',xBairro:'Centro',cMun:'5103403',xMun:'Cuiaba',UF:'MT',CEP:'78000000'}};
+   const body={requestKey:randomUUID(),model:'55',draft};const response=await send(`/sales/${sale.id}/fiscal`,'POST',body);assert.equal(response.status,202,JSON.stringify(response.body));
+   assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',body)).body.data.id,response.body.data.id);
+   assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',{...body,model:'65'})).status,409);
+   const state=(await send(`/sales/${sale.id}`)).body.data;assert.equal(state.fiscal_model,'55');assert.equal(state.fiscal_status,'queued');assert.equal(state.total_cents,sale.total_cents);assert.equal(await stock(product),before);
   });
   await t.test('cash withdrawals, deposits and closing reconcile physical cash only, including cash refunds',async()=>{
    const before=(await send('/pdv/cash')).body.data.expected_cents;

@@ -3,6 +3,7 @@ import {randomInt,createHash} from 'node:crypto';
 import {httpError} from './database.js';
 import {seal,inspectCertificate,secretContext} from './secrets.js';
 import {enqueue} from './queue.js';
+import {fiscalModel,fiscalOperation,validateNfeDraft} from './fiscal-models.js';
 
 export const ufCodes={RO:11,AC:12,AM:13,RR:14,PA:15,AP:16,TO:17,MA:21,PI:22,CE:23,RN:24,PB:25,PE:26,AL:27,SE:28,BA:29,MG:31,ES:32,RJ:33,SP:35,PR:41,SC:42,RS:43,MS:50,MT:51,GO:52,DF:53};
 const text=z.string().trim().min(1).max(120);
@@ -10,6 +11,7 @@ export const fiscalSettingsInput=z.object({
  cnpj:z.string().regex(/^\d{14}$/),legalName:text,tradeName:text,ie:z.string().regex(/^\d{2,14}$/),
  crt:z.coerce.number().int().refine(n=>[1,2,3,4].includes(n)),environment:z.coerce.number().int().refine(n=>[1,2].includes(n)),
  series:z.coerce.number().int().min(1).max(889),nextNumber:z.coerce.number().int().min(1).max(999999999),
+ nfeSeries:z.coerce.number().int().min(1).max(889).optional(),nfeNextNumber:z.coerce.number().int().min(1).max(999999999).optional(),
  timeZone:z.enum(['America/Sao_Paulo','America/Cuiaba','America/Manaus','America/Rio_Branco','America/Noronha']).default('America/Cuiaba'),
  cscId:z.string().regex(/^\d{1,6}$/),cscToken:z.string().trim().min(16).max(100).optional(),
  address:z.object({street:text,number:z.string().trim().min(1).max(20),district:text,city:text,cityCode:z.string().regex(/^\d{7}$/),uf:z.enum(Object.keys(ufCodes)),cep:z.string().regex(/^\d{8}$/),phone:z.string().regex(/^\d{10,14}$/)}).strict()
@@ -20,8 +22,8 @@ export const fiscalDraftHash=v=>createHash('sha256').update(JSON.stringify(canon
 const digest=fiscalDraftHash;
 export const configurationVersion=row=>digest({data:row.data,csc:row.encrypted_csc,updatedAt:row.updated_at});
 function publicCertificate(row){return row?{subject:row.subject,cnpj:row.cnpj,validFrom:row.valid_from,validUntil:row.valid_until,fingerprint:row.fingerprint,active:row.active,name:row.name}:null;}
-export function accessKey({uf,cnpj,series,number,issuedAt,code}) {
- const body=String(ufCodes[uf])+issuedAt.slice(2,4)+issuedAt.slice(5,7)+cnpj+'65'+String(series).padStart(3,'0')+String(number).padStart(9,'0')+'1'+code;
+export function accessKey({uf,cnpj,series,number,issuedAt,code,model='65'}) {
+ const body=String(ufCodes[uf])+issuedAt.slice(2,4)+issuedAt.slice(5,7)+cnpj+fiscalModel.parse(String(model))+String(series).padStart(3,'0')+String(number).padStart(9,'0')+'1'+code;
  let sum=0,weight=2;for(let i=body.length-1;i>=0;i--){sum+=Number(body[i])*weight;weight=weight===9?2:weight+1;}const digit=11-sum%11;
  return body+(digit>=10?0:digit);
 }
@@ -34,7 +36,8 @@ export function mountFiscal(app,{scoped}) {
  app.get('/api/v1/fiscal/settings',scoped('settings',false,async c=>{
   const cert=(await c.query('SELECT subject,cnpj,valid_from,valid_until,fingerprint,active,name FROM bansir.fiscal_certificates')).rows[0];
   const cfg=(await c.query('SELECT data FROM bansir.fiscal_settings')).rows[0];
-  if(cfg){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2',[cfg.data.environment,cfg.data.series])).rows[0];if(counter)cfg.data.nextNumber=counter.last_number+1;}
+  if(cfg){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=65',[cfg.data.environment,cfg.data.series])).rows[0];if(counter)cfg.data.nextNumber=counter.last_number+1;}
+  if(cfg?.data.nfeSeries){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=55',[cfg.data.environment,cfg.data.nfeSeries])).rows[0];if(counter)cfg.data.nfeNextNumber=counter.last_number+1;}
   const store=(await c.query('SELECT e.legal_name,e.name,e.document_id FROM bansir.establishments e WHERE id=bansir.establishment_id()')).rows[0];
   return {data:{certificate:publicCertificate(cert),settings:cfg?.data||null,store,readiness:{encryption:!!process.env.FISCAL_ENCRYPTION_KEY,xmlStorage:!!process.env.FISCAL_S3_BUCKET,productionEnabled:process.env.FISCAL_PRODUCTION_ENABLED==='true'}}};
  }));
@@ -66,14 +69,17 @@ export function mountFiscal(app,{scoped}) {
   delete data.cscToken;
   await c.query(`INSERT INTO bansir.fiscal_settings(tenant_id,establishment_id,data,encrypted_csc) VALUES($1,$2,$3,$4)
    ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET data=EXCLUDED.data,encrypted_csc=EXCLUDED.encrypted_csc,updated_at=now()`,[i.tenantId,i.establishmentId,data,encrypted]);
-  // Numbering may move forward, never backward, even after a config change.
-  const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 FOR UPDATE',[data.environment,data.series])).rows[0];
-  if(counter && data.nextNumber<=counter.last_number)throw httpError(409,'Próximo número deve superar a última numeração reservada.','NUMBER_ALREADY_USED');
-  await c.query(`INSERT INTO bansir.fiscal_numbering(tenant_id,establishment_id,environment,series,last_number) VALUES($1,$2,$3,$4,$5)
-   ON CONFLICT(tenant_id,establishment_id,environment,series) DO UPDATE SET last_number=greatest(bansir.fiscal_numbering.last_number,EXCLUDED.last_number)`,[i.tenantId,i.establishmentId,data.environment,data.series,data.nextNumber-1]);
+  // Configuration is locked above; counters are separate for each model.
+  if((data.nfeSeries===undefined)!==(data.nfeNextNumber===undefined))throw httpError(400,'Informe série e próximo número da NF-e.','NFE_NUMBERING_REQUIRED');
+  for(const [model,series,next] of [[65,data.series,data.nextNumber],...(data.nfeSeries?[[55,data.nfeSeries,data.nfeNextNumber]]:[])]){
+   const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=$3 FOR UPDATE',[data.environment,series,model])).rows[0];
+   if(counter && next<=counter.last_number)throw httpError(409,'Próximo número deve superar a última numeração reservada deste modelo.','NUMBER_ALREADY_USED');
+   await c.query(`INSERT INTO bansir.fiscal_numbering(tenant_id,establishment_id,environment,series,last_number,model) VALUES($1,$2,$3,$4,$5,$6)
+    ON CONFLICT(tenant_id,establishment_id,environment,series,model) DO UPDATE SET last_number=greatest(bansir.fiscal_numbering.last_number,EXCLUDED.last_number)`,[i.tenantId,i.establishmentId,data.environment,series,next-1,model]);
+  }
   return {data};
  }));
- app.get('/api/v1/fiscal/documents',scoped('fiscal',true,async c=>({data:(await c.query('SELECT id,environment,access_key,status,protocol,rejection_code,s3_key,created_at FROM bansir.fiscal_documents ORDER BY created_at DESC LIMIT 100')).rows})));
+ app.get('/api/v1/fiscal/documents',scoped('fiscal',true,async c=>({data:(await c.query('SELECT id,environment,substring(access_key FROM 21 FOR 2) AS model,access_key,status,protocol,rejection_code,s3_key,created_at FROM bansir.fiscal_documents ORDER BY created_at DESC LIMIT 100')).rows})));
  app.get('/api/v1/fiscal/documents/:id/xml',scoped('fiscal',true,async(c,req)=>{
   const doc=(await c.query('SELECT access_key,status,xml FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];
   if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');
@@ -86,7 +92,7 @@ export function mountFiscal(app,{scoped}) {
  }));
 }
 export async function createFiscalDocument(c,identity,body) {
-  const input=z.object({requestKey:z.uuid(),draft:z.object({det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
+  const input=z.object({requestKey:z.uuid(),model:fiscalModel,operation:fiscalOperation,draft:z.object({det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
   if(input.draft.det.some(d=>['ICMS','PIS','COFINS'].some(k=>!Object.keys(d.imposto[k]).length)))throw httpError(400,'Preencha a tributação de todos os itens com orientação contábil.','FISCAL_TAX_REQUIRED');
   const i=identity;
   // Lock configuration serializes allocation, idempotency and changes of certificate/config.
@@ -94,20 +100,24 @@ export async function createFiscalDocument(c,identity,body) {
   const cfg=(await c.query('SELECT * FROM bansir.fiscal_settings FOR UPDATE')).rows[0];
   if(!cfg || !cert || cert.active===false || new Date(cert.valid_until)<=new Date())throw httpError(409,'Cadastre certificado válido e emitente.','FISCAL_NOT_READY');
   const existing=(await c.query('SELECT id,status,payload FROM bansir.fiscal_documents WHERE request_key=$1',[input.requestKey])).rows[0];
-  if(existing){if(existing.payload.draftHash!==digest(input.draft))throw httpError(409,'Identificador já usado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return {id:existing.id,status:existing.status};}
-  const s=cfg.data,draft=input.draft;
+  if(existing){if(existing.payload.draftHash!==digest(input.draft)||String(existing.payload.request.NFe.infNFe.ide.mod)!==input.model||digest(existing.payload.operation||{finalConsumer:true,presence:1})!==digest(input.operation))throw httpError(409,'Identificador já usado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return {id:existing.id,status:existing.status};}
+  const s=cfg.data,draft=input.draft,model=input.model,series=model==='55'?s.nfeSeries:s.series;
+  if(!series)throw httpError(409,'Configure a série e numeração da NF-e 55 nas configurações fiscais.','NFE_NUMBERING_REQUIRED');
+  const destination=model==='55'?validateNfeDraft(draft,s):{idDest:1};
+  if(model==='65'&&(input.operation.finalConsumer!==true||input.operation.presence!==1))throw httpError(400,'Opções de operação incompatíveis com a NFC-e deste PDV.','FISCAL_OPERATION_INVALID');
   if(s.environment===1 && process.env.FISCAL_PRODUCTION_ENABLED!=='true')throw httpError(409,'A emissão de produção ainda não foi habilitada neste ambiente.','PRODUCTION_DISABLED');
   const cents=n=>Math.round(n*100),total=draft.det.reduce((n,d)=>n+cents(d.prod.vProd),0);
   if(total!==cents(draft.total.ICMSTot.vProd) || draft.det.some(d=>cents(d.prod.qCom*d.prod.vUnCom)!==cents(d.prod.vProd)) || draft.pag.detPag.reduce((n,p)=>n+cents(p.vPag),0)-cents(draft.pag.vTroco||0)!==cents(draft.total.ICMSTot.vNF))throw httpError(400,'Valores dos itens, totais ou pagamentos inconsistentes.','FISCAL_TOTAL_MISMATCH');
-  const {rows:[counter]}=await c.query('UPDATE bansir.fiscal_numbering SET last_number=last_number+1 WHERE environment=$1 AND series=$2 AND last_number<999999999 RETURNING last_number',[s.environment,s.series]);
+  const {rows:[counter]}=await c.query('UPDATE bansir.fiscal_numbering SET last_number=last_number+1 WHERE environment=$1 AND series=$2 AND model=$3 AND last_number<999999999 RETURNING last_number',[s.environment,series,Number(model)]);
   if(!counter)throw httpError(409,'Numeração fiscal indisponível.','NUMBERING_UNAVAILABLE');
   // XML schema requires a numeric UTC offset; access-key month uses the issuer's same local timestamp.
   const issuedAt=issuedTimestamp(s.timeZone),code=String(randomInt(100000000)).padStart(8,'0');
-  const key=accessKey({uf:s.address.uf,cnpj:s.cnpj,series:s.series,number:counter.last_number,issuedAt,code});
+  const key=accessKey({uf:s.address.uf,cnpj:s.cnpj,series,number:counter.last_number,issuedAt,code,model});
   const a=s.address;
-  const infNFe={...structuredClone(draft),Id:key,versao:'4.00',emit:{CNPJCPF:s.cnpj,xNome:s.legalName,xFant:s.tradeName,IE:s.ie,CRT:s.crt,enderEmit:{xLgr:a.street,nro:a.number,xBairro:a.district,cMun:Number(a.cityCode),xMun:a.city,UF:a.uf,CEP:a.cep,fone:a.phone,cPais:1058,xPais:'BRASIL'}},ide:{cUF:ufCodes[a.uf],cNF:code,natOp:'VENDA',mod:65,serie:s.series,nNF:counter.last_number,dhEmi:issuedAt,tpNF:1,idDest:1,cMunFG:Number(a.cityCode),tpImp:4,tpEmis:1,cDV:Number(key.at(-1)),tpAmb:s.environment,finNFe:1,indFinal:1,indPres:1,procEmi:0,verProc:'Bansir-1'},det:draft.det.map((d,index)=>({...structuredClone(d),nItem:index+1})),transp:draft.transp||{modFrete:9}};
+  const infNFe={...structuredClone(draft),Id:key,versao:'4.00',emit:{CNPJCPF:s.cnpj,xNome:s.legalName,xFant:s.tradeName,IE:s.ie,CRT:s.crt,enderEmit:{xLgr:a.street,nro:a.number,xBairro:a.district,cMun:Number(a.cityCode),xMun:a.city,UF:a.uf,CEP:a.cep,fone:a.phone,cPais:1058,xPais:'BRASIL'}},ide:{cUF:ufCodes[a.uf],cNF:code,natOp:'VENDA',mod:Number(model),serie:series,nNF:counter.last_number,dhEmi:issuedAt,tpNF:1,idDest:destination.idDest,cMunFG:Number(a.cityCode),tpImp:model==='55'?1:4,tpEmis:1,cDV:Number(key.at(-1)),tpAmb:s.environment,finNFe:1,indFinal:input.operation.finalConsumer?1:0,indPres:input.operation.presence,procEmi:0,verProc:'Bansir-1'},det:draft.det.map((d,index)=>({...structuredClone(d),nItem:index+1})),transp:draft.transp||{modFrete:9}};
+  if(model==='55'){infNFe.dest=destination.recipient;if([2,3,9].includes(input.operation.presence))infNFe.ide.indIntermed=0;}
   if(s.environment===2){infNFe.det[0].prod.xProd='NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';if(infNFe.dest)infNFe.dest.xNome='NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';}
-  const payload={draftHash:digest(draft),request:{idLote:counter.last_number,indSinc:1,NFe:{infNFe}}};
+  const payload={draftHash:digest(draft),operation:input.operation,request:{idLote:counter.last_number,indSinc:1,NFe:{infNFe}}};
   const {rows:[doc]}=await c.query(`INSERT INTO bansir.fiscal_documents(tenant_id,establishment_id,request_key,environment,access_key,payload,configuration_version,certificate_fingerprint)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,status`,[i.tenantId,i.establishmentId,input.requestKey,s.environment,key,payload,configurationVersion(cfg),cert.fingerprint]);
   await enqueue(c,i,{kind:'fiscal',key:doc.id,payload:{documentId:doc.id,userId:i.userId}});

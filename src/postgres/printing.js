@@ -1,3 +1,6 @@
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import QRCode from 'qrcode';
 import {grantPrint} from './qz-signing.js';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
@@ -7,11 +10,24 @@ import {httpError} from './database.js';
 import {saleView,ownedSale} from './sales.js';
 const widthOf=req=>z.coerce.number().refine(n=>[58,80].includes(n)).default(80).parse(req.query.width);
 export async function danfePdf(doc,width=80){
- if(doc.status!=='authorized'||!doc.xml)throw httpError(409,'NFC-e autorizada ainda não disponível.','XML_NOT_AVAILABLE');
+ if(doc.status!=='authorized'||!doc.xml)throw httpError(409,'Documento fiscal autorizado ainda não disponível.','XML_NOT_AVAILABLE');
  if(Buffer.byteLength(doc.xml)>2*1024*1024||/<!DOCTYPE|<!ENTITY/i.test(doc.xml)||XMLValidator.validate(doc.xml)!==true)throw httpError(409,'XML fiscal inválido.','INVALID_FISCAL_XML');
  const root=new XMLParser({removeNSPrefix:true,ignoreAttributes:false,parseTagValue:false}).parse(doc.xml).nfeProc;
- const n=root?.NFe?.infNFe,p=root?.protNFe?.infProt;
- if(n?.['@_Id']!=='NFe'+doc.access_key||String(n?.ide?.mod)!=='65'||String(p?.chNFe)!==doc.access_key||Number(p?.tpAmb)!==doc.environment||Number(n?.ide?.tpAmb)!==doc.environment||!['100','150'].includes(String(p?.cStat))||!p?.nProt||!root?.NFe?.infNFeSupl?.qrCode)throw httpError(409,'XML sem autorização ou QR Code correspondente. Consulte a situação fiscal.','INVALID_FISCAL_EVIDENCE');
+ const n=root?.NFe?.infNFe,p=root?.protNFe?.infProt,model=doc.access_key.slice(20,22);
+ if(n?.['@_Id']!=='NFe'+doc.access_key||!['55','65'].includes(model)||String(n?.ide?.mod)!==model||String(p?.chNFe)!==doc.access_key||Number(p?.tpAmb)!==doc.environment||Number(n?.ide?.tpAmb)!==doc.environment||!['100','150'].includes(String(p?.cStat))||!p?.nProt||(model==='65'&&!root?.NFe?.infNFeSupl?.qrCode))throw httpError(409,'XML sem autorização ou QR Code correspondente. Consulte a situação fiscal.','INVALID_FISCAL_EVIDENCE');
+ if(model==='55'){
+  const directory=await mkdtemp(join(tmpdir(),'bansir-danfe-'));
+  try{const {NFeGerarDanfe}=await import('@nfewizard/danfe');const outputPath=join(directory,'danfe.pdf');
+   // The standard A4 renderer consumes only the already validated authorized XML.
+   const data=structuredClone(root);for(const who of ['emit','dest'])if(data.NFe.infNFe[who])data.NFe.infNFe[who].CNPJCPF=data.NFe.infNFe[who].CNPJ||data.NFe.infNFe[who].CPF;
+   // The renderer formats dates in the server timezone. Preserve each XML clock value for display only.
+   for(const [object,fields] of [[data.NFe.infNFe.ide,['dhEmi','dhSaiEnt']],[data.protNFe.infProt,['dhRecbto']]])for(const field of fields)if(object[field])object[field]=object[field].replace(/(Z|[+-]\d{2}:\d{2})$/,'');
+   const renderer=new NFeGerarDanfe({data,chave:doc.access_key,outputPath}),chunks=[];
+   // The SDK resolves generatePDF before its file is flushed. Await the PDF stream instead.
+   const result=new Promise((resolve,reject)=>{renderer.doc.on('data',chunk=>chunks.push(chunk));renderer.doc.once('end',()=>resolve(Buffer.concat(chunks)));renderer.doc.once('error',reject);});
+   await renderer.generatePDF(false);return await result;
+  }finally{await rm(directory,{recursive:true,force:true});}
+ }
  const list=v=>v==null?[]:Array.isArray(v)?v:[v],items=list(n.det),w=width*72/25.4;
  const pdf=new PDFDocument({size:[w,Math.max(800,650+items.reduce((sum,i)=>sum+50+String(i.prod?.xProd||'').length*2,0))],margins:{left:10,right:10,top:10,bottom:10}}),chunks=[];
  const result=new Promise((resolve,reject)=>{pdf.on('data',b=>chunks.push(b));pdf.on('end',()=>resolve(Buffer.concat(chunks)));pdf.on('error',reject);});
@@ -39,5 +55,5 @@ export async function receiptPdf(sale,store,width=80){
 }
 export function mountPrinting(app,{scoped}){
  app.get('/api/v1/sales/:id/receipt',scoped('sales',true,async(c,req,member)=>{const id=z.uuid().parse(req.params.id);await ownedSale(c,req.identity,member,id);const sale=await saleView(c,id),store=(await c.query('SELECT store_name,document_id,address FROM bansir.store_settings')).rows[0]||{};const pdf=await receiptPdf(sale,store,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'recibo-'+sale.saleNumber+'.pdf'}};}));
- app.get('/api/v1/fiscal/documents/:id/danfe',scoped('fiscal',true,async(c,req)=>{const doc=(await c.query('SELECT status,xml,access_key,environment FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');const pdf=await danfePdf(doc,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'nfce-'+doc.access_key+'.pdf'}};}));
+ app.get('/api/v1/fiscal/documents/:id/danfe',scoped('fiscal',true,async(c,req)=>{const doc=(await c.query('SELECT status,xml,access_key,environment FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');const pdf=await danfePdf(doc,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:(doc.access_key.slice(20,22)==='55'?'nfe-':'nfce-')+doc.access_key+'.pdf'}};}));
 }

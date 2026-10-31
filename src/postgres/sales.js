@@ -1,3 +1,4 @@
+import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
 import {httpError} from './database.js';
@@ -69,12 +70,12 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  const cash=await openCash(c,i);
  if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
  if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
- if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir NFC-e.','SALE_NOT_PAID');}
+ if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir o documento fiscal.','SALE_NOT_PAID');}
  let customer={name:input.customerName,document:input.customerDocument,phone:input.customerPhone,address:input.deliveryAddress};
  if(input.customerId){customer=(await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active',[input.customerId])).rows[0];if(!customer)fail('Cliente não encontrado neste estabelecimento.','CUSTOMER_NOT_FOUND',404);}
  const deliverer=input.deliveryEmployeeId?(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active',[input.deliveryEmployeeId])).rows[0]:null;
  if(input.deliveryEmployeeId&&!deliverer)fail('Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND',404);
- if(input.issueInvoice&&!/^\d{11}$/.test(customer.document||''))fail('Informe o CPF do cliente para emitir a NFC-e.','FISCAL_CUSTOMER_REQUIRED',400);
+ // The recipient is checked when the user chooses and submits the fiscal document.
  const address=input.deliveryAddress||customer.address;
  if(input.deliveryMode==='delivery'&&(!address||!customer.name||!customer.phone))fail('Entrega exige nome, telefone e endereço do cliente.','DELIVERY_CUSTOMER_REQUIRED',400);
  if(input.deliveryMode==='pickup'&&input.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.','INVALID_DELIVERY_FEE',400);
@@ -211,10 +212,11 @@ function mountSaleFiscal(app,{scoped}){
  }));
  app.post('/api/v1/sales/:id/fiscal',scoped('sales',false,async(c,req,member)=>{
   requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir NFC-e.','SALE_NOT_PAID');
-  const body=z.object({requestKey:uuid,draft:z.record(z.string(),z.unknown())}).strict().parse(req.body);
-  if(sale.document_id){const doc=(await c.query('SELECT request_key,payload FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];if(doc.request_key!==body.requestKey||hash(body.draft)!==doc.payload.draftHash)fail('Esta venda já possui documento fiscal.','SALE_ALREADY_INVOICED');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
+  if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir documento fiscal.','SALE_NOT_PAID');
+  const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown())}).strict().parse(req.body);
+  if(sale.document_id){const doc=(await c.query('SELECT request_key,payload FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];if(doc.request_key!==body.requestKey||hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Esta venda já possui documento fiscal.','SALE_ALREADY_INVOICED');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
   const expected=saleFiscalDraft(sale),draft=body.draft;
+  if(body.model==='55'){nfeRecipient.parse(draft.dest);expected.dest=draft.dest;}
   if(!Array.isArray(draft.det)||draft.det.length!==expected.det.length)fail('Itens fiscais diferentes da venda.','FISCAL_SALE_MISMATCH',400);
   for(let n=0;n<expected.det.length;n++){const p=draft.det[n]?.prod,e=expected.det[n].prod;if(!p||p.cProd!==e.cProd||p.xProd!==e.xProd||p.qCom!==e.qCom||p.vUnCom!==e.vUnCom||p.vProd!==e.vProd||Number(p.vDesc||0)!==Number(e.vDesc||0)||Number(p.vFrete||0)!==Number(e.vFrete||0)||p.uCom!==e.uCom)fail('Valores ou produtos fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);}
   for(const key of ['vProd','vDesc','vFrete','vNF'])if(Number(draft.total?.ICMSTot?.[key]||0)!==Number(expected.total.ICMSTot[key]))fail('Totais fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);
