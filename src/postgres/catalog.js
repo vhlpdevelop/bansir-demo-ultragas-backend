@@ -1,3 +1,4 @@
+import {productFiscalInput} from './product-fiscal-profile.js';
 import { z } from 'zod';
 import { httpError, validId } from './database.js';
 
@@ -5,7 +6,7 @@ const text = z.string().trim().max(200);
 const amount = z.number().finite().min(0).max(10000000)
   .refine(n => Math.abs(n * 100 - Math.round(n * 100)) < 0.00001, 'Use no máximo duas casas decimais.');
 export const productInput = z.object({
-  name: text.min(1), barcode: text.min(1), price: amount.refine(n => n > 0),
+  fiscalProfile:productFiscalInput.optional(),name: text.min(1), barcode: text.min(1), price: amount.refine(n => n > 0),
   costPrice: amount.optional(), stock: z.number().int().min(0).max(100000000).optional(),
   fulfillmentPricing:z.object({deliveryFeePerUnit:amount.optional(),promotionPickupPrice:amount.positive().optional(),promotionDeliveryPrice:amount.positive().optional(),deliveryPrice:amount.positive().optional(),saturdayPickupPrice:amount.positive().optional(),saturdayDeliveryPrice:amount.positive().optional()}).strict().refine(p=>p.deliveryFeePerUnit===undefined||['deliveryPrice','saturdayDeliveryPrice','promotionDeliveryPrice'].every(k=>p[k]===undefined),'Frete por unidade não pode ser combinado com preço final de entrega no mesmo produto.').optional(),
   gasDoPovo:z.boolean().optional(),gasDoPovoDelivery:z.boolean().optional(),
@@ -51,6 +52,7 @@ export async function createProduct(client, context, input) {
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
   [context.tenantId, data.name, data.barcode, Math.round(data.price * 100), Math.round((data.costPrice || 0) * 100),
     data.stock || 0, data.category || 'Gás de Cozinha', data.sku || '', data.unit || 'UN', data.brand || '', data.specs || '', data.ncm || '', data.active ?? true,context.establishmentId]);
+  if(data.fiscalProfile!==undefined)await saveProductFiscal(client,context,product.id,data.fiscalProfile);
   await stockMovement(client, context, product, product.stock, 'in', 'Estoque inicial');
   if(data.fulfillmentPricing||data.gasDoPovo!==undefined||data.gasDoPovoDelivery!==undefined){const updated=(await client.query('UPDATE bansir.products SET fulfillment_pricing=$2,gas_do_povo=$3,gas_do_povo_delivery=$4 WHERE id=$1 RETURNING *',[product.id,data.fulfillmentPricing||{},data.gasDoPovo||false,data.gasDoPovoDelivery||false])).rows[0];return presentProduct(updated);}
   return presentProduct(product);
@@ -62,7 +64,8 @@ export async function updateProduct(client, context, id, input) {
   await deliveryOwner(client,context,before,data);
   const fields = { name: 'name', barcode: 'barcode', category: 'category', sku: 'sku', unit: 'unit', brand: 'brand', specs: 'specs', ncm: 'ncm', stock: 'stock', active: 'active', price: 'price_cents', costPrice: 'cost_cents' };
   Object.assign(fields,{fulfillmentPricing:'fulfillment_pricing',gasDoPovo:'gas_do_povo',gasDoPovoDelivery:'gas_do_povo_delivery'});
-  const entries = Object.entries(data);
+  if(data.fiscalProfile!==undefined)await saveProductFiscal(client,context,id,data.fiscalProfile);
+  const entries = Object.entries(data).filter(([key])=>key!=='fiscalProfile');
   if (!entries.length) return presentProduct(before);
   const values = entries.map(([key, value]) => ['price', 'costPrice'].includes(key) ? Math.round(value * 100) : value);
   const setters = entries.map(([key], i) => `${fields[key]}=$${i + 3}`);
@@ -91,4 +94,10 @@ export async function moveStock(client, context, input) {
     await enqueueNotification(client,context,{key:`stock:${randomUUID()}`,title:'Estoque baixo',body:`${product.name}: ${product.stock} unidades disponíveis.`});
   }
   return { product: presentProduct(product) };
+}
+
+async function saveProductFiscal(c,i,id,data){
+ const member=(await c.query('SELECT role,allowed_routes FROM bansir.establishment_memberships WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3 AND active',[i.tenantId,i.establishmentId,i.userId])).rows[0];
+ requirePermission(member||{},'fiscal');
+ await c.query('INSERT INTO bansir.product_fiscal_profiles(tenant_id,establishment_id,product_id,data) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,establishment_id,product_id) DO UPDATE SET data=excluded.data',[i.tenantId,i.establishmentId,id,data]);
 }

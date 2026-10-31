@@ -1,3 +1,4 @@
+import {applyTributaryUnits} from './product-fiscal-profile.js';
 import {mountSaleCustomization} from './sale-customization.js';
 import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
 import {z} from 'zod';
@@ -228,9 +229,10 @@ function mountSaleFiscal(app,{scoped}){
 }
 export function saleFiscalDraft(sale,model='65'){
  const method={cash:'01',pix:'17',credit_card:'03',debit_card:'04'};
- return {det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
+ const draft={det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.comb?{comb:structuredClone(item.fiscal_profile[model].comb)}:{}),...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
  total:{ICMSTot:{vBC:0,vICMS:0,vICMSDeson:0,vFCP:0,vBCST:0,vST:0,vFCPST:0,vFCPSTRet:0,vProd:sale.subtotal_cents/100,vFrete:sale.delivery_fee_cents/100,vSeg:0,vDesc:sale.discount_cents/100,vII:0,vIPI:0,vIPIDevol:0,vPIS:0,vCOFINS:0,vOutro:0,vNF:sale.total_cents/100}},
  pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:2,...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...(sale.customer_document?{dest:{CNPJCPF:sale.customer_document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
+ return applyTributaryUnits(draft,sale,model);
 }
 
 

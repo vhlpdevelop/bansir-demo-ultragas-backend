@@ -1,8 +1,8 @@
 import {z} from 'zod';
 import {requirePermission} from './catalog.js';
 import {httpError} from './database.js';
-const profile=z.object({cfop:z.string().regex(/^5\d{3}$/),ncm:z.string().regex(/^(\d{8})?$/).optional(),cest:z.string().regex(/^(\d{7})?$/).default(''),taxes:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).strict()}).strict();
-export const productFiscalInput=z.object({'55':profile.optional(),'65':profile.optional()}).strict().refine(d=>JSON.stringify(d).length<=12000,'Configuração fiscal muito grande.');
+import {productFiscalInput} from './product-fiscal-profile.js';
+export {productFiscalInput};
 export function mountSaleCustomization(app,{scoped}){
  app.get('/api/v1/sales/numbering/config',scoped('settings-store',true,async c=>({data:{nextNumber:Number((await c.query('SELECT last_number FROM bansir.sale_counters')).rows[0]?.last_number??0)+1}})));
  app.put('/api/v1/sales/numbering/config',scoped('settings-store',false,async(c,req)=>{

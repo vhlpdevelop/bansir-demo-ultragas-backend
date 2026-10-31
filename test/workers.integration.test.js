@@ -88,7 +88,7 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    await deliverNotification(queue,job,{send:async()=>calls++});assert.equal(calls,1,'Deleted inbox items must not send queued push');
    await queue.finish(job,'done');
   });
-  const draft={det:[{prod:{cProd:'TEST',xProd:'Test gas',NCM:'27111910',CFOP:'5656',qCom:1,vUnCom:100,vProd:100,cEAN:'SEM GTIN',uCom:'UN',cEANTrib:'SEM GTIN',uTrib:'UN',qTrib:1,vUnTrib:100,indTot:1},imposto:{ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}}}],total:{ICMSTot:{vNF:100,vProd:100}},pag:{detPag:[{tPag:'01',vPag:100}]}};
+  const draft={det:[{prod:{cProd:'TEST',xProd:'Test gas',NCM:'22011000',CFOP:'5656',qCom:1,vUnCom:100,vProd:100,cEAN:'SEM GTIN',uCom:'UN',cEANTrib:'SEM GTIN',uTrib:'UN',qTrib:1,vUnTrib:100,indTot:1},imposto:{ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}}}],total:{ICMSTot:{vNF:100,vProd:100}},pag:{detPag:[{tPag:'01',vPag:100}]}};
   await t.test('fiscal idempotency, production environment, uncertain sends consult only; S3 retry never re-emits',async()=>{
    const requestKey=randomUUID();const created=await send('/fiscal/documents','POST',{requestKey,draft});assert.equal(created.status,202,JSON.stringify(created.body));const docId=created.body.data.id;
    assert.equal((await send('/fiscal/documents','POST',{requestKey,draft})).body.data.id,docId);

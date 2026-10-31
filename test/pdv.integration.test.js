@@ -29,7 +29,7 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
   const ticket2=await auth.login({email:'pdv@test.invalid',password});const session2=await auth.select({selectionToken:ticket2.selectionToken,tenantId:tenant.id,establishmentId:unit2.establishmentId});
   const operatorSession=await auth.login({email:'pdv-operator@test.invalid',password}),readerSession=await auth.login({email:'pdv-reader@test.invalid',password}),foreignSession=await auth.login({email:'pdv-other@test.invalid',password});
   const send=async(path,method='GET',body,token=session.token)=>{const response=await fetch(base+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,body:await response.json()};};
-  const product=(await send('/products','POST',{name:'Gas test',barcode:'PDV-1',price:120.45,costPrice:90,stock:100,ncm:'27111910'})).body.data;
+  const product=(await send('/products','POST',{name:'Gas test',barcode:'PDV-1',price:120.45,costPrice:90,stock:100,ncm:'22011000'})).body.data;
   const water=(await send('/products','POST',{name:'Water test',barcode:'PDV-2',price:10.01,stock:100})).body.data;
   const stock=async p=>(await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock;
   const order=(overrides={})=>({requestKey:randomUUID(),items:[{productId:product.id,quantity:1,expectedUnitPriceCents:12045}],payment:{method:'cash',confirmed:true,receivedCents:15000},...overrides});
@@ -108,6 +108,17 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${b.body.data.id}/fiscal-draft?model=55`)).body.data.det[0].prod.CFOP,'');
    assert.equal((await send('/sales/numbering/config','PUT',{nextNumber:80000},operatorSession.token)).status,403);
    assert.equal((await send(`/products/${product.id}/fiscal-profile`,'PUT',profile,operatorSession.token)).status,403);
+  });
+  await t.test('product and fiscal profile save atomically, with fuel validation and fiscal RBAC',async()=>{
+   const profile={'65':{cfop:'5656',ncm:'27111910',tributaryUnit:'KG',tributaryQuantityPerUnit:13,taxes:{ICMS:{ICMS61:{orig:0,CST:'61',adRemICMSRet:1}},PIS:{PISNT:{CST:'07'}},COFINS:{COFINSNT:{CST:'07'}}},comb:{cProdANP:'210203001',descANP:'GLP',UFCons:'MS',pGLP:100,pGNn:0,pGNi:0,vPart:1}}};
+   const payload={name:'GLP fiscal fixture',barcode:'FUEL-NEW',price:100,stock:2,ncm:'27111910',fiscalProfile:profile};
+   const bad=structuredClone(payload);bad.fiscalProfile['65'].comb.pGLP=90;assert.equal((await send('/products','POST',bad)).status,400);
+   const created=await send('/products','POST',payload);assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.data.id;
+   assert.equal((await send(`/products/${id}/fiscal-profile`)).body.data['65'].comb.cProdANP,'210203001');
+   const denied=await send(`/products/${id}`,'PUT',{price:200,fiscalProfile:profile},operatorSession.token);assert.equal(denied.status,403);
+   assert.equal((await send(`/products/${id}`)).body.data.price,100);
+   assert.equal((await send(`/products/${id}`,'PUT',{fiscalProfile:{}})).status,200);
+   assert.deepEqual((await send(`/products/${id}/fiscal-profile`)).body.data,{});
   });
   await t.test('fiscal draft is bound to paid sale, item amounts and payment; queue never fabricates fiscal authorization',async()=>{
    process.env.FISCAL_ENCRYPTION_KEY=randomBytes(32).toString('base64');const identity={tenantId:tenant.id,establishmentId:tenant.establishmentId};

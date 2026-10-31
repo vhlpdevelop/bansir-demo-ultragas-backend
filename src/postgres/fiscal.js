@@ -1,3 +1,4 @@
+import {fuelInput} from './product-fiscal-profile.js';
 import {mountFiscalCancellation} from './fiscal-cancellation.js';
 import {z} from 'zod';
 import {randomInt,createHash} from 'node:crypto';
@@ -97,6 +98,7 @@ export function mountFiscal(app,{scoped}) {
 export async function createFiscalDocument(c,identity,body) {
   const input=z.object({requestKey:z.uuid(),model:fiscalModel,operation:fiscalOperation,draft:z.object({det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
   if(input.draft.det.some(d=>['ICMS','PIS','COFINS'].some(k=>!Object.keys(d.imposto[k]).length)))throw httpError(400,'Preencha a tributação de todos os itens com orientação contábil.','FISCAL_TAX_REQUIRED');
+  for(const item of input.draft.det){if(item.prod.comb)fuelInput.parse(item.prod.comb);else if(item.prod.NCM==='27111910')throw httpError(400,'Informe o grupo de combustível (ANP/GLP) deste produto.','FUEL_REQUIRED');}
   const i=identity;
   // Lock configuration serializes allocation, idempotency and changes of certificate/config.
   const cert=(await c.query('SELECT * FROM bansir.fiscal_certificates FOR UPDATE')).rows[0];
