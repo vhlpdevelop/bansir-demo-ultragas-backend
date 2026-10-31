@@ -18,7 +18,7 @@ export async function runWizard(message) {
    if(settled)return;settled=true;clearTimeout(timer);
    if(failure || !response)reject(new Error(failure||'WIZARD_UNCERTAIN'));
    else if(response.ok)resolve(response.data);
-   else reject(new Error(response.stage==='setup'?'WIZARD_SETUP_FAILED':'WIZARD_UNCERTAIN'));
+   else reject(Object.assign(new Error(response.rejection?'WIZARD_REJECTED':response.stage==='setup'?'WIZARD_SETUP_FAILED':'WIZARD_UNCERTAIN'),{rejection:response.rejection}));
   };
   const timer=setTimeout(()=>{failure='WIZARD_TIMEOUT';child.kill('SIGKILL');},90000);
   child.once('message',msg=>{response=msg;});
@@ -57,7 +57,7 @@ export async function processFiscal(queue,job,{wizard=runWizard,upload=storeXml}
  let snapshot=await queue.scope(job,async c=>{
   const doc=(await c.query('SELECT * FROM bansir.fiscal_documents WHERE id=$1 FOR UPDATE',[job.payload.documentId])).rows[0];
   if(!doc)throw Object.assign(new Error('DOCUMENT_NOT_FOUND'),{terminal:true});
-  if(['rejected','manual_review'].includes(doc.status))return {doc};
+  if(['rejected','manual_review','cancelled'].includes(doc.status))return {doc};
   if(doc.status==='authorized')return {doc};
   const cfg=(await c.query('SELECT * FROM bansir.fiscal_settings')).rows[0];
   const cert=(await c.query('SELECT * FROM bansir.fiscal_certificates')).rows[0];
@@ -75,11 +75,13 @@ export async function processFiscal(queue,job,{wizard=runWizard,upload=storeXml}
   return {doc,action,settings:{...cfg.data,environment:doc.environment},certificate:unseal(cert.encrypted_bundle,secretContext(scope,'certificate')),csc:unseal(cfg.encrypted_csc,secretContext(scope,'csc'))};
  });
  let {doc}=snapshot;
+ if(doc.status==='cancelled')return;
  if(['rejected','manual_review'].includes(doc.status)){await queue.scope(job,c=>c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':'+doc.status,'Documento fiscal precisa de atenção','Confira a situação do documento fiscal em Minha Empresa → Fiscal.']));return;}
  if(doc.status!=='authorized'){
   let data;
   try{data=await wizard({action:snapshot.action,model:doc.access_key.slice(20,22),key:doc.access_key,payload:doc.payload.request,settings:snapshot.settings,certificate:snapshot.certificate,csc:snapshot.csc});}
-  catch{
+  catch(error){
+   if(error.message==='WIZARD_REJECTED'&&snapshot.action==='emit'){await queue.scope(job,async c=>{await c.query("UPDATE bansir.fiscal_documents SET status='rejected',rejection_code=$2,updated_at=now() WHERE id=$1",[doc.id,error.rejection.slice(0,240)]);await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':rejected','Documento fiscal rejeitado',error.rejection.slice(0,240)]);});return;}
    await queue.scope(job,async c=>{await c.query("UPDATE bansir.fiscal_documents SET status='unknown',updated_at=now() WHERE id=$1",[doc.id]);await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[doc.id+':unknown','Documento fiscal precisa de atenção','O retorno da emissão é incerto. Consulte a nota antes de tentar novamente.']);});throw new Error('FISCAL_CONSULT_REQUIRED');
   }
   const evidence=fiscalEvidence(data,doc.access_key,doc.environment);

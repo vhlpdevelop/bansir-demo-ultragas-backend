@@ -151,7 +151,12 @@ test('Durable workers: unit isolation, certificate encryption, leases and fiscal
    await assert.rejects(processFiscal(queue,job,{wizard:async m=>{count++;assert.equal(m.action,'cancel');assert.equal(m.model,'65');assert.equal(m.payload.evento[0].detEvento.nProt,row.protocol);throw new Error('uncertain');}}),/CANCELLATION_CONSULT_REQUIRED/);
    assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[row.id])).rows[0].status,'authorized');
    await processFiscal(queue,job,{wizard:async m=>{assert.equal(m.action,'consult');return {result:{procEventoNFe:{retEvento:{infEvento:{chNFe:row.access_key,tpAmb:1,tpEvento:'110111',nSeqEvento:1,cStat:'135',nProt:'150260000000002'}}}}};}});
-   assert.equal(count,1);assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[row.id])).rows[0].status,'cancelled');await queue.finish(job,'done');
+   assert.equal(count,1);assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[row.id])).rows[0].status,'cancelled');
+   await processFiscal(queue,{...job,payload:{documentId:row.id,userId:u.id}},{wizard:async()=>{throw new Error('CANCELLED_DOCUMENT_MUST_NOT_TRANSMIT');}});
+   const queued=(await admin.query("SELECT id FROM bansir.fiscal_documents WHERE tenant_id=$1 AND status='queued' LIMIT 1",[tenant.id])).rows[0];
+   await processFiscal(queue,{...job,payload:{documentId:queued.id,userId:u.id}},{wizard:async()=>{throw Object.assign(new Error('WIZARD_REJECTED'),{rejection:'Rejeicao: numero inutilizado'});}});
+   const rejected=(await admin.query('SELECT status,rejection_code FROM bansir.fiscal_documents WHERE id=$1',[queued.id])).rows[0];assert.equal(rejected.status,'rejected');assert.match(rejected.rejection_code,/inutilizado/);
+   await queue.finish(job,'done');
   });
   await t.test('financial digests persist without push, deduplicate and enforce recipient permissions',async()=>{
    for(const type of ['income','expense'])await admin.query("INSERT INTO bansir.financial_entries(tenant_id,establishment_id,request_key,request_hash,title,type,category,amount_cents,status,payment_method,due_date,created_by) VALUES($1,$2,$3,'test','Test due',$4,'test',1000,'pending','pix',current_date-1,$5)",[tenant.id,tenant.establishmentId,randomUUID(),type,u.id]);
