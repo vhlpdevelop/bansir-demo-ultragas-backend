@@ -115,7 +115,10 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const bad=structuredClone(payload);bad.fiscalProfile['65'].comb.pGLP=90;assert.equal((await send('/products','POST',bad)).status,400);
    const created=await send('/products','POST',payload);assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.data.id;
    assert.equal((await send(`/products/${id}/fiscal-profile`)).body.data['65'].comb.cProdANP,'210203001');
+   await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['products'] WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3",[tenant.id,tenant.establishmentId,operator]);
+   assert.equal((await send(`/products/${id}`,'PUT',{price:100},operatorSession.token)).status,200);
    const denied=await send(`/products/${id}`,'PUT',{price:200,fiscalProfile:profile},operatorSession.token);assert.equal(denied.status,403);
+   await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['sales'] WHERE tenant_id=$1 AND establishment_id=$2 AND user_id=$3",[tenant.id,tenant.establishmentId,operator]);
    assert.equal((await send(`/products/${id}`)).body.data.price,100);
    assert.equal((await send(`/products/${id}`,'PUT',{fiscalProfile:{}})).status,200);
    assert.deepEqual((await send(`/products/${id}/fiscal-profile`)).body.data,{});
