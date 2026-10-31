@@ -1,6 +1,7 @@
+import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes,randomUUID} from 'node:crypto';
+import {randomBytes,randomUUID,createHmac,createHash} from 'node:crypto';
 import pg from 'pg';
 import {createDatabase} from '../src/postgres/database.js';
 import {createPostgresApp} from '../src/postgres/app.js';
@@ -23,18 +24,27 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    await admin.query("INSERT INTO bansir.tenant_memberships(tenant_id,user_id,role,allowed_routes) VALUES($1,$2,'operador',$3)",[tenant.id,id,routes]);
    await admin.query("INSERT INTO bansir.establishment_memberships(tenant_id,establishment_id,user_id,role,allowed_routes) VALUES($1,$2,$3,'operador',$4)",[tenant.id,tenant.establishmentId,id,routes]);
   }
+  await t.test('migration preserves legacy PagBank hashes and diagnostics',async()=>{
+   await admin.query('BEGIN');try{
+    await admin.query('DROP TABLE bansir.pdv_pair_attempts,bansir.pdv_terminal_smartpos;DROP INDEX bansir.pdv_activation_scope;ALTER TABLE bansir.pdv_terminal_events DROP COLUMN provider,DROP COLUMN client_type');
+    const oldHash=createHash('sha256').update('old-smartpos-credential').digest('hex');
+    const row=(await admin.query("INSERT INTO bansir.pdv_terminals(tenant_id,establishment_id,name,created_by,smartpos_hash,smartpos_metadata,paired_at) VALUES($1,$2,'Legacy fixture',$3,$4,$5,now()) RETURNING id",[tenant.id,tenant.establishmentId,owner.id,oldHash,{appVersion:'legacy'}])).rows[0];
+    await admin.query(await readFile(new URL('../migrations/postgres/046_terminal_providers.sql',import.meta.url),'utf8'));
+    const migrated=(await admin.query('SELECT provider,token_hash,diagnostics FROM bansir.pdv_terminal_smartpos WHERE terminal_id=$1',[row.id])).rows[0];assert.equal(migrated.provider,'pagbank');assert.equal(migrated.token_hash,oldHash);assert.equal(migrated.diagnostics.appVersion,'legacy');
+   }finally{await admin.query('ROLLBACK');}
+  });
   server=createPostgresApp({database:db,jwtSecret,nodeEnv:'test'}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const base=`http://127.0.0.1:${server.address().port}/api/v1`,auth=createAuth(db,{jwtSecret});
   const login=async email=>{const s=await auth.login({email,password});return s.requiresEstablishmentSelection?auth.select({selectionToken:s.selectionToken,tenantId:tenant.id,establishmentId:tenant.establishmentId}):s;};
   const session=await login('terminal-admin@test.invalid'),operator=await login('terminal-operator@test.invalid'),reader=await login('terminal-reader@test.invalid'),foreign=await login('terminal-other@test.invalid');
   const select=await auth.login({email:'terminal-admin@test.invalid',password}),otherUnit=await auth.select({selectionToken:select.selectionToken,tenantId:tenant.id,establishmentId:unit.establishmentId});
-  const send=async(path,method='GET',body,token=session.token,terminal)=>{const r=await fetch(base+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(terminal?{'X-Pdv-Terminal':terminal}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
+  const send=async(path,method='GET',body,token=session.token,terminal)=>{const r=await fetch(base+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(terminal?{'X-Pdv-Terminal':terminal}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json(),retryAfter:r.headers.get('retry-after')};};
   const create=async name=>(await send('/pdv/terminals','POST',{name})).body.data;
   const activate=async id=>send(`/pdv/terminals/${id}/activation`,'POST',{});
   const pair=async code=>send('/pdv/terminals/pair','POST',{code});
   const open=(token,terminal)=>send('/pdv/cash/open','POST',{openingCents:0},token,terminal);
   const close=async(token,terminal)=>{const cash=(await send('/pdv/cash','GET',undefined,token)).body.data;return send(`/pdv/cash/${cash.id}/close`,'POST',{countedCents:cash.expected_cents,note:''},token,terminal);};
-  let first,second,binding1,binding2,legacy;
+  let first,second,binding1,binding2,legacy;const activeSmartTokens=[];
   await t.test('registration and activation are scoped and admin-only',async()=>{
    legacy=(await open(session.token)).body.data;assert.equal(legacy.terminal_id,null);
    assert.equal((await send('/pdv/terminals','POST',{name:'Denied'},operator.token)).status,403);
@@ -143,6 +153,36 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.equal((await send('/pdv/terminals','GET',undefined,session.token,replacement.token)).body.data.current.id,first.id);
    assert.equal((await send('/pdv/terminals/capabilities')).body.data.independentBindings,true);
   });
+  await t.test('multiple providers, scoped short HMAC codes, throttling and revocation',async()=>{
+   await admin.query('DELETE FROM bansir.pdv_pair_attempts');
+   const smart=async provider=>{const issued=await activate(first.id);assert.match(issued.body.data.code,/^\d{6}$/);return (await send('/pdv/terminals/pair','POST',{code:issued.body.data.code,clientType:'smartpos',...(provider?{provider}:{})})).body.data;};
+   const pag=await smart(),mp=await smart('mercadopago'),caixa=await smart('caixa');activeSmartTokens.push(pag.token,mp.token,caixa.token);
+   const current=async token=>(await send('/pdv/terminals','GET',undefined,session.token,token)).body.data;
+   assert.equal((await current(pag.token)).current.client_type,'smartpos:pagbank');assert.equal((await current(mp.token)).current.client_type,'smartpos:mercadopago');assert.equal((await current(binding1)).current.client_type,'browser');
+   const cash=(await open(session.token,binding1)).body.data;assert.equal((await open(session.token,pag.token)).body.data.id,cash.id);assert.equal((await open(session.token,mp.token)).body.data.id,cash.id);await close(session.token,binding1);
+   await send('/pdv/terminals/heartbeat','POST',{acquirerProvider:'MERCADOPAGO',appVersion:'mp-test',sdkVersion:'1',plugPagAvailable:false},session.token,mp.token);
+   const diagnostics=(await admin.query('SELECT provider,diagnostics FROM bansir.pdv_terminal_smartpos WHERE terminal_id=$1',[first.id])).rows;
+   assert.equal(diagnostics.find(x=>x.provider==='mercadopago').diagnostics.appVersion,'mp-test');assert.notEqual(diagnostics.find(x=>x.provider==='pagbank').diagnostics.appVersion,'mp-test');
+   const replacement=await smart('pagbank');activeSmartTokens.push(replacement.token);assert.equal((await current(pag.token)).bindingErrorDetail.code,'TERMINAL_REVOKED');assert.equal(typeof (await current(pag.token)).bindingError,'string');assert.equal((await current(mp.token)).current.id,first.id);
+   assert.equal((await send(`/pdv/terminals/${first.id}/smartpos/mercadopago`,'DELETE',undefined,operator.token)).status,403);
+   assert.equal((await send(`/pdv/terminals/${first.id}/smartpos/pagbank`,'DELETE')).status,200);assert.equal((await current(replacement.token)).current,null);assert.equal((await current(mp.token)).current.id,first.id);
+   const info=await current(binding1),item=info.terminals.find(t=>t.id===first.id);assert.equal(item.smartpos_paired,true);assert.deepEqual(item.smartpos.map(x=>x.provider),['caixa','mercadopago']);assert.equal(JSON.stringify(info).includes('token_hash'),false);
+   const hmac=(code,unitId)=>createHmac('sha256',jwtSecret).update(JSON.stringify(['pdv-activation',tenant.id,unitId,code])).digest('hex');
+   const other=(await send('/pdv/terminals','POST',{name:'Other unit terminal'},otherUnit.token)).body.data;
+   for(const [id,unitId] of [[first.id,tenant.establishmentId],[other.id,unit.establishmentId]])await admin.query("UPDATE bansir.pdv_terminals SET activation_hash=$2,activation_expires_at=now()+interval '10 minutes' WHERE id=$1",[id,hmac('048213',unitId)]);
+   const pairedHere=await pair('048213');binding1=pairedHere.body.data.token;assert.equal(pairedHere.body.data.id,first.id);
+   const pairedThere=await send('/pdv/terminals/pair','POST',{code:'048213'},otherUnit.token);assert.equal(pairedThere.body.data.id,other.id);
+   assert.equal((await send('/pdv/terminals','GET',undefined,otherUnit.token,binding1)).body.data.current,null);
+   const legacyCode='ABCDEF123456ABCDEF123456';await admin.query("UPDATE bansir.pdv_terminals SET activation_hash=$2,activation_expires_at=now()+interval '10 minutes' WHERE id=$1",[first.id,hmac(legacyCode,tenant.establishmentId)]);binding1=(await pair(legacyCode)).body.data.token;assert.match(binding1,/^pdvt_/);
+   const before=(await activate(first.id)).body.data.code,newer=(await activate(first.id)).body.data.code;assert.notEqual(before,newer);assert.equal((await pair(before)).status,400);binding1=(await pair(newer)).body.data.token;
+   await admin.query('DELETE FROM bansir.pdv_pair_attempts');
+   for(let n=0;n<4;n++)assert.equal((await pair('12345')).status,400);
+   const blocked=await pair('12345');assert.equal(blocked.status,429);assert.equal(blocked.body.code,'RATE_LIMITED');assert.ok(Number(blocked.retryAfter)>0);
+   const valid=(await activate(first.id)).body.data.code;assert.equal((await pair(valid)).status,429);assert.equal((await send('/pdv/terminals/pair','POST',{code:valid},operator.token)).status,429);
+   await admin.query("UPDATE bansir.pdv_pair_attempts SET window_start=now()-interval '16 minutes',blocked_until=now()-interval '1 second'");binding1=(await pair(valid)).body.data.token;
+   const caps=(await send('/pdv/terminals/capabilities')).body.data;assert.equal(caps.activationCodeLength,6);assert.deepEqual(caps.providers,['pagbank','mercadopago','caixa']);
+   const events=(await send('/pdv/terminals/events')).body.data;assert.ok(events.some(e=>e.event==='pair_failed'));assert.ok(events.some(e=>e.event==='provider_revoked'&&e.provider==='pagbank'));assert.ok(events.some(e=>e.event==='paired'&&e.provider==='mercadopago'));
+  });
   await t.test('re-enrollment revokes old credential, disabling never bypasses enforcement, audit is append-only',async()=>{
    const code=(await activate(first.id)).body.data.code,newBinding=(await pair(code)).body.data.token;
    assert.equal((await open(session.token,binding1)).body.code,'TERMINAL_REVOKED');
@@ -150,7 +190,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.equal((await send(`/pdv/terminals/${first.id}`,'PATCH',{active:false})).status,200);
    assert.equal((await send(`/pdv/terminals/${second.id}`,'PATCH',{active:false})).status,200);
    assert.equal((await open(session.token)).body.code,'TERMINAL_REQUIRED');
-   assert.equal((await open(session.token,newBinding)).body.code,'TERMINAL_REVOKED');
+   assert.equal((await open(session.token,newBinding)).body.code,'TERMINAL_REVOKED');for(const token of activeSmartTokens)assert.equal((await open(session.token,token)).body.code,'TERMINAL_REVOKED');
    assert.equal((await send('/pdv/terminals/events','GET',undefined,operator.token)).status,403);
    const events=(await send('/pdv/terminals/events')).body.data;assert.ok(events.some(e=>e.event==='paired'&&e.user_name==='Manager'));
    assert.ok(events.some(e=>e.event==='recovery_issued'&&e.reason==='Lost browser profile'));

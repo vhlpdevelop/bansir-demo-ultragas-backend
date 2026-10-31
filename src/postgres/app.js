@@ -63,6 +63,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   const route = fn => async (req, res, next) => {
     try {
       const result = await fn(req);
+      if(result.error)throw result.error;
       res.status(result.status || 200).json({ success: true, data: result.data, ...result.meta });
     } catch (error) { next(error); }
   };
@@ -94,7 +95,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   }));
 
   mountProductImages(app,{scoped,database,imageStorage});
-  mountPdvTerminals(app,{scoped});
+  mountPdvTerminals(app,{scoped,secret:jwtSecret});
   mountAccess(app,{scoped});
   mountDeliveries(app,{database,route,deliveryRouter});
   mountBridge(app,{scoped,database,nodeEnv});
