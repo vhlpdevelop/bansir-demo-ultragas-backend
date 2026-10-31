@@ -103,7 +103,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    assert.ok(signals.some(s=>s.orders&&s.establishmentId===tenant.establishmentId));assert.ok(signals.filter(s=>s.orders).every(s=>Object.keys(s).sort().join(',')==='establishmentId,orders,tenantId'));
    assert.equal((await publicSend('/orders','POST',body,checkoutA.token)).body.data.id,order.id);assert.equal(Number((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[p.id])).rows[0].stock),before);
    assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutB.token)).status,404);assert.equal((await publicSend(`/orders/${order.id}`,'GET',undefined,checkoutA.token)).status,200);
-   const customer=(await admin.query('SELECT name,address FROM bansir.customers WHERE phone=$1 AND active',[checkoutA.phone])).rows[0];assert.equal(customer.name,'Maria de Teste');assert.match(customer.address,/Rua Um/);
+   const customer=(await admin.query('SELECT name,address FROM bansir.customers WHERE phone=$1 AND active AND tenant_id=$2 AND establishment_id=$3',[checkoutA.phone,tenant.id,tenant.establishmentId])).rows[0];assert.equal(customer.name,'Maria de Teste');assert.match(customer.address,/Rua Um/);
   });
   await t.test('staff acceptance binds order to one sale and deliverer; receipt, stock and pending payment stay scoped',async()=>{
    const initialMap=await send('/storefront/orders/map');assert.equal(initialMap.status,200,JSON.stringify(initialMap.body));assert.equal(initialMap.body.data.orders.find(o=>o.id===order.id).status,'new');assert.equal(initialMap.body.data.store.latitude,-15.6);

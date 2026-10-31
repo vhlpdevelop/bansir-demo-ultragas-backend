@@ -59,12 +59,33 @@ test('Product pricing, Saturday calendar and Gas do Povo',{skip:!process.env.TES
    const accepted=await send(`/storefront/orders/${promo.body.data.id}/accept`,'POST',{customerConfirmed:true});assert.equal(accepted.status,201);assert.equal(accepted.body.data.total_cents,1300);
    const normal=(await catalog()).products.find(p=>p.id===water.id);assert.equal(normal.pickupCents,1200);assert.equal(normal.deliveryCents,1500);
   });
+  await t.test('per unit delivery fee scales by quantity, mixes with standard freight and is frozen',async()=>{
+   const each=await create({name:'Produto 14 + 2',price:14,fulfillmentPricing:{deliveryFeePerUnit:2}}),free=await create({name:'Produto frete zero',price:5,fulfillmentPricing:{deliveryFeePerUnit:0}});
+   const configured={...settings,config:{...settings.config,productIds:[...settings.config.productIds,each.id,free.id]}};assert.equal((await send('/storefront/settings','PUT',configured)).status,200);
+   const catalogItem=(await catalog()).products.find(p=>p.id===each.id);assert.equal(catalogItem.deliveryCents,1400);assert.equal(catalogItem.deliveryFeePerUnitCents,200);assert.equal(catalogItem.deliveryIncluded,false);
+   const single=await order({items:[item(each,1400)],shipping:200});assert.equal(single.status,201,JSON.stringify(single.body));assert.equal(single.body.data.totalCents,1600);
+   const double=await order({items:[item(each,1400,2)],shipping:400});assert.equal(double.status,201);assert.equal(double.body.data.totalCents,3200);
+   assert.equal((await order({items:[item(each,1400,2)],shipping:200})).status,409);
+   const mixed=await order({items:[item(each,1400,2),item(regular,800)],shipping:1100});assert.equal(mixed.status,201);assert.equal(mixed.body.data.totalCents,4700);
+   assert.equal((await order({items:[item(free,500)],shipping:0})).status,201);
+   const pickup=await order({mode:'pickup',items:[item(each,1400,2)]});assert.equal(pickup.status,201);assert.equal(pickup.body.data.totalCents,2800);
+   assert.equal((await send('/products/'+each.id,'PUT',{fulfillmentPricing:{deliveryFeePerUnit:2,deliveryPrice:16}})).status,400);
+   assert.equal((await send('/products/'+each.id,'PUT',{fulfillmentPricing:{deliveryFeePerUnit:-1}})).status,400);
+   await send('/products/'+each.id,'PUT',{fulfillmentPricing:{deliveryFeePerUnit:9}});
+   const accepted=await send(`/storefront/orders/${double.body.data.id}/accept`,'POST',{customerConfirmed:true});assert.equal(accepted.status,201,JSON.stringify(accepted.body));assert.equal(accepted.body.data.delivery_fee_cents,400);assert.equal(accepted.body.data.total_cents,3200);
+   await send('/storefront/settings','PUT',settings);
+  });
   await t.test('non-owner cannot alter delivery prices or the calendar, including direct SQL',async()=>{
    const user=(await admin.query("SELECT id FROM bansir.users WHERE email='pricing@test.invalid'")).rows[0];await admin.query('UPDATE bansir.establishments SET owner_user_id=NULL WHERE id=$1',[tenant.establishmentId]);
    assert.equal((await send('/products/'+gas.id,'PUT',{fulfillmentPricing:{deliveryPrice:1}})).status,403);
    assert.equal((await send('/products/'+gas.id,'PUT',{fulfillmentPricing:{promotionPickupPrice:1}})).status,403);
    assert.equal((await send('/products/'+gas.id,'PUT',{gasDoPovo:true})).status,403);
    assert.equal((await send('/products/'+gas.id,'PUT',{name:'Permitido'})).status,200);
+   assert.equal((await send('/products/'+regular.id,'PUT',{fulfillmentPricing:{deliveryFeePerUnit:2}})).status,200);
+   await admin.query("UPDATE bansir.establishment_memberships SET role='operador',allowed_routes=ARRAY['products'] WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
+   assert.equal((await send('/products/'+regular.id,'PUT',{fulfillmentPricing:{deliveryFeePerUnit:3}})).status,403);
+   await assert.rejects(db.transaction({tenantId:tenant.id,establishmentId:tenant.establishmentId,userId:user.id},c=>c.query("UPDATE bansir.products SET fulfillment_pricing='{\"deliveryFeePerUnit\":3}' WHERE id=$1",[regular.id])),e=>e.code==='42501');
+   await admin.query("UPDATE bansir.establishment_memberships SET role='admin' WHERE user_id=$1 AND establishment_id=$2",[user.id,tenant.establishmentId]);
    await assert.rejects(db.transaction({tenantId:tenant.id,establishmentId:tenant.establishmentId,userId:user.id},c=>c.query("UPDATE bansir.products SET fulfillment_pricing='{\"deliveryPrice\":1}' WHERE id=$1",[gas.id])),e=>e.code==='42501');
    assert.equal((await send('/storefront/settings','PUT',{...settings,config:{...settings.config,timeZone:'America/Sao_Paulo'}})).status,403);
   });
