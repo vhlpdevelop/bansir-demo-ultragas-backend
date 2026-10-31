@@ -1,3 +1,4 @@
+import {prepareWizardPayload} from './wizard-payload.js';
 import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,6 +44,7 @@ process.once('message', async ({ action, model, key, payload, settings, certific
       const Wizard = model === '65' ? (await import('@nfewizard/nfce')).NFCEWizard : library.default;
       const wizard = new Wizard();
       await wizard.NFE_LoadEnvironment({ config });
+      payload=prepareWizardPayload(payload,{action,key,technical:settings.technicalResponsible});
       stage = 'request';
       if(action==='science'){
         const axios=(await import('axios')).default,service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;

@@ -14,6 +14,7 @@ export const fiscalSettingsInput=z.object({
  series:z.coerce.number().int().min(1).max(889),nextNumber:z.coerce.number().int().min(1).max(999999999),
  nfeSeries:z.coerce.number().int().min(1).max(889).optional(),nfeNextNumber:z.coerce.number().int().min(1).max(999999999).optional(),
  timeZone:z.enum(['America/Sao_Paulo','America/Cuiaba','America/Manaus','America/Rio_Branco','America/Noronha']).default('America/Cuiaba'),
+ technicalResponsible:z.object({CNPJ:z.string().regex(/^\d{14}$/),xContato:z.string().trim().min(2).max(60),email:z.email().max(60),fone:z.string().regex(/^\d{6,14}$/)}).strict().optional(),
  cscId:z.string().regex(/^\d{1,6}$/),cscToken:z.string().trim().min(16).max(100).optional(),
  address:z.object({street:text,number:z.string().trim().min(1).max(20),district:text,city:text,cityCode:z.string().regex(/^\d{7}$/),uf:z.enum(Object.keys(ufCodes)),cep:z.string().regex(/^\d{8}$/),phone:z.string().regex(/^\d{10,14}$/)}).strict()
 }).strict().refine(d=>d.address.cityCode.startsWith(String(ufCodes[d.address.uf])),{message:'Código IBGE incompatível com a UF.'});
