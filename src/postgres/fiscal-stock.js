@@ -1,3 +1,6 @@
+import {compute} from './pricing-engine.js';
+import {calculatePricing} from '../shared/pricing-calculator.js';
+import {requireFeature} from './features.js';
 import {z} from 'zod';
 import {requirePermission,productInput,createProduct,moveStock} from './catalog.js';
 import {fiscalDraftHash} from './fiscal.js';
@@ -7,6 +10,20 @@ const revision=doc=>fiscalDraftHash({key:doc.access_key,status:doc.status,items:
 const available=doc=>{if(doc.status!=='AVAILABLE'||!doc.encrypted_xml||!doc.items.length)throw httpError(409,'A entrada exige o XML completo de uma nota disponível, com itens.','INBOUND_NOT_AVAILABLE');};
 const rowInput=z.object({line:z.number().int().positive(),action:z.enum(['link','create','ignore']),productId:z.uuid().optional(),newProduct:productInput.omit({stock:true}).optional(),stockQuantity:z.number().int().positive().max(100000000).optional(),conversionConfirmed:z.boolean().default(false)}).strict();
 export function mountFiscalStock(app,{scoped}){
+ app.post('/api/v1/fiscal/inbound/:id/pricing-preview',scoped('fiscal',true,async(c,r,m)=>{
+  requirePermission(m,'products',true);requirePermission(m,'financial',true);
+  if(!['admin','superadmin'].includes(m.role)&&!m.allowed_routes?.some(x=>['financial','financial-intelligence'].includes(x)))throw httpError(403,'Sem permissão para inteligência financeira.','FORBIDDEN');
+  await requireFeature(c,'financialIntelligence');
+  const input=z.object({line:z.number().int().positive(),productId:z.uuid().optional(),stockQuantity:z.number().int().positive().max(100000000)}).strict().parse(r.body);
+  const doc=(await c.query('SELECT * FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(r.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota não encontrada.','NOT_FOUND');available(doc);
+  const item=doc.items.find(x=>x.line===input.line);if(!item)throw httpError(400,'Item inválido.','INVALID_LINES');
+  const product=input.productId?(await c.query('SELECT id,unit,stock,cost_cents,price_cents FROM bansir.products WHERE id=$1 AND active',[input.productId])).rows[0]:null;if(input.productId&&!product)throw httpError(404,'Produto não disponível.','NOT_FOUND');
+  const cost=Number(item.totalCents)/100/input.stockQuantity,old=product?Number(product.cost_cents)/100:null;
+  const cfg=(await c.query('SELECT data FROM bansir.pricing_settings')).rows[0]?.data;
+  let suggestion=null,reason='Cadastre os parâmetros da inteligência financeira para obter uma sugestão.';
+  if(cfg){const staff=(await c.query('SELECT active,labor_type AS "laborType",salary_cents::float/100 AS "baseSalary",commission_type AS "commissionType",commission_value::float AS "commissionValue" FROM bansir.employees WHERE active')).rows;const model=compute(cfg,staff);const calc=calculatePricing({...cfg.pricingRules,commissionRate:model.pricingRules.effectiveCommissionRate,variableRate:model.variableExpenses.totalVariableExpensesRate,fixedExpenseRate:model.pricingRules.fixedExpenseRate,cost});if(calc.valid){suggestion={cash:calc.suggestedCashPrice,term:calc.suggestedTermPrice,adjustedAllocation:calc.isRateioAdjusted};reason='Sugestão calculada com os impostos, despesas, folha, comissão e margem cadastrados.';}else reason='Revise os parâmetros financeiros: '+calc.errors.join(' ');}
+  return {data:{invoiceUnitCost:cost,currentUnitCost:old,currentSalePrice:product?Number(product.price_cents)/100:null,costChangePercent:old>0?(cost/old-1)*100:null,weightedCost:product?(Number(product.stock)*old+cost*input.stockQuantity)/(Number(product.stock)+input.stockQuantity):null,suggestion,reason,unitMatches:!product||normalized(product.unit)===normalized(item.unit),warning:'Valor dos produtos da nota dividido pela quantidade física informada. Frete, descontos gerais e créditos tributários não foram rateados. Confira embalagem e conversões. Nenhum preço ou custo é alterado automaticamente.'}};
+ }));
  app.get('/api/v1/fiscal/inbound/:id/stock-preview',scoped('fiscal',true,async(c,r,m)=>{
   requirePermission(m,'products',true);
   const doc=(await c.query('SELECT * FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(r.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota não encontrada.','NOT_FOUND');
@@ -14,7 +31,7 @@ export function mountFiscalStock(app,{scoped}){
   available(doc);
   const products=(await c.query('SELECT id,name,barcode,unit,stock,price_cents FROM bansir.products WHERE active ORDER BY name,id LIMIT 5001')).rows;
   const links=(await c.query('SELECT supplier_code,product_id FROM bansir.supplier_product_links WHERE supplier_cnpj=$1',[doc.supplier_cnpj])).rows;
-  const items=doc.items.map(item=>{const candidates=products.filter(p=>links.some(l=>l.supplier_code===item.supplierCode&&l.product_id===p.id)||(/^(?:\d{8}|\d{12,14})$/.test(item.barcode)&&p.barcode===item.barcode)||normalized(p.name)===normalized(item.name)).slice(0,30).map(p=>({id:p.id,reason:links.some(l=>l.supplier_code===item.supplierCode&&l.product_id===p.id)?'Vínculo conferido do fornecedor':p.barcode===item.barcode?'Código de barras':'Nome semelhante; confira unidade e embalagem'}));return {...item,candidates};});
+  const items=doc.items.map(item=>{const candidates=products.slice(0,5000).filter(p=>links.some(l=>l.supplier_code===item.supplierCode&&l.product_id===p.id)||(/^(?:\d{8}|\d{12,14})$/.test(item.barcode)&&p.barcode===item.barcode)||normalized(p.name)===normalized(item.name)).slice(0,30).map(p=>({id:p.id,reason:links.some(l=>l.supplier_code===item.supplierCode&&l.product_id===p.id)?'Vínculo conferido do fornecedor':p.barcode===item.barcode?'Código de barras':'Nome semelhante; confira unidade e embalagem'}));return {...item,candidates};});
   return {data:{revision:revision(doc),items,products:products.slice(0,5000),catalogLimited:products.length>5000,accessKey:doc.access_key}};
  }));
  app.post('/api/v1/fiscal/inbound/:id/stock-receipt',scoped('fiscal',false,async(c,r,m)=>{

@@ -77,7 +77,15 @@ test('Suppliers, fiscal recipients and inbound monitoring',{skip:!process.env.TE
   });
   await t.test('stock receipt matches catalog, requires physical checking and never double credits',async()=>{
    const doc=(await send('/fiscal/inbound')).body.data[0];
-   const product=(await send('/products','POST',{name:'Gás P13',barcode:'GAS-MATCH',price:190,stock:3,unit:'UN'})).body.data;
+   const product=(await send('/products','POST',{name:'Gás P13',barcode:'GAS-MATCH',price:190,costPrice:100,stock:3,unit:'UN'})).body.data;
+   const quoteBody={line:1,productId:product.id,stockQuantity:1};
+   const noConfig=await send(`/fiscal/inbound/${doc.id}/pricing-preview`,'POST',quoteBody);assert.equal(noConfig.status,200);assert.equal(noConfig.body.data.suggestion,null);
+   assert.equal((await send('/financial/pricing-intelligence','PUT',{pricingRules:{desiredProfitMargin:20}})).status,200);
+   const quote=await send(`/fiscal/inbound/${doc.id}/pricing-preview`,'POST',quoteBody);assert.equal(quote.status,200,JSON.stringify(quote.body));assert.equal(quote.body.data.currentUnitCost,100);assert.equal(quote.body.data.invoiceUnitCost,145.5);assert.equal(quote.body.data.currentSalePrice,190);assert.equal(quote.body.data.suggestion.cash,181.88);assert.ok(Math.abs(quote.body.data.costChangePercent-45.5)<0.001);assert.equal(quote.body.data.weightedCost,111.375);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/pricing-preview`,'POST',quoteBody,s2.token)).status,404);
+   await admin.query("INSERT INTO bansir.tenant_contracts(tenant_id,features) VALUES($1,'{\"financialIntelligence\":false}') ON CONFLICT(tenant_id) DO UPDATE SET features=bansir.tenant_contracts.features||excluded.features",[tenant.id]);
+   assert.equal((await send(`/fiscal/inbound/${doc.id}/pricing-preview`,'POST',quoteBody)).status,403);
+   await admin.query("UPDATE bansir.tenant_contracts SET features=features-'financialIntelligence' WHERE tenant_id=$1",[tenant.id]);
    const preview=await send(`/fiscal/inbound/${doc.id}/stock-preview`);assert.equal(preview.status,200,JSON.stringify(preview.body));assert.equal(preview.body.data.items[0].candidates[0].id,product.id);
    const body={revision:preview.body.data.revision,physicallyChecked:true,rows:[{line:1,action:'link',productId:product.id,stockQuantity:1}]};
    assert.equal((await send(`/fiscal/inbound/${doc.id}/stock-receipt`,'POST',{...body,physicallyChecked:false})).status,400);
