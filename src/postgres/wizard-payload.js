@@ -4,7 +4,7 @@ const address=['xLgr','nro','xCpl','xBairro','cMun','xMun','UF','CEP','cPais','x
 export function prepareWizardPayload(input,{action,key,technical}){
  const payload=structuredClone(input);
  if(action==='cancel'){
-  payload.evento=payload.evento.map(e=>{e.detEvento=order(e.detEvento,['descEvento','nProt','xJust']);return order(e,['cOrgao','tpAmb','CNPJ','CPF','chNFe','dhEvento','tpEvento','nSeqEvento','verEvento','detEvento']);});return payload;
+  payload.evento=payload.evento.map(e=>{if(e.dhEvento)e.dhEvento=new Date(e.dhEvento).toISOString().slice(0,19)+'+00:00';e.detEvento=order(e.detEvento,['descEvento','nProt','xJust']);return order(e,['cOrgao','tpAmb','CNPJ','CPF','chNFe','dhEvento','tpEvento','nSeqEvento','verEvento','detEvento']);});return payload;
  }
  if(action!=='emit')return payload;
  const n=payload.NFe.infNFe;delete n.Id;delete n.versao;

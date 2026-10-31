@@ -19,7 +19,7 @@ export function mountFiscalCancellation(app,{scoped}){
   if(existing){if(existing.request_key!==input.requestKey||existing.reason!==input.reason)throw httpError(409,'Já existe solicitação de cancelamento para esta nota. Consulte a situação.','CANCELLATION_EXISTS');return {data:existing};}
   if(doc.status!=='authorized'||!doc.protocol)throw httpError(409,'Somente documento autorizado pode ser cancelado.','FISCAL_NOT_AUTHORIZED');
   const ide=doc.payload.request.NFe.infNFe.ide,key=doc.access_key;
-  const payload={idLote:1,evento:[{cOrgao:Number(key.slice(0,2)),tpAmb:doc.environment,CNPJ:key.slice(6,20),chNFe:key,dhEvento:new Date().toISOString(),tpEvento:'110111',nSeqEvento:1,verEvento:'1.00',detEvento:{descEvento:'Cancelamento',nProt:doc.protocol,xJust:input.reason}}]};
+  const payload={idLote:1,evento:[{cOrgao:Number(key.slice(0,2)),tpAmb:doc.environment,CNPJ:key.slice(6,20),chNFe:key,dhEvento:new Date().toISOString().slice(0,19)+'+00:00',tpEvento:'110111',nSeqEvento:1,verEvento:'1.00',detEvento:{descEvento:'Cancelamento',nProt:doc.protocol,xJust:input.reason}}]};
   if(![55,65].includes(Number(ide.mod)))throw httpError(409,'Modelo fiscal não suportado.','FISCAL_MODEL_INVALID');
   await c.query('INSERT INTO bansir.fiscal_cancellations(tenant_id,establishment_id,document_id,request_key,reason,event_payload,requested_by) VALUES($1,$2,$3,$4,$5,$6,$7)',[i.tenantId,i.establishmentId,id,input.requestKey,input.reason,payload,i.userId]);
   await enqueue(c,i,{kind:'fiscal',key:'cancel:'+id,payload:{documentId:id,userId:i.userId,action:'cancel'}});return {status:202,data:{status:'queued'}};
