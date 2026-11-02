@@ -110,5 +110,18 @@ test('SmartPOS pairing and durable remote payments: real database, simulated SDK
    const state=(await send(`/sales/${deferredSale.id}`)).body.data;assert.equal(state.paid_cents,5000);assert.equal(state.outstanding_cents,5000);
    const ledger=(await admin.query('SELECT cash_session_id FROM bansir.sale_payments WHERE smartpos_charge_id=$1',[c.id])).rows[0];assert.equal(ledger.cash_session_id,reopened.id);
   });
+  await t.test('PIX is opt-in per machine and requires SDK support; cash never becomes a remote charge',async()=>{
+   const pixOrder={...order(),payment:{method:'pix',confirmed:true}};
+   assert.equal((await send('/sales','POST',pixOrder,browser)).body.code,'SMARTPOS_PIX_DISABLED');
+   assert.equal((await send(`/pdv/terminals/${terminal.id}/smartpos/pagbank`,'PATCH',{pixEnabled:true})).status,200);
+   assert.equal((await send('/sales','POST',pixOrder,browser)).body.code,'SMARTPOS_PIX_DISABLED');
+   await send('/pdv/terminals/heartbeat','POST',{remoteChargeVersion:1,paymentSdkAvailable:true,pixSdkAvailable:true,acquirerProvider:'PAGBANK'},smart);
+   const result=await send('/sales','POST',pixOrder,browser);assert.equal(result.status,201,JSON.stringify(result.body));assert.equal(result.body.data.paid_cents,0);
+   const c=(await send('/smartpos/commands/next','POST',{requestKey:randomUUID()},smart)).body.data;assert.equal(c.method,'pix');assert.equal(c.installments,1);
+   const approval={executionToken:c.executionToken,status:'approved',provider:'pagbank',method:'pix',amountCents:10000,installments:1,transactionId:'fixture-pix-endtoend'};
+   assert.equal((await send(`/smartpos/commands/${c.id}/result`,'POST',approval,smart)).status,200);
+   assert.equal((await send(`/sales/${result.body.data.id}`)).body.data.status,'paid');
+   assert.equal((await send('/sales','POST',{...order(),payment:{method:'cash',confirmed:true,receivedCents:10000}},browser)).body.code,'SMARTPOS_METHOD_REQUIRED');
+  });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });

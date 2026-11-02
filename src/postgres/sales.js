@@ -74,7 +74,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
  if(previous){if(previous.request_hash!==requestHash)fail('Identificador de venda já utilizado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return saleView(c,previous.id);}
  const cash=await openCash(c,i);
- if(input.smartposProvider&&!['credit_card','debit_card'].includes(input.payment.method))fail('SmartPOS exige crédito ou débito individual.','SMARTPOS_METHOD_REQUIRED',400);
+ if(input.smartposProvider&&!['credit_card','debit_card','pix'].includes(input.payment.method))fail('SmartPOS exige crédito ou débito individual.','SMARTPOS_METHOD_REQUIRED',400);
  if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
  if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
  if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir o documento fiscal.','SALE_NOT_PAID');}
@@ -248,6 +248,6 @@ export function saleFiscalDraft(sale,model='65'){
 
 export async function lockSmartposSale(c,i,id){await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${id}`);}
 export async function settleSmartpos(c,i,command,cash,evidence){
- const input={requestKey:command.id,method:command.method,amountCents:Number(command.amount_cents),confirmed:true,reference:evidence.authorizationCode,installments:command.installments};
+ const input={requestKey:command.id,method:command.method,amountCents:Number(command.amount_cents),confirmed:true,reference:evidence.authorizationCode||evidence.transactionId,installments:command.installments};
  await recordPayment(c,i,{id:command.sale_id},cash,input,{smartposChargeId:command.id,acquirerData:evidence});
 }
