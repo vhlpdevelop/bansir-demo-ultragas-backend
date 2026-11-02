@@ -1,3 +1,4 @@
+import {readFile} from 'node:fs/promises';
 import {assertReferenceDate} from '../src/postgres/fiscal-issuance.js';
 import {saleFiscalDraft} from '../src/postgres/sales.js';
 import test from 'node:test';
@@ -210,6 +211,12 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
     if(model==='both'){const second=await ctl('advance');assert.equal(second.status,200,JSON.stringify(second.body));assert.equal(second.body.data.authorized,1);const d2=second.body.data.items[1].document_id;assert.ok(d2);const p=(await admin.query('SELECT payload FROM bansir.fiscal_documents WHERE id=$1',[d2])).rows[0].payload;assert.equal(p.request.NFe.infNFe.ide.mod,55);assert.equal(p.request.NFe.infNFe.ide.NFref.length,1);await admin.query("UPDATE bansir.fiscal_documents SET status='authorized' WHERE id=$1",[d2]);}
     const done=(await ctl('advance')).body.data;assert.equal(done.state,'completed');assert.equal(done.authorized,model==='both'?2:1);assert.equal(done.salesCents,sale.total_cents);assert.equal(done.authorizedCents,sale.total_cents*(model==='both'?2:1));assert.equal(await stock(product),before);assert.equal((await send(`/sales/${sale.id}`)).body.data.paid_cents,paid);
    }
+  });
+  await t.test('historical receipts gain numeric coupons without changing existing numbers or reusing the counter',async()=>{
+   const preserved=(await send('/sales','POST',order())).body.data,a=(await send('/sales','POST',order())).body.data,b=(await send('/sales','POST',order())).body.data;
+   await admin.query('BEGIN');try{await admin.query('ALTER TABLE bansir.sales ALTER COLUMN coupon_number DROP NOT NULL');await admin.query('UPDATE bansir.sales SET coupon_number=NULL WHERE id=ANY($1::uuid[])',[[a.id,b.id]]);await admin.query(await readFile(new URL('../migrations/postgres/056_backfill_sale_coupons.sql',import.meta.url),'utf-8'));await admin.query('COMMIT');}catch(e){await admin.query('ROLLBACK');throw e;}
+   const one=(await send(`/sales/${a.id}`)).body.data,two=(await send(`/sales/${b.id}`)).body.data;assert.match(one.saleNumber,/^\d+$/);assert.match(two.saleNumber,/^\d+$/);assert.notEqual(one.saleNumber,two.saleNumber);assert.equal((await send(`/sales/${preserved.id}`)).body.data.saleNumber,preserved.saleNumber);
+   const next=(await send('/sales','POST',order())).body.data;assert.ok(Number(next.saleNumber)>Math.max(Number(one.saleNumber),Number(two.saleNumber)));assert.equal((await send(`/sales/${a.id}/receipt`)).body.data.filename,`recibo-${one.saleNumber}.pdf`);
   });
   await t.test('cash withdrawals, deposits and closing reconcile physical cash only, including cash refunds',async()=>{
    const before=(await send('/pdv/cash')).body.data.expected_cents;

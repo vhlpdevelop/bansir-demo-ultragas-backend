@@ -47,7 +47,7 @@ export async function saleView(c,id){
   FROM bansir.sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
  s.smartpos=(await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]||null;
  s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
- s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=s.coupon_number?String(s.coupon_number):`V-${s.id.slice(0,8).toUpperCase()}`;return s;
+ s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=String(s.coupon_number);return s;
 }
 function checkPayment(p,amount){
  if(p.method!=='credit_card'&&p.installments>1)fail('Parcelas permitidas somente no crédito.','INVALID_INSTALLMENTS',400);
@@ -114,11 +114,11 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  }
  for(const part of parts)await recordPayment(c,i,sale,cash,{...part,requestKey:parts.length===1?input.requestKey:randomUUID()});
  if(input.deliveryMode==='delivery'&&deliverer?.phone){
-  const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
+  const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
   await queueWhatsapp(c,i,{key:`delivery-route:${sale.id}`,payload:{permission:'sales',action:'send-text',phone:deliverer.phone,message}});
  }
  if(input.smartposProvider)await createSmartposCharge(c,i,member,sale.id,{requestKey:input.requestKey,provider:input.smartposProvider,method:input.payment.method,amountCents:total,installments:input.payment.installments||1});
- await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.id.slice(0,8)} registrada com estoque e recebíveis.`});
+ await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.coupon_number} registrada com estoque e recebíveis.`});
  return saleView(c,sale.id);
 }
 
@@ -169,7 +169,7 @@ export function mountSales(app,{scoped}){
  app.post('/api/v1/sales/:id/resend-whatsapp',scoped('sales',false,async(c,req,member)=>{
   const sale=await ownedSale(c,req.identity,member,req.params.id);
   if(sale.delivery_mode!=='delivery'||!sale.delivery_employee_phone)fail('Esta venda não possui entregador com telefone cadastrado.','DELIVERY_PHONE_MISSING',409);
-  const message=`🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents)/100).toFixed(2)}`;
+  const message=`🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents)/100).toFixed(2)}`;
   const queued=await queueWhatsapp(c,req.identity,{key:`delivery-route-resend:${sale.id}:${randomUUID()}`,payload:{permission:'sales',action:'send-text',phone:sale.delivery_employee_phone,message}});
   return {status:202,data:{queued}};
  }));
