@@ -1,3 +1,4 @@
+import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {nfeRecipient,validateNfeDraft,fiscalOperation} from '../src/postgres/fiscal-models.js';
@@ -18,4 +19,8 @@ test('access keys identify model 55 or 65 and reject unsupported models',()=>{
  const input={uf:'MT',cnpj:'11222333000181',series:1,number:1,issuedAt:'2026-10-31T10:00:00-04:00',code:'00000001'};
  for(const model of ['55','65']){const key=accessKey({...input,model});assert.equal(key.length,44);assert.equal(key.slice(20,22),model);}
  assert.throws(()=>accessKey({...input,model:'57'}));
+});
+
+test('fiscal worker imports independently of API initialization order',()=>{
+ const result=spawnSync(process.execPath,['--input-type=module','-e',"await import('./src/postgres/fiscal.worker.js');"],{cwd:new URL('../',import.meta.url),encoding:'utf-8',timeout:15000});assert.equal(result.status,0,result.stderr);
 });
