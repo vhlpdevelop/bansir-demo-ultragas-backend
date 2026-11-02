@@ -1,3 +1,5 @@
+> **Atualização — migração 052:** o fluxo atual está em [SMARTPOS-REMOTE-PAYMENTS.md](SMARTPOS-REMOTE-PAYMENTS.md). SmartPOS usa código próprio por adquirente, `clientType:smartpos` e `provider` obrigatórios. Capabilities versão 2 anuncia comandos remotos, condicionados ao heartbeat de um APK compatível. Os trechos abaixo descrevem a implementação anterior da migração 046 e não substituem o contrato novo.
+
 # Terminais e adquirentes
 
 Cada terminal mantém um navegador e até uma maquininha por provider: pagbank, mercadopago, caixa. Caixa e vendas continuam associados ao mesmo terminal_id. O header X-Pdv-Terminal continua aceitando pdvt_ e o servidor armazena somente SHA256 dessa credencial aleatória.

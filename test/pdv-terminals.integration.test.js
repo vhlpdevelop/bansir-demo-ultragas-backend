@@ -41,6 +41,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
   const send=async(path,method='GET',body,token=session.token,terminal)=>{const r=await fetch(base+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(terminal?{'X-Pdv-Terminal':terminal}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json(),retryAfter:r.headers.get('retry-after')};};
   const create=async name=>(await send('/pdv/terminals','POST',{name})).body.data;
   const activate=async id=>send(`/pdv/terminals/${id}/activation`,'POST',{});
+  const activateSmart=async(id,provider='pagbank')=>send(`/pdv/terminals/${id}/smartpos/activation`,'POST',{provider,replaceExisting:true});
   const pair=async code=>send('/pdv/terminals/pair','POST',{code});
   const open=(token,terminal)=>send('/pdv/cash/open','POST',{openingCents:0},token,terminal);
   const close=async(token,terminal)=>{const cash=(await send('/pdv/cash','GET',undefined,token)).body.data;return send(`/pdv/cash/${cash.id}/close`,'POST',{countedCents:cash.expected_cents,note:''},token,terminal);};
@@ -135,8 +136,8 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.equal((await close(session.token,binding1)).status,200);
   });
   await t.test('SmartPOS coexists with browser, rotates independently and preserves scoped cash identity',async()=>{
-   const code=(await activate(first.id)).body.data.code;
-   const smart=(await send('/pdv/terminals/pair','POST',{code,clientType:'smartpos'})).body.data;
+   const code=(await activateSmart(first.id)).body.data.code;
+   const smart=(await send('/pdv/terminals/pair','POST',{code,clientType:'smartpos',provider:'pagbank'})).body.data;
    assert.match(smart.token,/^pdvt_/);
    assert.equal((await send('/pdv/terminals','GET',undefined,session.token,binding1)).body.data.current.id,first.id);
    assert.equal((await send('/pdv/terminals','GET',undefined,session.token,smart.token)).body.data.current.id,first.id);
@@ -147,7 +148,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.equal((await open(session.token,smart.token)).body.data.id,cash.id);
    assert.equal((await open(operator.token,smart.token)).body.code,'TERMINAL_BUSY');
    assert.equal((await close(session.token,smart.token)).status,200);
-   const replacement=(await send('/pdv/terminals/pair','POST',{code:(await activate(first.id)).body.data.code,clientType:'smartpos'})).body.data;
+   const replacement=(await send('/pdv/terminals/pair','POST',{code:(await activateSmart(first.id)).body.data.code,clientType:'smartpos',provider:'pagbank'})).body.data;
    assert.equal((await open(session.token,smart.token)).body.code,'TERMINAL_REVOKED');
    assert.equal((await send('/pdv/terminals','GET',undefined,session.token,binding1)).body.data.current.id,first.id);
    assert.equal((await send('/pdv/terminals','GET',undefined,session.token,replacement.token)).body.data.current.id,first.id);
@@ -155,7 +156,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
   });
   await t.test('multiple providers, scoped short HMAC codes, throttling and revocation',async()=>{
    await admin.query('DELETE FROM bansir.pdv_pair_attempts');
-   const smart=async provider=>{const issued=await activate(first.id);assert.match(issued.body.data.code,/^\d{6}$/);return (await send('/pdv/terminals/pair','POST',{code:issued.body.data.code,clientType:'smartpos',...(provider?{provider}:{})})).body.data;};
+   const smart=async(provider='pagbank')=>{const issued=await activateSmart(first.id,provider);assert.match(issued.body.data.code,/^\d{6}$/);return (await send('/pdv/terminals/pair','POST',{code:issued.body.data.code,clientType:'smartpos',provider})).body.data;};
    const pag=await smart(),mp=await smart('mercadopago'),caixa=await smart('caixa');activeSmartTokens.push(pag.token,mp.token,caixa.token);
    const current=async token=>(await send('/pdv/terminals','GET',undefined,session.token,token)).body.data;
    assert.equal((await current(pag.token)).current.client_type,'smartpos:pagbank');assert.equal((await current(mp.token)).current.client_type,'smartpos:mercadopago');assert.equal((await current(binding1)).current.client_type,'browser');

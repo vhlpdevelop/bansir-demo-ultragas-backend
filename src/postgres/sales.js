@@ -1,3 +1,5 @@
+import {createSmartposCharge} from './smartpos.js';
+import {expireSmartpos,assertNoSmartpos} from './smartpos-state.js';
 import {applyTributaryUnits} from './product-fiscal-profile.js';
 import {mountSaleCustomization} from './sale-customization.js';
 import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
@@ -20,7 +22,7 @@ const viewsAll=member=>manages(member)||member.allowed_routes?.includes('sales-c
 const discounts=member=>manages(member)||member.allowed_routes?.includes('sales-discount');
 const externalPayment=z.object({method:z.enum(['cash','pix','credit_card','debit_card']),confirmed:z.literal(true),reference:text.default(''),receivedCents:cents.optional(),installments:z.number().int().min(1).max(24).optional()}).strict();
 const paymentSchema=z.union([z.object({method:z.literal('split'),parts:z.array(externalPayment.extend({amountCents:cents.refine(n=>n>0)})).min(2).max(10)}).strict(),externalPayment,z.object({method:z.literal('pending'),term:z.enum(['delivery','pickup','credit']),dueDate:z.iso.date().optional()}).strict()]);
-const saleInput=z.object({requestKey:uuid,issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
+const saleInput=z.object({requestKey:uuid,smartposProvider:z.enum(['pagbank','mercadopago','caixa']).optional(),issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
 const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
@@ -40,8 +42,9 @@ export async function saleView(c,id){
  if(!s)return null;
  for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
  s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
- s.payments=(await c.query(`SELECT p.id,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
+ s.payments=(await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
   FROM bansir.sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
+ s.smartpos=(await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]||null;
  s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
  s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=s.coupon_number?String(s.coupon_number):`V-${s.id.slice(0,8).toUpperCase()}`;return s;
 }
@@ -52,15 +55,16 @@ function checkPayment(p,amount){
  if(p.method!=='cash' && p.receivedCents!==undefined && p.receivedCents!==amount)fail('Troco é permitido somente em dinheiro.','INVALID_CHANGE',400);
  return received;
 }
-async function recordPayment(c,i,sale,cash,input){
+async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquirerData}={}){
  const paymentHash=hash({...input,userId:i.userId});
  const previous=(await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
  if(previous){if(previous.request_hash!==paymentHash||previous.sale_id!==sale.id)fail('Identificador de pagamento já utilizado.','IDEMPOTENCY_CONFLICT');return;}
+ await assertNoSmartpos(c,{saleId:sale.id,exceptId:smartposChargeId});
  const view=await saleView(c,sale.id);if(view.cancelled_at)fail('Venda cancelada.','SALE_CANCELLED');
  if(input.amountCents>view.outstanding_cents)fail('Pagamento supera o saldo pendente.','PAYMENT_EXCEEDS_BALANCE');
  const received=checkPayment(input,input.amountCents);
- const {rows:[payment]}=await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1]);
+ const {rows:[payment]}=await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1,smartposChargeId||null,acquirerData||null]);
  if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
 }
@@ -70,6 +74,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
  if(previous){if(previous.request_hash!==requestHash)fail('Identificador de venda já utilizado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return saleView(c,previous.id);}
  const cash=await openCash(c,i);
+ if(input.smartposProvider&&!['credit_card','debit_card'].includes(input.payment.method))fail('SmartPOS exige crédito ou débito individual.','SMARTPOS_METHOD_REQUIRED',400);
  if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
  if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
  if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir o documento fiscal.','SALE_NOT_PAID');}
@@ -93,7 +98,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  if(!Number.isSafeInteger(subtotal)||subtotal>1000000000||total>1000000000||input.discountCents>=subtotal)fail('Total ou desconto inválido.','INVALID_TOTAL',400);
  let remaining=input.discountCents;for(const item of items){item.discount=Number(BigInt(input.discountCents)*BigInt(item.gross)/BigInt(subtotal));remaining-=item.discount;}
  for(const item of items){if(!remaining)break;item.discount++;remaining--;}
- const parts=input.payment.method==='split'?input.payment.parts:input.payment.method==='pending'?[]:[{...input.payment,amountCents:total}];
+ const parts=input.smartposProvider?[]:input.payment.method==='split'?input.payment.parts:input.payment.method==='pending'?[]:[{...input.payment,amountCents:total}];
  if(parts.length&&parts.reduce((n,p)=>n+p.amountCents,0)!==total)fail('A soma dos pagamentos deve ser igual ao total da venda.','PAYMENT_TOTAL_MISMATCH',400);
  for(const part of parts)checkPayment(part,part.amountCents);
  const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);
@@ -111,6 +116,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
   const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* V-${sale.id.slice(0,8).toUpperCase()}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
   await queueWhatsapp(c,i,{key:`delivery-route:${sale.id}`,payload:{permission:'sales',action:'send-text',phone:deliverer.phone,message}});
  }
+ if(input.smartposProvider)await createSmartposCharge(c,i,member,sale.id,{requestKey:input.requestKey,provider:input.smartposProvider,method:input.payment.method,amountCents:total,installments:input.payment.installments||1});
  await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.id.slice(0,8)} registrada com estoque e recebíveis.`});
  return saleView(c,sale.id);
 }
@@ -139,6 +145,7 @@ export function mountSales(app,{scoped}){
   if(cash.closed_at){if(Number(cash.counted_cents)!==input.countedCents||cash.closing_note!==input.note)fail('Caixa já fechado com outra conferência.','CASH_ALREADY_CLOSED');return {data:await cashView(c,cash)};}
   // Legacy shifts can always be closed; never invent or reassign their origin.
   if(cash.terminal_id)assertCashTerminal(cash,await requireTerminal(c,i));
+  await expireSmartpos(c);await assertNoSmartpos(c,{cashId:cash.id});
   const expected=await cashBalance(c,cash),difference=input.countedCents-expected;
   if(difference&&!input.note)fail('Informe o motivo da diferença de caixa.','CASH_DIFFERENCE_NOTE',400);
   const closed=(await c.query('UPDATE bansir.cash_sessions SET closed_at=now(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *',[cash.id,input.countedCents,expected,difference,input.note])).rows[0];return {data:await cashView(c,closed)};
@@ -178,7 +185,7 @@ export function mountSales(app,{scoped}){
   if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
   const input=z.object({reason:z.string().trim().min(5).max(1000),refundConfirmed:z.literal(true),refundReference:text.default('')}).strict().parse(req.body),i=req.identity;
   const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.cancelled_at)return {data:sale};if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
+  if(sale.cancelled_at)return {data:sale};await expireSmartpos(c);await assertNoSmartpos(c,{saleId:sale.id});if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
   if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
   assertCashTerminal(cash,await requireTerminal(c,i));
   if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);
@@ -231,10 +238,16 @@ export function saleFiscalDraft(sale,model='65'){
  const method={cash:'01',pix:'17',credit_card:'03',debit_card:'04'};
  const draft={det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.comb?{comb:structuredClone(item.fiscal_profile[model].comb)}:{}),...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
  total:{ICMSTot:{vBC:0,vICMS:0,vICMSDeson:0,vFCP:0,vBCST:0,vST:0,vFCPST:0,vFCPSTRet:0,vProd:sale.subtotal_cents/100,vFrete:sale.delivery_fee_cents/100,vSeg:0,vDesc:sale.discount_cents/100,vII:0,vIPI:0,vIPIDevol:0,vPIS:0,vCOFINS:0,vOutro:0,vNF:sale.total_cents/100}},
- pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:2,...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...(sale.customer_document?{dest:{CNPJCPF:sale.customer_document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
+ pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:p.smartpos_charge_id?1:2,...(p.smartpos_charge_id?{CNPJ:p.acquirer_data?.acquirerCnpj,tBand:p.acquirer_data?.brandCode}:{}),...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...(sale.customer_document?{dest:{CNPJCPF:sale.customer_document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
  return applyTributaryUnits(draft,sale,model);
 }
 
 
 
 
+
+export async function lockSmartposSale(c,i,id){await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${id}`);}
+export async function settleSmartpos(c,i,command,cash,evidence){
+ const input={requestKey:command.id,method:command.method,amountCents:Number(command.amount_cents),confirmed:true,reference:evidence.authorizationCode,installments:command.installments};
+ await recordPayment(c,i,{id:command.sale_id},cash,input,{smartposChargeId:command.id,acquirerData:evidence});
+}

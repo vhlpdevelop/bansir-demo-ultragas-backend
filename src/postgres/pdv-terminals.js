@@ -1,3 +1,4 @@
+import {expireSmartpos,assertNoSmartpos} from './smartpos-state.js';
 import {delegatedSetting} from './settings-permissions.js';
 import {createHash,createHmac,randomInt,randomBytes} from 'node:crypto';
 import {z} from 'zod';
@@ -34,6 +35,7 @@ export function assertCashTerminal(cash,terminal){
  if(!cash.terminal_id&&terminal)fail('Feche o caixa anterior, sem terminal identificado, e abra um novo caixa neste terminal.','LEGACY_CASH_CLOSE_REQUIRED');
 }
 export function mountPdvTerminals(app,{scoped,secret}){
+ const smartposHash=(code,i)=>createHmac('sha256',secret).update(JSON.stringify(['smartpos-activation',i.tenantId,i.establishmentId,code])).digest('hex');
  const activationHash=(code,i)=>createHmac('sha256',secret).update(JSON.stringify(['pdv-activation',i.tenantId,i.establishmentId,code])).digest('hex');
  app.get('/api/v1/pdv/terminals',scoped('settings-terminals',true,async(c,r)=>{
   let current=null,bindingError='';try{current=await currentTerminal(c,r.identity);}catch(e){if(e.code!=='TERMINAL_REVOKED')throw e;bindingError=e.message;}
@@ -53,28 +55,38 @@ export function mountPdvTerminals(app,{scoped,secret}){
   admin(m);const {recoveryReason}=z.object({recoveryReason:z.string().trim().min(10).max(500).optional()}).strict().parse(r.body),id=z.uuid().parse(r.params.id),i=r.identity;await unitLock(c,i);
   const row=(await c.query('SELECT id FROM bansir.pdv_terminals WHERE id=$1 AND active FOR UPDATE',[id])).rows[0];if(!row)fail('Terminal não encontrado ou desativado.','NOT_FOUND',404);
   if(!recoveryReason&&(await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[id])).rowCount)fail('Feche o caixa deste terminal antes de alterar seu vínculo. Se perdeu o navegador, use a recuperação administrativa.','TERMINAL_BUSY');
-  let code;for(let n=0;n<32;n++){code=String(randomInt(0,1_000_000)).padStart(6,'0');if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE tenant_id=$1 AND establishment_id=$2 AND activation_hash=$3',[i.tenantId,i.establishmentId,activationHash(code,i)])).rowCount)break;code=null;}if(!code)fail('Tente gerar o código novamente.','ACTIVATION_BUSY',503);
+  let code;for(let n=0;n<32;n++){code=String(randomInt(0,1_000_000)).padStart(6,'0');if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE tenant_id=$1 AND establishment_id=$2 AND activation_hash=$3 UNION ALL SELECT 1 FROM bansir.pdv_smartpos_codes WHERE code_hash=$4',[i.tenantId,i.establishmentId,activationHash(code,i),smartposHash(code,i)])).rowCount)break;code=null;}if(!code)fail('Tente gerar o código novamente.','ACTIVATION_BUSY',503);
   const expiry=(await c.query("UPDATE bansir.pdv_terminals SET activation_hash=$2,activation_expires_at=now()+interval '10 minutes',activation_recovery=$3,updated_at=now() WHERE id=$1 RETURNING activation_expires_at",[id,activationHash(code,i),!!recoveryReason])).rows[0].activation_expires_at;
   await audit(c,i,id,recoveryReason?'recovery_issued':'activation_issued',recoveryReason||'');return {data:{id,code,expiresAt:expiry}};
  }));
+ app.post('/api/v1/pdv/terminals/:id/smartpos/activation',scoped('settings-terminals',false,async(c,r,m)=>{
+  admin(m);const id=z.uuid().parse(r.params.id),i=r.identity,{provider,replaceExisting}=z.object({provider:z.enum(providers),replaceExisting:z.boolean().default(false)}).strict().parse(r.body);await unitLock(c,i);
+  if(!(await c.query('SELECT id FROM bansir.pdv_terminals WHERE id=$1 AND active FOR UPDATE',[id])).rowCount)fail('Caixa não encontrado ou desativado.','NOT_FOUND',404);
+  await expireSmartpos(c);await assertNoSmartpos(c,{terminalId:id,provider});
+  if(!replaceExisting&&(await c.query('SELECT 1 FROM bansir.pdv_terminal_smartpos WHERE terminal_id=$1 AND provider=$2',[id,provider])).rowCount)fail('Confirme a substituição da SmartPOS desta adquirente.','SMARTPOS_REPLACEMENT_REQUIRED');
+  let code;for(let n=0;n<32;n++){code=String(randomInt(0,1000000)).padStart(6,'0');if(!(await c.query('SELECT 1 FROM bansir.pdv_smartpos_codes WHERE code_hash=$1 UNION ALL SELECT 1 FROM bansir.pdv_terminals WHERE activation_hash=$2',[smartposHash(code,i),activationHash(code,i)])).rowCount)break;code=null;}if(!code)fail('Tente gerar o código novamente.','ACTIVATION_BUSY',503);
+  const expiresAt=(await c.query("INSERT INTO bansir.pdv_smartpos_codes(tenant_id,establishment_id,terminal_id,provider,code_hash,expires_at,created_by) VALUES($1,$2,$3,$4,$5,now()+interval '10 minutes',$6) ON CONFLICT(tenant_id,establishment_id,terminal_id,provider) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,created_by=excluded.created_by RETURNING expires_at",[i.tenantId,i.establishmentId,id,provider,smartposHash(code,i),i.userId])).rows[0].expires_at;
+  await audit(c,i,id,'activation_issued','Vincular SmartPOS',provider,'smartpos');return {data:{id,code,expiresAt,clientType:'smartpos',provider}};
+ }));
  app.post('/api/v1/pdv/terminals/pair',rateLimit({windowMs:900000,limit:120,standardHeaders:'draft-7',legacyHeaders:false,handler:(_req,res)=>res.status(429).json({success:false,code:'RATE_LIMITED',message:'Muitas tentativas. Aguarde e tente novamente.'})}),scoped('sales',false,async(c,r)=>{
-  const input=z.object({clientType:z.enum(['browser','smartpos']).default('browser'),provider:z.enum(providers).optional(),code:z.string().trim().max(100).transform(v=>v.toUpperCase())}).strict().parse(r.body),{code,clientType}=input,provider=clientType==='smartpos'?(input.provider||'pagbank'):null,i=r.identity;await unitLock(c,i);
+  const input=z.object({clientType:z.enum(['browser','smartpos']).default('browser'),provider:z.enum(providers).optional(),code:z.string().trim().max(100).transform(v=>v.toUpperCase())}).strict().refine(v=>v.clientType!=='smartpos'||!!v.provider,'Informe a adquirente da SmartPOS.').parse(r.body),{code,clientType}=input,provider=clientType==='smartpos'?input.provider:null,i=r.identity;await unitLock(c,i);
   const retry=async()=>Number((await c.query("SELECT coalesce(max(ceil(extract(epoch FROM blocked_until-now()))),0)::int AS retry FROM bansir.pdv_pair_attempts WHERE tenant_id=$1 AND establishment_id=$2 AND blocked_until>now() AND ((scope='user' AND subject=$3) OR scope='unit')",[i.tenantId,i.establishmentId,i.userId])).rows[0].retry);
   const denied=async(blocked=false)=>{if(!blocked)for(const [scope,subject] of [['user',i.userId],['unit',i.establishmentId]])await c.query("INSERT INTO bansir.pdv_pair_attempts(tenant_id,establishment_id,scope,subject,failures) VALUES($1,$2,$3,$4,1) ON CONFLICT(tenant_id,establishment_id,scope,subject) DO UPDATE SET blocked_until=CASE WHEN bansir.pdv_pair_attempts.window_start<now()-interval '15 minutes' THEN NULL WHEN bansir.pdv_pair_attempts.failures+1>=5 THEN now()+interval '15 minutes' ELSE NULL END,failures=CASE WHEN bansir.pdv_pair_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE bansir.pdv_pair_attempts.failures+1 END,window_start=CASE WHEN bansir.pdv_pair_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE bansir.pdv_pair_attempts.window_start END",[i.tenantId,i.establishmentId,scope,subject]);const seconds=await retry();await audit(c,i,null,'pair_failed',seconds?'RATE_LIMITED':'ACTIVATION_INVALID',provider,clientType);if(seconds)r.res.set('Retry-After',String(seconds));return {error:httpError(seconds?429:400,seconds?'Muitas tentativas. Aguarde 15 minutos.':'Código inválido, vencido ou já utilizado.',seconds?'RATE_LIMITED':'ACTIVATION_INVALID')};};
   if(await retry())return denied(true);
   if(!/^(?:\d{6}|[A-F0-9]{24})$/.test(code))return denied();
-  const row=(await c.query('SELECT id,name,activation_recovery FROM bansir.pdv_terminals WHERE tenant_id=$1 AND establishment_id=$2 AND activation_hash=$3 AND activation_expires_at>now() AND active FOR UPDATE',[i.tenantId,i.establishmentId,activationHash(code,i)])).rows[0];
+  const row=clientType==='smartpos'?(await c.query('SELECT t.id,t.name FROM bansir.pdv_smartpos_codes a JOIN bansir.pdv_terminals t ON(t.tenant_id,t.establishment_id,t.id)=(a.tenant_id,a.establishment_id,a.terminal_id) WHERE a.code_hash=$1 AND a.provider=$2 AND a.expires_at>now() AND t.active FOR UPDATE OF a,t',[smartposHash(code,i),provider])).rows[0]:(await c.query('SELECT id,name,activation_recovery FROM bansir.pdv_terminals WHERE tenant_id=$1 AND establishment_id=$2 AND activation_hash=$3 AND activation_expires_at>now() AND active FOR UPDATE',[i.tenantId,i.establishmentId,activationHash(code,i)])).rows[0];
   if(!row)return denied();
-  if(!row.activation_recovery&&(await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[row.id])).rowCount)fail('Feche o caixa antes de vincular outro navegador a este terminal.','TERMINAL_BUSY');
+  if(clientType==='browser'&&!row.activation_recovery&&(await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[row.id])).rowCount)fail('Feche o caixa antes de vincular outro navegador a este terminal.','TERMINAL_BUSY');
+  if(clientType==='smartpos'){await expireSmartpos(c);await assertNoSmartpos(c,{terminalId:row.id,provider});await c.query('DELETE FROM bansir.pdv_smartpos_codes WHERE terminal_id=$1 AND provider=$2',[row.id,provider]);}
   const token='pdvt_'+randomBytes(32).toString('base64url');
   if(clientType==='smartpos')await c.query("INSERT INTO bansir.pdv_terminal_smartpos(terminal_id,tenant_id,establishment_id,provider,token_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(terminal_id,provider) DO UPDATE SET token_hash=EXCLUDED.token_hash,paired_at=now(),last_seen_at=NULL,diagnostics='{}'",[row.id,i.tenantId,i.establishmentId,provider,hash(token)]);
-  await c.query(`UPDATE bansir.pdv_terminals SET ${clientType==='browser'?'device_hash=$2,':''}activation_hash=NULL,activation_expires_at=NULL,activation_recovery=false,paired_at=coalesce(paired_at,now()),updated_at=now() WHERE id=$1`,clientType==='browser'?[row.id,hash(token)]:[row.id]);
+  if(clientType==='browser')await c.query('UPDATE bansir.pdv_terminals SET device_hash=$2,activation_hash=NULL,activation_expires_at=NULL,activation_recovery=false,paired_at=coalesce(paired_at,now()),updated_at=now() WHERE id=$1',[row.id,hash(token)]);
   await audit(c,i,row.id,'paired',clientType,provider,clientType);return {data:{id:row.id,name:row.name,token}};
  }));
- app.get('/api/v1/pdv/terminals/capabilities',scoped('sales',true,async()=>({data:{version:1,providers,activationCodeLength:6,clientTypes:['browser','smartpos'],pairingClientTypeDefault:'browser',operatorAuthentication:'bearer',independentBindings:true,remoteChargeCommands:false,structuredAcquirerEvidence:false}})));
+ app.get('/api/v1/pdv/terminals/capabilities',scoped('sales',true,async()=>({data:{version:2,providers,activationCodeLength:6,smartposActivationPath:'/pdv/terminals/:id/smartpos/activation',remoteChargeVersion:1,clientTypes:['browser','smartpos'],pairingClientTypeDefault:'browser',operatorAuthentication:'bearer',independentBindings:true,remoteChargeCommands:true,structuredAcquirerEvidence:true}})));
  app.post('/api/v1/pdv/terminals/heartbeat',scoped('sales',true,async(c,r)=>{
   await unitLock(c,r.identity);
-  const metadata=z.object({acquirerProvider:z.enum(['PAGBANK','MERCADOPAGO','CAIXA','CIELO','REDE']).optional(),appVersion:z.string().max(80).optional(),sdkVersion:z.string().max(80).optional(),plugPagAvailable:z.boolean().optional()}).strict().parse(r.body);
+  const metadata=z.object({acquirerProvider:z.enum(['PAGBANK','MERCADOPAGO','CAIXA','CIELO','REDE']).optional(),appVersion:z.string().max(80).optional(),remoteChargeVersion:z.literal(1).optional(),paymentSdkAvailable:z.boolean().optional(),sdkVersion:z.string().max(80).optional(),plugPagAvailable:z.boolean().optional()}).strict().parse(r.body);
   const terminal=await currentTerminal(c,r.identity);if(!terminal)fail('Vincule o terminal antes de enviar diagnóstico.');
   const updated=(await c.query('UPDATE bansir.pdv_terminal_smartpos SET diagnostics=$2,last_seen_at=now() WHERE terminal_id=$1 AND token_hash=$3 RETURNING last_seen_at',[terminal.id,metadata,hash(r.identity.pdvTerminalToken)])).rows[0];
   if(!updated)fail('Diagnóstico exige vínculo SmartPOS.','SMARTPOS_REQUIRED',403);
@@ -85,6 +97,8 @@ export function mountPdvTerminals(app,{scoped,secret}){
   if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1 FOR UPDATE',[id])).rowCount)fail('Terminal não encontrado.','NOT_FOUND',404);
   if((await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[id])).rowCount)fail('Feche o caixa antes de desativar o terminal.','TERMINAL_BUSY');
   await c.query('UPDATE bansir.pdv_terminals SET active=$2,device_hash=NULL,smartpos_hash=NULL,activation_hash=NULL,activation_expires_at=NULL,updated_at=now() WHERE id=$1',[id,active]);
+  await expireSmartpos(c);await assertNoSmartpos(c,{terminalId:id});
+  await c.query('DELETE FROM bansir.pdv_smartpos_codes WHERE terminal_id=$1',[id]);
   const revoked=(await c.query('DELETE FROM bansir.pdv_terminal_smartpos WHERE terminal_id=$1 RETURNING provider',[id])).rows;for(const item of revoked)await audit(c,i,id,'provider_revoked',active?'Reativação do terminal':'Terminal desativado',item.provider,'smartpos');
   await audit(c,i,id,active?'enabled':'disabled');return {data:{id,active}};
  }));
@@ -92,6 +106,8 @@ export function mountPdvTerminals(app,{scoped,secret}){
   if(!['admin','superadmin'].includes(m.role))fail('Somente administradores podem revogar maquininhas.','FORBIDDEN',403);
   const id=z.uuid().parse(r.params.id),provider=z.enum(providers).parse(r.params.provider),i=r.identity;await unitLock(c,i);
   if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1',[id])).rowCount)fail('Terminal não encontrado.','NOT_FOUND',404);
+  await expireSmartpos(c);await assertNoSmartpos(c,{terminalId:id,provider});
+  await c.query('DELETE FROM bansir.pdv_smartpos_codes WHERE terminal_id=$1 AND provider=$2',[id,provider]);
   await c.query('DELETE FROM bansir.pdv_terminal_smartpos WHERE terminal_id=$1 AND provider=$2',[id,provider]);await audit(c,i,id,'provider_revoked','',provider,'smartpos');return {data:{id,provider,revoked:true}};
  }));
  app.get('/api/v1/pdv/terminals/events',scoped('settings-terminals',true,async(c,r,m)=>{admin(m);return {data:(await c.query('SELECT e.id,e.terminal_id,t.name AS terminal_name,e.event,e.reason,e.provider,e.client_type,e.created_at,u.name AS user_name FROM bansir.pdv_terminal_events e LEFT JOIN bansir.pdv_terminals t ON (t.tenant_id,t.establishment_id,t.id)=(e.tenant_id,e.establishment_id,e.terminal_id) JOIN bansir.users u ON u.id=e.user_id ORDER BY e.created_at DESC LIMIT 100')).rows};}));
