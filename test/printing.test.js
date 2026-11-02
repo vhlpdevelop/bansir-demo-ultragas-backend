@@ -3,7 +3,7 @@ import {writeFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import {receiptPdf,danfePdf} from '../src/postgres/printing.js';
 test('thermal receipts create real PDF at both widths and reject missing fiscal evidence',async()=>{
- const sale={saleNumber:'V-TEST',created_at:'2026-10-27T15:00:00Z',seller_name:'Operador',customer_name:'Cliente',status:'paid',total_cents:15000,paid_cents:15000,items:Array.from({length:50},()=>({quantity:1,product_name:'Gás de teste',unit_price_cents:300,gross_cents:300,discount_cents:0})),payments:[{method:'cash',amount_cents:15000,received_cents:16000}]};
+ const sale={saleNumber:'34543',created_at:'2026-10-27T15:00:00Z',seller_name:'Operador',customer_name:'Cliente',status:'paid',subtotal_cents:15000,delivery_fee_cents:0,discount_cents:0,outstanding_cents:0,total_cents:15000,paid_cents:15000,items:Array.from({length:50},()=>({quantity:1,product_name:'Gás de teste',unit_price_cents:300,gross_cents:300,discount_cents:0})),payments:[{method:'cash',amount_cents:15000,received_cents:16000}]};
  for(const width of [58,80]){const pdf=await receiptPdf(sale,{store_name:'Loja de teste'},width);assert.equal(pdf.subarray(0,5).toString(),'%PDF-');assert.ok(pdf.length>1000);}
  await assert.rejects(danfePdf({status:'queued'}),e=>e.status===409);
  await assert.rejects(danfePdf({status:'authorized',xml:'<nfeProc/>',access_key:'1'.repeat(44),environment:2}),e=>e.code==='INVALID_FISCAL_EVIDENCE');
