@@ -1,3 +1,4 @@
+import {assertReferenceDate} from './fiscal-issuance.js';
 import {fuelInput} from './product-fiscal-profile.js';
 import {mountFiscalCancellation} from './fiscal-cancellation.js';
 import {z} from 'zod';
@@ -95,8 +96,8 @@ export function mountFiscal(app,{scoped}) {
   return {status:202,data:await createFiscalDocument(c,req.identity,req.body)};
  }));
 }
-export async function createFiscalDocument(c,identity,body) {
-  const input=z.object({requestKey:z.uuid(),model:fiscalModel,operation:fiscalOperation,draft:z.object({det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
+export async function createFiscalDocument(c,identity,body,{allowReferences=false}={}) {
+  const input=z.object({requestKey:z.uuid(),model:fiscalModel,operation:fiscalOperation,draft:z.object({references:z.array(z.string().regex(/^\d{44}$/)).min(1).max(100).optional(),det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
   if(input.draft.det.some(d=>['ICMS','PIS','COFINS'].some(k=>!Object.keys(d.imposto[k]).length)))throw httpError(400,'Preencha a tributação de todos os itens com orientação contábil.','FISCAL_TAX_REQUIRED');
   for(const item of input.draft.det){if(item.prod.comb)fuelInput.parse(item.prod.comb);else if(item.prod.NCM==='27111910')throw httpError(400,'Informe o grupo de combustível (ANP/GLP) deste produto.','FUEL_REQUIRED');}
   const i=identity;
@@ -108,6 +109,7 @@ export async function createFiscalDocument(c,identity,body) {
   if(existing){if(existing.payload.draftHash!==digest(input.draft)||String(existing.payload.request.NFe.infNFe.ide.mod)!==input.model||digest(existing.payload.operation||{finalConsumer:true,presence:1})!==digest(input.operation))throw httpError(409,'Identificador já usado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return {id:existing.id,status:existing.status};}
   const s=cfg.data,draft=input.draft,model=input.model,series=model==='55'?s.nfeSeries:s.series;
   if(!series)throw httpError(409,'Configure a série e numeração da NF-e 55 nas configurações fiscais.','NFE_NUMBERING_REQUIRED');
+  if(draft.references){if(!allowReferences)throw httpError(400,'Use o fluxo de lote para referenciar NFC-e.','REFERENCE_BATCH_REQUIRED');assertReferenceDate();if(model!=='55')throw httpError(400,'Referências disponíveis somente para NF-e.','INVALID_REFERENCE');}
   const destination=model==='55'?validateNfeDraft(draft,s):{idDest:1};
   if(model==='65'&&(input.operation.finalConsumer!==true||input.operation.presence!==1))throw httpError(400,'Opções de operação incompatíveis com a NFC-e deste PDV.','FISCAL_OPERATION_INVALID');
   if(s.environment===1 && process.env.FISCAL_PRODUCTION_ENABLED!=='true')throw httpError(409,'A emissão de produção ainda não foi habilitada neste ambiente.','PRODUCTION_DISABLED');
@@ -120,6 +122,7 @@ export async function createFiscalDocument(c,identity,body) {
   const key=accessKey({uf:s.address.uf,cnpj:s.cnpj,series,number:counter.last_number,issuedAt,code,model});
   const a=s.address;
   const infNFe={...structuredClone(draft),Id:key,versao:'4.00',emit:{CNPJCPF:s.cnpj,xNome:s.legalName,xFant:s.tradeName,IE:s.ie,CRT:s.crt,enderEmit:{xLgr:a.street,nro:a.number,xBairro:a.district,cMun:Number(a.cityCode),xMun:a.city,UF:a.uf,CEP:a.cep,fone:a.phone,cPais:1058,xPais:'BRASIL'}},ide:{cUF:ufCodes[a.uf],cNF:code,natOp:'VENDA',mod:Number(model),serie:series,nNF:counter.last_number,dhEmi:issuedAt,tpNF:1,idDest:destination.idDest,cMunFG:Number(a.cityCode),tpImp:model==='55'?1:4,tpEmis:1,cDV:Number(key.at(-1)),tpAmb:s.environment,finNFe:1,indFinal:input.operation.finalConsumer?1:0,indPres:input.operation.presence,procEmi:0,verProc:'Bansir-1'},det:draft.det.map((d,index)=>({...structuredClone(d),nItem:index+1})),transp:draft.transp||{modFrete:9}};
+  delete infNFe.references;if(draft.references)infNFe.ide.NFref=draft.references.map(refNFe=>({refNFe}));
   if(model==='55'){infNFe.dest=destination.recipient;if([2,3,9].includes(input.operation.presence))infNFe.ide.indIntermed=0;}
   if(s.environment===2){infNFe.det[0].prod.xProd='NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';if(infNFe.dest)infNFe.dest.xNome='NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';}
   const payload={draftHash:digest(draft),operation:input.operation,request:{idLote:counter.last_number,indSinc:1,NFe:{infNFe}}};

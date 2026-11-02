@@ -1,3 +1,4 @@
+import {assertReferenceDate} from '../src/postgres/fiscal-issuance.js';
 import {saleFiscalDraft} from '../src/postgres/sales.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -167,6 +168,31 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',{...body,model:'65'})).status,409);
    const state=(await send(`/sales/${sale.id}`)).body.data;assert.equal(state.fiscal_model,'55');assert.equal(state.fiscal_status,'queued');assert.equal(state.total_cents,sale.total_cents);assert.equal(await stock(product),before);
   });
+  await t.test('fiscal workspace batches persist, wait for authorization, isolate access and cancel only remaining requests',async()=>{
+   const recipient={CNPJCPF:'11222333000181',xNome:'TEST ONLY',indIEDest:1,IE:'123456789',enderDest:{xLgr:'Rua',nro:'1',xBairro:'Centro',cMun:'5103403',xMun:'Cuiaba',UF:'MT',CEP:'78000000'}};
+   const src=(await admin.query("SELECT id,payload FROM bansir.fiscal_documents WHERE tenant_id=$1 AND substring(access_key FROM 21 FOR 2)='65' LIMIT 2",[tenant.id])).rows;assert.equal(src.length,2);
+   for(const d of src){d.payload.request.NFe.infNFe.dest=recipient;await admin.query("UPDATE bansir.fiscal_documents SET status='authorized',payload=$2 WHERE id=$1",[d.id,d.payload]);}
+   const before=await stock(product),payments=(await admin.query('SELECT count(*) FROM bansir.sale_payments WHERE tenant_id=$1',[tenant.id])).rows[0].count;
+   assert.equal((await send('/fiscal/issuance/config','GET',undefined,operatorSession.token)).status,403);
+   const cfg=(await send('/fiscal/issuance/config')).body.data;assert.equal(cfg.nfeSeries,1);assert.ok(cfg.nfeNextNumber>=2);
+   const body={requestKey:randomUUID(),sourceIds:src.map(d=>d.id),recipient,operation:{finalConsumer:true,presence:1},cfop:'5929',accountingConfirmed:true};
+   assert.equal((await send('/fiscal/issuance/batches','POST',{...body,operation:{}})).status,400);
+   const created=await send('/fiscal/issuance/batches','POST',body);assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.data.id;assert.equal(created.body.data.authorized,0);
+   assert.equal((await send('/fiscal/issuance/batches','POST',body)).body.data.id,id);
+   assert.equal((await send('/fiscal/issuance/batches','POST',{...body,requestKey:randomUUID()})).status,409);
+   assert.equal((await send(`/fiscal/issuance/batches/${id}`,'GET',undefined,foreignSession.token)).status,404);
+   const control=action=>send(`/fiscal/issuance/batches/${id}/control`,'POST',{action});
+   await control('start');const first=await control('advance');assert.equal(first.status,200,JSON.stringify(first.body));assert.equal(first.body.data.authorized,0);assert.ok(first.body.data.items[0].document_id);assert.equal(first.body.data.items[1].document_id,null);
+   const again=await control('advance');assert.equal(again.body.data.items[0].document_id,first.body.data.items[0].document_id);assert.equal(again.body.data.items[1].document_id,null);
+   await control('pause');await admin.query("UPDATE bansir.fiscal_documents SET status='authorized' WHERE id=$1",[first.body.data.items[0].document_id]);
+   const paused=await control('advance');assert.equal(paused.body.data.state,'paused');assert.equal(paused.body.data.authorized,1);assert.ok(paused.body.data.authorizedCents>0);assert.equal(paused.body.data.items[1].document_id,null);
+   const payload=(await admin.query('SELECT payload FROM bansir.fiscal_documents WHERE id=$1',[first.body.data.items[0].document_id])).rows[0].payload;assert.equal(payload.request.NFe.infNFe.ide.mod,55);assert.equal(payload.request.NFe.infNFe.ide.NFref[0].refNFe.length,44);assert.equal(payload.request.NFe.infNFe.references,undefined);
+   await control('cancel');assert.equal((await control('start')).body.data.state,'cancelled');assert.equal((await control('advance')).body.data.items[1].document_id,null);
+   assert.equal(await stock(product),before);assert.equal((await admin.query('SELECT count(*) FROM bansir.sale_payments WHERE tenant_id=$1',[tenant.id])).rows[0].count,payments);
+   const other=await send('/fiscal/issuance/batches','POST',{...body,requestKey:randomUUID(),sourceIds:[src[1].id]});assert.equal(other.status,201,JSON.stringify(other.body));
+   const draft=structuredClone(src[0].payload.request.NFe.infNFe);const manual={det:draft.det,total:draft.total,pag:draft.pag,dest:recipient};manual.det[0].prod.CFOP='5102';const emitted=await send('/fiscal/issuance/manual','POST',{requestKey:randomUUID(),model:'55',operation:{finalConsumer:false,presence:2},draft:manual});assert.equal(emitted.status,202,JSON.stringify(emitted.body));
+   assert.equal((await send(`/fiscal/issuance/documents/${emitted.body.data.id}`)).body.data.status,'queued');assert.equal(await stock(product),before);
+  });
   await t.test('cash withdrawals, deposits and closing reconcile physical cash only, including cash refunds',async()=>{
    const before=(await send('/pdv/cash')).body.data.expected_cents;
    const movement={requestKey:randomUUID(),kind:'deposit',amountCents:1000,reason:'Test supply'};await send('/pdv/cash/movements','POST',movement);await send('/pdv/cash/movements','POST',movement);
@@ -248,3 +274,5 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
   });
  }finally{if(server)await new Promise(r=>server.close(r));await Promise.all([db.close(),admin.end()]);}
 });
+
+test('NFC-e reference deadline blocks new normal output references from December 14',()=>{assert.doesNotThrow(()=>assertReferenceDate(new Date('2026-12-13T12:00:00Z')));assert.throws(()=>assertReferenceDate(new Date('2026-12-14T12:00:00Z')),{code:'NFCE_REFERENCE_RESTRICTED'});});

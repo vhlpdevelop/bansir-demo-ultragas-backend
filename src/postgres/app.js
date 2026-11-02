@@ -1,3 +1,4 @@
+import {mountFiscalIssuance} from './fiscal-issuance.js';
 import {mountSmartpos} from './smartpos.js';
 import {mountFiscalStock} from './fiscal-stock.js';
 import {settingsModule} from './settings-permissions.js';
@@ -181,6 +182,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
 
   mountNotifications(app,{scoped,route,database});
   mountFiscal(app,{scoped});
+  mountFiscalIssuance(app,{scoped});
   mountSales(app,{scoped});
   mountSmartpos(app,{scoped,secret:jwtSecret});
   mountManagement(app,{scoped});
