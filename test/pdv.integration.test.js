@@ -193,6 +193,24 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const draft=structuredClone(src[0].payload.request.NFe.infNFe);const manual={det:draft.det,total:draft.total,pag:draft.pag,dest:recipient};manual.det[0].prod.CFOP='5102';const emitted=await send('/fiscal/issuance/manual','POST',{requestKey:randomUUID(),model:'55',operation:{finalConsumer:false,presence:2},draft:manual});assert.equal(emitted.status,202,JSON.stringify(emitted.body));
    assert.equal((await send(`/fiscal/issuance/documents/${emitted.body.data.id}`)).body.data.status,'queued');assert.equal(await stock(product),before);
   });
+  await t.test('receipt batches issue 65, 55 or sequential both exactly once without repeating the sale',async()=>{
+   const recipient={CNPJCPF:'12345678909',xNome:'TEST ONLY',indIEDest:9,enderDest:{xLgr:'Rua',nro:'1',xBairro:'Centro',cMun:'5103403',xMun:'Cuiaba',UF:'MT',CEP:'78000000'}};
+   for(const model of ['65','55','both']){
+    const sale=(await send('/sales','POST',order())).body.data;const tax={cfop:'5102',ncm:'22011000',taxes:{ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}}};await admin.query('UPDATE bansir.sale_items SET fiscal_profile=$2 WHERE sale_id=$1',[sale.id,{'55':tax,'65':tax}]);
+    const before=await stock(product),paid=(await send(`/sales/${sale.id}`)).body.data.paid_cents;
+    const body={requestKey:randomUUID(),saleIds:[sale.id],model,operation:{finalConsumer:true,presence:1},accountingConfirmed:true,legalConfirmed:true,...(model!=='65'?{recipient}:{}),...(model==='both'?{cfop:'5929'}:{})};
+    const created=await send('/fiscal/issuance/receipt-batches','POST',body);assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.data.id;assert.equal(created.body.data.total,model==='both'?2:1);
+    assert.equal((await send('/fiscal/issuance/receipt-batches','POST',body)).body.data.id,id);
+    assert.equal((await send('/fiscal/issuance/receipt-batches','POST',{...body,requestKey:randomUUID()})).status,409);
+    assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',{requestKey:randomUUID(),draft:{}})).body.code,'FISCAL_BATCH_RESERVED');
+    const ctl=action=>send(`/fiscal/issuance/batches/${id}/control`,'POST',{action});await ctl('start');
+    const first=await ctl('advance');assert.equal(first.status,200,JSON.stringify(first.body));const doc=first.body.data.items[0].document_id;assert.ok(doc);assert.equal(first.body.data.authorized,0);assert.equal((await ctl('advance')).body.data.items[0].document_id,doc);
+    if(model==='both')assert.equal(first.body.data.items[1].document_id,null);
+    await admin.query("UPDATE bansir.fiscal_documents SET status='authorized' WHERE id=$1",[doc]);
+    if(model==='both'){const second=await ctl('advance');assert.equal(second.status,200,JSON.stringify(second.body));assert.equal(second.body.data.authorized,1);const d2=second.body.data.items[1].document_id;assert.ok(d2);const p=(await admin.query('SELECT payload FROM bansir.fiscal_documents WHERE id=$1',[d2])).rows[0].payload;assert.equal(p.request.NFe.infNFe.ide.mod,55);assert.equal(p.request.NFe.infNFe.ide.NFref.length,1);await admin.query("UPDATE bansir.fiscal_documents SET status='authorized' WHERE id=$1",[d2]);}
+    const done=(await ctl('advance')).body.data;assert.equal(done.state,'completed');assert.equal(done.authorized,model==='both'?2:1);assert.equal(done.salesCents,sale.total_cents);assert.equal(done.authorizedCents,sale.total_cents*(model==='both'?2:1));assert.equal(await stock(product),before);assert.equal((await send(`/sales/${sale.id}`)).body.data.paid_cents,paid);
+   }
+  });
   await t.test('cash withdrawals, deposits and closing reconcile physical cash only, including cash refunds',async()=>{
    const before=(await send('/pdv/cash')).body.data.expected_cents;
    const movement={requestKey:randomUUID(),kind:'deposit',amountCents:1000,reason:'Test supply'};await send('/pdv/cash/movements','POST',movement);await send('/pdv/cash/movements','POST',movement);

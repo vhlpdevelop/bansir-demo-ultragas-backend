@@ -1,3 +1,4 @@
+import {assertNoFiscalReservation} from './fiscal-issuance.js';
 import {createSmartposCharge} from './smartpos.js';
 import {expireSmartpos,assertNoSmartpos} from './smartpos-state.js';
 import {applyTributaryUnits} from './product-fiscal-profile.js';
@@ -185,7 +186,7 @@ export function mountSales(app,{scoped}){
   if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
   const input=z.object({reason:z.string().trim().min(5).max(1000),refundConfirmed:z.literal(true),refundReference:text.default('')}).strict().parse(req.body),i=req.identity;
   const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.cancelled_at)return {data:sale};await expireSmartpos(c);await assertNoSmartpos(c,{saleId:sale.id});if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
+  if(sale.cancelled_at)return {data:sale};await assertNoFiscalReservation(c,sale.id,true);await expireSmartpos(c);await assertNoSmartpos(c,{saleId:sale.id});if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
   if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
   assertCashTerminal(cash,await requireTerminal(c,i));
   if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);
@@ -222,6 +223,7 @@ function mountSaleFiscal(app,{scoped}){
  }));
  app.post('/api/v1/sales/:id/fiscal',scoped('sales',false,async(c,req,member)=>{
   requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
+  await assertNoFiscalReservation(c,sale.id);
   if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir documento fiscal.','SALE_NOT_PAID');
   const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown())}).strict().parse(req.body);
   if(sale.document_id){const doc=(await c.query('SELECT request_key,payload FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];if(doc.request_key!==body.requestKey||hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Esta venda já possui documento fiscal.','SALE_ALREADY_INVOICED');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
