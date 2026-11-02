@@ -5,8 +5,8 @@ import {nfeRecipient} from './fiscal-models.js';
 import {saleView,saleFiscalDraft} from './sales.js';
 const explicitOperation=z.object({finalConsumer:z.boolean(),presence:z.number().int().refine(v=>[0,1,2,3,5,9].includes(v))}).strict();
 const fail=(message,code='FISCAL_BATCH_INVALID')=>{throw httpError(409,message,code);};
-export const referenceDeadline='2026-12-14';
-export function assertReferenceDate(now=new Date()){if(now.toISOString().slice(0,10)>=referenceDeadline)fail('Emissão de NF-e de saída referenciando NFC-e vedada a partir de 14/12/2026. Utilize o fluxo fiscal apropriado.','NFCE_REFERENCE_RESTRICTED');}
+export {assertReferenceDate,referenceDeadline} from './fiscal-reference-rules.js';
+import {assertReferenceDate,referenceDeadline} from './fiscal-reference-rules.js';
 async function status(c,id){
  const b=(await c.query("SELECT id,state,created_at,input->>'sourceKind' AS source_kind FROM bansir.fiscal_issuance_batches WHERE id=$1",[id])).rows[0];if(!b)throw httpError(404,'Lote não encontrado.','NOT_FOUND');
  const items=(await c.query(`SELECT i.position,i.source_id,i.sale_id,i.model,i.stage,i.document_id,s.access_key AS source_key,v.coupon_number AS sale_number,coalesce((s.payload->'request'->'NFe'->'infNFe'->'total'->'ICMSTot'->>'vNF')::numeric,v.total_cents/100.0) AS amount,d.status,d.protocol,d.rejection_code FROM bansir.fiscal_issuance_items i LEFT JOIN bansir.fiscal_documents s ON s.id=i.source_id LEFT JOIN bansir.sales v ON v.id=i.sale_id LEFT JOIN bansir.fiscal_documents d ON d.id=i.document_id WHERE i.batch_id=$1 ORDER BY i.position`,[id])).rows;

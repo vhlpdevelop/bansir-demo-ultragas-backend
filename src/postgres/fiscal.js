@@ -1,4 +1,4 @@
-import {assertReferenceDate} from './fiscal-issuance.js';
+import {assertReferenceDate} from './fiscal-reference-rules.js';
 import {fuelInput} from './product-fiscal-profile.js';
 import {mountFiscalCancellation} from './fiscal-cancellation.js';
 import {z} from 'zod';
