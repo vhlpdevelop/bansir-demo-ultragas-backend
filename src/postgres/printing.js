@@ -45,7 +45,7 @@ export async function danfePdf(doc,width=80){
  const image=await QRCode.toBuffer(root.NFe.infNFeSupl.qrCode,{width:280,margin:2,errorCorrectionLevel:'M'}),qrWidth=Math.min(110,w-20);const qrY=pdf.y;pdf.image(image,(w-qrWidth)/2,qrY,{width:qrWidth});pdf.y=qrY+qrWidth+8;if(t.vTotTrib)line('Tributos totais R$ '+money(t.vTotTrib));if(n.infAdic?.infCpl)line(n.infAdic.infCpl);pdf.page.dictionary.data.MediaBox=[0,Math.max(0,pdf.page.height-pdf.y-18),w,pdf.page.height];pdf.end();return result;
 }
 export async function receiptPdf(sale,store,width=80){
- const w=width*72/25.4,margin=10,inner=w-margin*2,font=width===58?8:9,chars=Math.floor(inner/(font*.6));
+ const w=width*72/25.4,margin=12,inner=w-margin*2,font=width===58?7.5:8.5,chars=Math.floor(inner/(font*.6));
  const address=receiptCustomerAddress(sale),notes=sale.customer_details?.notes||sale.receipt_customer_notes||'',district=sale.customer_details?.fiscal?.enderDest?.xBairro||sale.customer_district||'';
  const textLines=v=>String(v||'').split('\n').reduce((n,l)=>n+Math.max(1,Math.ceil(l.length/chars)),0);
  const height=Math.max(700,600+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
@@ -56,18 +56,18 @@ export async function receiptPdf(sale,store,width=80){
  const rule=()=>{doc.moveDown(.35);const y=doc.y;doc.save().lineWidth(.5).dash(2,{space:2}).moveTo(margin,y).lineTo(w-margin,y).stroke().restore();doc.y=y+7;};
  const pair=(label,value,size=font,bold=false)=>{doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(size);const valueWidth=Math.max(inner*.35,doc.widthOfString(value)+2),leftWidth=inner-valueWidth-4,y=doc.y;doc.text(label,margin,y,{width:leftWidth,lineGap:2});const labelEnd=doc.y;doc.text(value,margin+inner-valueWidth,y,{width:valueWidth,align:'right',lineGap:2});doc.y=Math.max(labelEnd,doc.y)+2;};
  const cnpj=String(store.document_id||'').replace(/\D/g,'');
- line(store.store_name||'Estabelecimento','center',width===58?11:13,true);
+ line(store.store_name||'Estabelecimento','center',width===58?10.5:12.5,true);
  line('CNPJ: '+(cnpj.length===14?cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5'):store.document_id||'Não informado'),'center');
  if(store.contact)line('Contato: '+store.contact,'center');if(store.address)line(store.address,'center');rule();
  const stamp=new Date(sale.created_at).toLocaleString('pt-BR',{timeZone:'America/Cuiaba',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
- if(width===80&&sale.saleNumber.length<=6){pair('Cupom: '+sale.saleNumber,'Data: '+stamp,font,true);}else{line('Cupom: '+sale.saleNumber,'left',14,true);line('Data: '+stamp);}rule();
+ if(width===80&&sale.saleNumber.length<=6){pair('Cupom: '+sale.saleNumber,'Data: '+stamp,font,true);}else{line('Cupom: '+sale.saleNumber,'left',13.5,true);line('Data: '+stamp);}rule();
  line('Cliente....: '+(sale.customer_name||'Consumidor não identificado'));line('Endereço...: '+(address||'Não informado'));line('Bairro.....: '+(district||'Não informado'));line('Telefone...: '+(sale.customer_phone||'Não informado'));rule();
  line('*** Observações do cliente ***','center',font,true);rule();line(notes||'Sem observações.');rule();
  const qtyWidth=inner*.23,priceWidth=inner*.25,subWidth=inner*.29,qtyX=margin+inner-qtyWidth-priceWidth-subWidth,priceX=qtyX+qtyWidth,subX=priceX+priceWidth;
  const tableRow=(left,qty,price,total,bold=false)=>{doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(font);const y=doc.y;let bottom=y;doc.text(left,margin,y,{width:qtyX-margin-3});bottom=Math.max(bottom,doc.y);doc.text(qty,qtyX,y,{width:qtyWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(price,priceX,y,{width:priceWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(total,subX,y,{width:subWidth,align:'right'});doc.y=Math.max(bottom,doc.y)+4;};
  tableRow(width===58?'Prod.':'Produto','Qt','Preço','Subtotal',true);rule();
  for(const item of sale.items){line(item.product_name);tableRow('........',Number(item.quantity).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3}),money(item.unit_price_cents),money(item.gross_cents));doc.y+=3;}
- rule();pair('(+) Subtotal',money(sale.subtotal_cents));pair('(+) Taxa entrega',money(sale.delivery_fee_cents));pair('(-) Desconto',money(sale.discount_cents));pair('(=) TOTAL',money(sale.total_cents),width===58?13:16,true);rule();
+ rule();pair('(+) Subtotal',money(sale.subtotal_cents));pair('(+) Taxa entrega',money(sale.delivery_fee_cents));pair('(-) Desconto',money(sale.discount_cents));pair('(=) TOTAL',money(sale.total_cents),width===58?12.5:15.5,true);rule();
  const labels={cash:'Dinheiro',pix:'PIX',credit_card:'Cartão de crédito',debit_card:'Cartão de débito'},totals={};
  let received=0,change=0;for(const p of sale.payments){const amount=Number(p.amount_cents),cashReceived=Number(p.received_cents??amount);totals[p.method]=(totals[p.method]||0)+amount;received+=p.method==='cash'?cashReceived:amount;if(p.method==='cash')change+=cashReceived-amount;}
  for(const [method,value]of Object.entries(totals))pair('(=) '+(labels[method]||method),money(value));
