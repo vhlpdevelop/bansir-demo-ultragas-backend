@@ -11,7 +11,8 @@ export function customerSnapshot(customer){
 }
 export function receiptCustomerAddress(sale){
  const c=sale.customer_details||sale.customer_snapshot||{},a=c.fiscal?.enderDest;
- return sale.delivery_address?.trim()||c.address?.trim()||sale.receipt_customer_address?.trim()||
+ const delivery=sale.delivery_address?.trim()||'';
+ return (/[a-zà-ÿ]/i.test(delivery)?delivery:'')||c.address?.trim()||sale.receipt_customer_address?.trim()||delivery||
   (a?[a.xLgr,a.nro,a.xBairro,[a.xMun,a.UF].filter(Boolean).join('/'),a.CEP].filter(Boolean).join(', '):'');
 }
 export function saleCustomerRecipient(sale){
