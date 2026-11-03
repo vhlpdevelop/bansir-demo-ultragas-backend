@@ -1,3 +1,4 @@
+import {mountAgreements} from './agreement-routes.js';
 import {mountSupplierCnpj} from './supplier-cnpj.js';
 import {mountFiscalIssuance} from './fiscal-issuance.js';
 import {mountSmartpos} from './smartpos.js';
@@ -186,6 +187,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountFiscalIssuance(app,{scoped});
   mountSales(app,{scoped});
   mountSmartpos(app,{scoped,secret:jwtSecret});
+  mountAgreements(app,{scoped});
   mountManagement(app,{scoped});
   mountManagementReports(app,{scoped});
   mountPrinting(app,{scoped});

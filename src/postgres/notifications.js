@@ -26,7 +26,7 @@ export function mountNotifications(app,{scoped,route,database}) {
  const vapid=configureVapid(webpush,process.env);
  app.get('/api/v1/notifications/vapid-public-key',route(async req=>{await database.transaction(req.identity,async()=>{});return {data:{publicKey:vapid.publicKey},meta:{publicKey:vapid.publicKey}};}));
  const own=fn=>route(async req=>database.transaction(req.identity,client=>fn(client,req)));
- app.get('/api/v1/notifications',own(async c=>({data:(await c.query('SELECT id AS _id,title,body,created_at AS date,read_at IS NOT NULL AS read FROM bansir.notifications ORDER BY created_at DESC LIMIT 100')).rows})));
+ app.get('/api/v1/notifications',own(async c=>({data:(await c.query('SELECT id AS _id,title,body,created_at AS date,read_at IS NOT NULL AS read,metadata FROM bansir.notifications ORDER BY created_at DESC LIMIT 100')).rows})));
  app.get('/api/v1/notifications/devices',own(async c=>({data:(await c.query('SELECT details,device_id AS "deviceId",enabled AS "pushEnabled",updated_at AS "lastActive" FROM bansir.push_devices')).rows.map(d=>({...d,...d.details}))})));
  app.post('/api/v1/notifications/devices/register',own(async(c,req)=>{
   const data=deviceInput.parse(req.body),i=req.identity;
@@ -64,6 +64,7 @@ export async function deliverNotification(queue,job,{send=webpush.sendNotificati
   if(job.payload.category==='fleet'&&!(await c.query('SELECT bansir.fleet_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
   if(job.payload.category==='fiscal'&&!(await c.query('SELECT bansir.fiscal_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
   if(job.payload.category==='financial'&&!(await c.query('SELECT bansir.financial_recipient_allowed($1,$2,$3,$4) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId,job.payload.financialPart])).rows[0].allowed)return [];
+  if(job.payload.category==='agreement'&&(!(await c.query('SELECT bansir.agreement_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed||!(await c.query('SELECT bansir.agreement_alert_needed($1,$2,$3,$4,$5) AS needed',[job.tenant_id,job.establishment_id,job.payload.agreementId,job.payload.periodEnd,job.payload.event])).rows[0].needed))return [];
   return (await c.query('SELECT * FROM bansir.push_devices WHERE user_id=$1 AND enabled AND ($2::text IS NULL OR device_id=$2)',[job.payload.userId,job.payload.deviceId||null])).rows;
  });
  let transient=false;

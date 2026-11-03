@@ -1,3 +1,4 @@
+import {prepareAgreement,checkAgreementCredit,attachAgreement} from './agreements.js';
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
 import {customerSnapshot,saleCustomerRecipient,receiptCustomerAddress} from './customer-fiscal.js';
 import {confirmManualDelivery} from './manual-delivery.js';
@@ -30,7 +31,7 @@ const saleInput=z.object({requestKey:uuid,smartposProvider:z.enum(['pagbank','me
 const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
-async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');assertCashTerminal(row,await requireTerminal(c,i));return row;}
+export async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');assertCashTerminal(row,await requireTerminal(c,i));return row;}
 // Shared by sale details and printable receipts: unit RLS alone does not
 // authorize an operator to read another operator's sale in the same unit.
 export async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
@@ -46,6 +47,7 @@ export async function saleView(c,id){
  if(!s)return null;
  s.customer_details=Object.keys(s.customer_snapshot||{}).length?s.customer_snapshot:
   s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
+ s.agreement=(await c.query('SELECT agreement_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1',[id])).rows[0]||null;
  s.receipt_address=receiptCustomerAddress(s);
  s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
    (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at)
@@ -67,10 +69,10 @@ function checkPayment(p,amount){
  if(p.method!=='cash' && p.receivedCents!==undefined && p.receivedCents!==amount)fail('Troco é permitido somente em dinheiro.','INVALID_CHANGE',400);
  return received;
 }
-async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquirerData}={}){
+export async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquirerData}={}){
  const paymentHash=hash({...input,userId:i.userId});
- const previous=(await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
- if(previous){if(previous.request_hash!==paymentHash||previous.sale_id!==sale.id)fail('Identificador de pagamento já utilizado.','IDEMPOTENCY_CONFLICT');return;}
+ const previous=(await c.query('SELECT id,sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
+ if(previous){if(previous.request_hash!==paymentHash||previous.sale_id!==sale.id)fail('Identificador de pagamento já utilizado.','IDEMPOTENCY_CONFLICT');return previous.id;}
  await assertNoSmartpos(c,{saleId:sale.id,exceptId:smartposChargeId});
  const view=await saleView(c,sale.id);if(view.cancelled_at)fail('Venda cancelada.','SALE_CANCELLED');
  if(input.amountCents>view.outstanding_cents)fail('Pagamento supera o saldo pendente.','PAYMENT_EXCEEDS_BALANCE');
@@ -79,12 +81,14 @@ async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquirerData}
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1,smartposChargeId||null,acquirerData||null]);
  if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
+ return payment.id;
 }
 export async function registerSale(c,i,member,body,{quotedItems,voucherReservation=false}={}){
  const input=saleInput.parse(body),requestHash=hash({input,userId:i.userId});
  await lock(c,`${unitKey(i)}:request:${input.requestKey}`);
  const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
  if(previous){if(previous.request_hash!==requestHash)fail('Identificador de venda já utilizado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return saleView(c,previous.id);}
+ const agreement=await prepareAgreement(c,i,member,input);
  const cash=await openCash(c,i);
  if(input.smartposProvider&&!['credit_card','debit_card','pix'].includes(input.payment.method))fail('SmartPOS exige crédito ou débito individual.','SMARTPOS_METHOD_REQUIRED',400);
  if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
@@ -117,9 +121,11 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  const parts=input.smartposProvider?[]:input.payment.method==='split'?input.payment.parts:input.payment.method==='pending'?[]:[{...input.payment,amountCents:total}];
  if(parts.length&&parts.reduce((n,p)=>n+p.amountCents,0)!==total)fail('A soma dos pagamentos deve ser igual ao total da venda.','PAYMENT_TOTAL_MISMATCH',400);
  for(const part of parts)checkPayment(part,part.amountCents);
+ await checkAgreementCredit(c,agreement,total);
  const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);
  const {rows:[sale]}=await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone,customer_snapshot)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'',customerSnapshot({...customer,address})]);
+ await attachAgreement(c,i,sale,agreement);
  for(const item of items){
   await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[i.tenantId,i.establishmentId,sale.id,item.productId,item.position,item.product.name,item.product.barcode,item.product.unit,item.product.ncm,item.quantity,item.unitPrice,item.gross,item.discount,item.product.cost_cents]);

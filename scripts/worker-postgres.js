@@ -26,7 +26,7 @@ try{
  while(!stopping){
   let job;
   try{
-   if(kind==='notification'&&Date.now()-lastFleetCheck>=60000){lastFleetCheck=Date.now();try{await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');if(process.env.FINANCIAL_ALERTS_ENABLED==='true')await queue.pool.query('SELECT bansir.schedule_financial_alerts()');}catch{console.error('[worker:notification] Falha ao agendar alertas; entrega da fila continua.');}}
+   if(kind==='notification'&&Date.now()-lastFleetCheck>=60000){lastFleetCheck=Date.now();try{await queue.pool.query('SELECT bansir.schedule_fleet_alerts()');if(process.env.FINANCIAL_ALERTS_ENABLED==='true'){await queue.pool.query('SELECT bansir.schedule_financial_alerts()');await queue.pool.query('SELECT bansir.schedule_agreement_alerts()');}}catch{console.error('[worker:notification] Falha ao agendar alertas; entrega da fila continua.');}}
    if(kind==='fiscal')await queue.pool.query('SELECT bansir.schedule_fiscal_monitors()');
    job=monitorOnly?undefined:await queue.claim(kind);
    if(!job){await new Promise(resolve=>{const timer=setTimeout(resolve,2000);wake=()=>{clearTimeout(timer);resolve();};});continue;}

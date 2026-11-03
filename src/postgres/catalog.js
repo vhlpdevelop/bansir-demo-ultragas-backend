@@ -32,7 +32,7 @@ export function catalogView(row,member) {
 export function requirePermission(member, module, read = false) {
   const routes = member.allowed_routes || [];
   if (['admin', 'superadmin'].includes(member.role) || routes.some(r => r === module || (!module.startsWith('settings')&&module!=='fiscal'&&r.startsWith(`${module}-`))) || (module.startsWith('settings-')&&routes.includes('settings')) || (read&&['settings-store','settings-terminals'].includes(module)&&routes.includes('sales')) ||
-      (read && module === 'products' && routes.includes('sales'))) return;
+      (read && module === 'products' && routes.includes('sales')) || (read && module==='agreements' && routes.some(r=>['financial','financial-receivables'].includes(r)))) return;
   throw httpError(403, 'Você não tem permissão para esta ação nesta empresa.', 'FORBIDDEN');
 }
 export function resourceId(id) {

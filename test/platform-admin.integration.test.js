@@ -40,7 +40,10 @@ test('Platform isolation, mandatory password change, contracts, invoices and rev
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,nextDue:'2026-02-31'},fresh.token)).status,400);
   assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
   const current=await send('/auth/me','GET',null,customer.token);
-  assert.deepEqual(current.body.data.features,contract.features);
+  assert.deepEqual(current.body.data.features,{...contract.features,agreements:true});
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',{...contract,features:{...contract.features,agreements:false}},fresh.token)).status,200);
+  assert.equal((await send(`/platform/tenants/${tenant.id}`,'PUT',contract,fresh.token)).status,200);
+  assert.equal((await send('/auth/me','GET',null,customer.token)).body.data.features.agreements,false);
   assert.equal((await send('/storefront/settings','GET',null,customer.token)).status,403);
   assert.equal((await send('/financial/pricing-intelligence','GET',null,customer.token)).status,200);
   await admin.query("INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,'contract-test',true,'{}')",[tenant.id,tenant.establishmentId]);

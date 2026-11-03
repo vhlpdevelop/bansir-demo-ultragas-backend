@@ -16,6 +16,7 @@ allowedTests.push('test/pdv-terminals.integration.test.js');
 allowedTests.push('test/browser-auth.integration.test.js','test/notification-stream.integration.test.js','test/deliveries.integration.test.js');
 allowedTests.push('test/settings-reports.integration.test.js','test/delivery-routing.integration.test.js');
 allowedTests.push('test/smartpos.integration.test.js');
+allowedTests.push('test/agreements.integration.test.js');
 const selectedTests=process.argv.length>2?process.argv.slice(2):allowedTests;
 if(selectedTests.some(file=>!allowedTests.includes(file)))throw new Error('Arquivo de teste não permitido.');
 let created = false;
