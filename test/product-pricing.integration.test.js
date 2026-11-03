@@ -6,6 +6,7 @@ import {createDatabase} from '../src/postgres/database.js';
 import {createPostgresApp} from '../src/postgres/app.js';
 import {provisionTenant} from '../src/postgres/provision.js';
 import {defaultStorefront} from '../src/postgres/storefront.js';
+import {saleFiscalDraft} from '../src/postgres/sales.js';
 import {pricingDay,productQuote} from '../src/postgres/product-pricing.js';
 
 test('Product pricing, Saturday calendar and Gas do Povo',{skip:!process.env.TEST_POSTGRES_URL,timeout:90000},async t=>{
@@ -49,6 +50,18 @@ test('Product pricing, Saturday calendar and Gas do Povo',{skip:!process.env.TES
    const replay=await send(`/storefront/orders/${saturdayOrder.body.data.id}/accept`,'POST',{customerConfirmed:true});assert.equal(replay.body.data.id,accepted.body.data.id);
    const forged=await send('/sales','POST',{requestKey:randomUUID(),quotedItems:[{productId:gas.id,priceCents:1}],items:[item(gas,1)],payment:{method:'cash',confirmed:true,receivedCents:1}});assert.equal(forged.status,400);
    const snapshot=(await admin.query('SELECT pricing_context FROM bansir.storefront_orders WHERE id=$1',[saturdayOrder.body.data.id])).rows[0];assert.equal(snapshot.pricing_context.date,'2026-10-31');
+  });
+  await t.test('PDV persists program selection and online receipts without physical cash',async()=>{
+   const before=(await send('/pdv/cash')).body.data;
+   const payload={requestKey:randomUUID(),items:[{...item(program,14500),gasDoPovo:true}],payment:{method:'online',confirmed:true}};
+   const result=await send('/sales','POST',payload);assert.equal(result.status,201,JSON.stringify(result.body));const sale=result.body.data;
+   assert.equal(sale.items[0].gas_do_povo,true);assert.equal(sale.payments[0].method,'online');assert.equal(sale.outstanding_cents,0);
+   assert.equal((await send('/sales','POST',payload)).body.data.id,sale.id);
+   const after=(await send('/pdv/cash')).body.data;assert.equal(after.expected_cents,before.expected_cents);assert.equal((after.paymentTotals.online||0)-(before.paymentTotals.online||0),14500);
+   const draft=saleFiscalDraft(sale,'65');assert.equal(draft.pag.detPag[0].tPag,'99');assert.equal(draft.pag.detPag[0].xPag,'Pagamento online');assert.equal(draft.pag.detPag[0].card,undefined);
+   const forged=await send('/sales','POST',{...payload,requestKey:randomUUID(),items:[{...item(regular,800),gasDoPovo:true}]});assert.equal(forged.status,409);assert.equal(forged.body.code,'PROGRAM_PRODUCT_DISABLED');
+   const normal=await send('/sales','POST',{...payload,requestKey:randomUUID(),items:[{...item(program,14500),gasDoPovo:false}]});assert.equal(normal.status,201);assert.equal(normal.body.data.items[0].gas_do_povo,false);
+   const split=await send('/sales','POST',{requestKey:randomUUID(),items:[item(regular,800)],payment:{method:'split',parts:[{method:'cash',confirmed:true,amountCents:300,receivedCents:500},{method:'online',confirmed:true,amountCents:500}]}});assert.equal(split.status,201,JSON.stringify(split.body));assert.equal((await send('/pdv/cash')).body.data.expected_cents,after.expected_cents+300);
   });
   await t.test('promotions persist, quote real discounted amounts and preserve accepted order prices',async()=>{
    const result=await send('/products/'+water.id,'PUT',{fulfillmentPricing:{deliveryPrice:15,promotionPickupPrice:10,promotionDeliveryPrice:13}});assert.equal(result.status,200);

@@ -68,9 +68,9 @@ export async function receiptPdf(sale,store,width=80){
  const qtyWidth=inner*.23,priceWidth=inner*.25,subWidth=inner*.29,qtyX=margin+inner-qtyWidth-priceWidth-subWidth,priceX=qtyX+qtyWidth,subX=priceX+priceWidth;
  const tableRow=(left,qty,price,total,bold=false)=>{doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(font);const y=doc.y;let bottom=y;doc.text(left,margin,y,{width:qtyX-margin-3});bottom=Math.max(bottom,doc.y);doc.text(qty,qtyX,y,{width:qtyWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(price,priceX,y,{width:priceWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(total,subX,y,{width:subWidth,align:'right'});doc.y=Math.max(bottom,doc.y)+4;};
  tableRow(width===58?'Prod.':'Produto','Qt','Preço','Subtotal',true);rule();
- for(const item of sale.items){line(item.product_name);tableRow('........',Number(item.quantity).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3}),money(item.unit_price_cents),money(item.gross_cents));doc.y+=3;}
+ for(const item of sale.items){line(item.product_name);if(item.gas_do_povo)line('Gás do Povo');tableRow('........',Number(item.quantity).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3}),money(item.unit_price_cents),money(item.gross_cents));doc.y+=3;}
  rule();pair('(+) Subtotal',money(sale.subtotal_cents));pair('(+) Taxa entrega',money(sale.delivery_fee_cents));pair('(-) Desconto',money(sale.discount_cents));pair('(=) TOTAL',money(sale.total_cents),width===58?12.5:15.5,true);rule();
- const labels={cash:'Dinheiro',pix:'PIX',credit_card:'Cartão de crédito',debit_card:'Cartão de débito'},totals={};
+ const labels={cash:'Dinheiro',pix:'PIX',credit_card:'Cartão de crédito',debit_card:'Cartão de débito',online:'Pagamento online'},totals={};
  let received=0,change=0;for(const p of sale.payments){const amount=Number(p.amount_cents),cashReceived=Number(p.received_cents??amount);totals[p.method]=(totals[p.method]||0)+amount;received+=p.method==='cash'?cashReceived:amount;if(p.method==='cash')change+=cashReceived-amount;}
  for(const [method,value]of Object.entries(totals))pair('(=) '+(labels[method]||method),money(value));
  pair('(=) Total recebido',money(received),font,true);pair('(=) Troco',money(change));rule();

@@ -9,7 +9,7 @@ const modes=reportCatalog.map(x=>x.key);
 const dateOnly=v=>v instanceof Date?`${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`:String(v).slice(0,10);
 const currency=v=>Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 export async function managementReport(c,query,member={role:'admin'},context=null){
- const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
+ const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
  if(d.endDate<d.startDate||(+new Date(d.endDate)-+new Date(d.startDate))>366*86400000)throw httpError(400,'Selecione um período de até um ano.','INVALID_PERIOD');
  const features=context?.features||await tenantFeatures(c),isAdmin=['admin','superadmin'].includes(member.role);
  const coverage=reportCatalog.map(x=>({...x,available:(!x.feature||features[x.feature]===true)&&(!x.adminOnly||isAdmin)}));
