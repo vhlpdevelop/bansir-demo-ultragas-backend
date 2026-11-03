@@ -61,6 +61,7 @@ export async function receiptPdf(sale,store,width=80){
  if(store.contact)line('Contato: '+store.contact,'center');if(store.address)line(store.address,'center');rule();
  const stamp=new Date(sale.created_at).toLocaleString('pt-BR',{timeZone:'America/Cuiaba',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
  if(width===80&&sale.saleNumber.length<=6){pair('Cupom: '+sale.saleNumber,'Data: '+stamp,font,true);}else{line('Cupom: '+sale.saleNumber,'left',13.5,true);line('Data: '+stamp);}rule();
+ if(sale.revision>0)line('Revisão administrativa: '+sale.revision);
  line('Cliente....: '+(sale.customer_name||'Consumidor não identificado'));line('Endereço...: '+(address||'Não informado'));line('Bairro.....: '+(district||'Não informado'));line('Telefone...: '+(sale.customer_phone||'Não informado'));rule();
  if(sale.agreement){line('Convênio: '+sale.agreement.snapshot.name);line('Responsável: '+sale.agreement.snapshot.payerName);line('Vencimento: '+sale.agreement.due_date.split('-').reverse().join('/'));line(sale.outstanding_cents>0?'PAGAMENTO POR CONVENIO - A RECEBER':'PAGAMENTO POR CONVENIO - QUITADO');rule();}
  line('*** Observações do cliente ***','center',font,true);rule();line(notes||'Sem observações.');rule();

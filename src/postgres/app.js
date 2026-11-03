@@ -1,3 +1,4 @@
+import {validationMessage} from './validation-message.js';
 import {mountAgreements} from './agreement-routes.js';
 import {mountSupplierCnpj} from './supplier-cnpj.js';
 import {mountFiscalIssuance} from './fiscal-issuance.js';
@@ -210,7 +211,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.use((error, req, res, next) => {
     try{onError?.(error);}catch{/* Observability cannot change the response. */}
     if (res.headersSent) return next(error);
-    if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: error.issues[0]?.message || 'Dados inválidos.' });
+    if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: validationMessage(error.issues[0]), fields:error.issues.map(issue=>({path:issue.path,message:validationMessage(issue)})) });
     if (error.code === '23505') return res.status(409).json({ success: false, code: 'CONFLICT', message: 'Já existe um registro com este identificador nesta empresa.' });
     if (error.code === '23503') return res.status(409).json({ success: false, code: 'INVALID_REFERENCE', message: 'O vínculo informado não pertence a esta empresa ou não está disponível.' });
     if (error.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'Requisição muito grande.' });

@@ -1,3 +1,4 @@
+import {mountSaleEditing} from './sale-editing.js';
 import {prepareAgreement,checkAgreementCredit,attachAgreement} from './agreements.js';
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
 import {customerSnapshot,saleCustomerRecipient,receiptCustomerAddress} from './customer-fiscal.js';
@@ -144,6 +145,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
 }
 
 export function mountSales(app,{scoped}){
+ mountSaleEditing(app,{scoped,saleView,ownedSale});
  mountSaleCustomization(app,{scoped});
  app.get('/api/v1/pdv/terminal-notice',scoped('sales',true,async(c,req)=>{
   const terminal=await currentTerminal(c,req.identity);if(!terminal)return {data:null};
@@ -258,7 +260,7 @@ function mountSaleFiscal(app,{scoped}){
   if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir documento fiscal.','SALE_NOT_PAID');
   const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown())}).strict().parse(req.body);
   if(sale.document_id){const doc=(await c.query('SELECT request_key,payload FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];if(doc.request_key!==body.requestKey||hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Esta venda já possui documento fiscal.','SALE_ALREADY_INVOICED');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
-  const expected=saleFiscalDraft(sale),draft=body.draft;
+  const expected=saleFiscalDraft(sale,body.model),draft=body.draft;
   if(body.model==='55'){nfeRecipient.parse(draft.dest);expected.dest=draft.dest;}
   if(!Array.isArray(draft.det)||draft.det.length!==expected.det.length)fail('Itens fiscais diferentes da venda.','FISCAL_SALE_MISMATCH',400);
   for(let n=0;n<expected.det.length;n++){const p=draft.det[n]?.prod,e=expected.det[n].prod;if(!p||p.cProd!==e.cProd||p.xProd!==e.xProd||p.qCom!==e.qCom||p.vUnCom!==e.vUnCom||p.vProd!==e.vProd||Number(p.vDesc||0)!==Number(e.vDesc||0)||Number(p.vFrete||0)!==Number(e.vFrete||0)||p.uCom!==e.uCom)fail('Valores ou produtos fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);}

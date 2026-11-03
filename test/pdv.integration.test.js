@@ -138,6 +138,7 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const body={requestKey:randomUUID(),draft};const issue=await send(`/sales/${sale.id}/fiscal`,'POST',body);assert.equal(issue.status,202,JSON.stringify(issue.body));assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',body)).body.data.id,issue.body.data.id);
    const state=(await send(`/sales/${sale.id}`)).body.data;assert.equal(state.invoiceIssued,false);assert.equal(state.fiscal_status,'queued');assert.equal(state.access_key.length,44);
    assert.equal((await send(`/sales/${sale.id}/cancel`,'POST',{reason:'Must cancel fiscally',refundConfirmed:true})).status,409);
+   const edit=await send(`/sales/${sale.id}/edit`,'PATCH',{requestKey:randomUUID(),revision:state.revision,reason:'Attempt edit after document',customer:{...state.customer_details,name:'Changed name'},deliveryAddress:state.delivery_address});assert.equal(edit.body.code,'SALE_EDIT_LOCKED');
    assert.equal((await send(`/sales/${sale.id}/fiscal-draft`,'GET',undefined,operatorSession.token)).status,403);
   });
   await t.test('invoice checkout opens fiscal review before identifying the recipient; customer edits lock after invoice',async()=>{
