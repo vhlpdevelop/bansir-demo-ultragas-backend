@@ -14,8 +14,8 @@ function validDocument(value){
 const text=z.string().trim().min(1).max(60);
 export const nfeRecipient=z.object({
  CNPJCPF:z.string().regex(/^(\d{11}|\d{14})$/).refine(validDocument,'CPF/CNPJ do destinatário inválido.'),xNome:text,
- indIEDest:z.number().int().refine(v=>[1,2,9].includes(v)),IE:z.string().regex(/^\d{2,14}$/).optional(),
- enderDest:z.object({xLgr:text,nro:z.string().trim().min(1).max(20),xBairro:text,cMun:z.string().regex(/^\d{7}$/),xMun:text,UF:z.enum(Object.keys(ufs)),CEP:z.string().regex(/^\d{8}$/),cPais:z.literal(1058).default(1058),xPais:z.literal('BRASIL').default('BRASIL')}).strict()
+ email:z.email().max(254).optional(),indIEDest:z.number().int().refine(v=>[1,2,9].includes(v)),IE:z.string().regex(/^\d{2,14}$/).optional(),
+ enderDest:z.object({xLgr:text,nro:z.string().trim().min(1).max(20),xBairro:text,cMun:z.string().regex(/^\d{7}$/),xMun:text,UF:z.enum(Object.keys(ufs)),CEP:z.string().regex(/^\d{8}$/),fone:z.string().regex(/^\d{6,14}$/).optional(),cPais:z.literal(1058).default(1058),xPais:z.literal('BRASIL').default('BRASIL')}).strict()
 }).strict().superRefine((d,c)=>{
  if(d.indIEDest===1&&!d.IE)c.addIssue({code:'custom',message:'Informe a inscrição estadual do destinatário contribuinte.'});
  if(d.indIEDest!==1&&d.IE)c.addIssue({code:'custom',message:'Inscrição estadual incompatível com a indicação de contribuinte.'});

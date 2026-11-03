@@ -1,3 +1,4 @@
+import {readPdfTable} from '../src/postgres/pdf-import.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
@@ -175,6 +176,17 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const direct=await send('/sales','POST',{requestKey:randomUUID(),items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}],deliveryMode:'delivery',deliveryAddress:'Rua Teste 100',customerName:'Cliente teste',customerPhone:'65999997777',payment:{method:'pending',term:'delivery'}});assert.equal(direct.status,201,JSON.stringify(direct.body));
    const paid=await send(`/sales/${direct.body.data.id}/payments`,'POST',pay(12045));assert.equal(paid.body.data.delivery.status,'pending');
    const manual=await send(`/sales/${direct.body.data.id}/confirm-delivery`,'POST',{requestKey:randomUUID(),confirmed:true});assert.equal(manual.status,200,JSON.stringify(manual.body));assert.equal(manual.body.data.delivery.status,'delivered');assert.equal(manual.body.data.delivery.confirmation.userId,actor);
+  });
+  await t.test('selected customer fiscal fields and address follow sale and receipt without losing snapshots',async()=>{
+   const fiscalData={indIEDest:9,enderDest:{xLgr:'Rua Fiscal',nro:'12',xBairro:'Centro',cMun:'5002209',xMun:'Bonito',UF:'MS',CEP:'79290000'}};
+   const created=await send('/customers','POST',{name:'Cliente Fiscal Teste',phone:'65999994444',address:'Rua do cadastro, 12',email:'fiscal@example.invalid',notes:'Referencia da casa',fiscalData});assert.equal(created.status,201,JSON.stringify(created.body));
+   const customer=created.body.data;assert.equal(customer.fiscal_data.enderDest.cMun,'5002209');
+   const sale=await send('/sales','POST',{requestKey:randomUUID(),customerId:customer.id,customerDocument:'11144477735',items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}],deliveryMode:'pickup',payment:{method:'pix',confirmed:true}});assert.equal(sale.status,201,JSON.stringify(sale.body));assert.equal(sale.body.data.customer_id,customer.id);assert.equal(sale.body.data.customer_document,'11144477735');assert.equal(sale.body.data.customer_details.address,'Rua do cadastro, 12');
+   const updated=await send(`/customers/${customer.id}`,'PUT',{name:'Nome alterado depois',phone:'65999994444',address:'Endereco alterado depois',fiscalData:{...fiscalData,enderDest:{...fiscalData.enderDest,xLgr:'Outra rua'}}});assert.equal(updated.status,200,JSON.stringify(updated.body));
+   const detail=(await send(`/sales/${sale.body.data.id}`)).body.data;assert.equal(detail.customer_details.address,'Rua do cadastro, 12');assert.equal(detail.customer_details.fiscal.enderDest.xLgr,'Rua Fiscal');
+   const draft=await send(`/sales/${detail.id}/fiscal-draft?model=55`);assert.equal(draft.status,200,JSON.stringify(draft.body));assert.equal(draft.body.data.dest.CNPJCPF,'11144477735');assert.equal(draft.body.data.dest.xNome,'Cliente Fiscal Teste');assert.equal(draft.body.data.dest.enderDest.xLgr,'Rua Fiscal');assert.equal(draft.body.data.dest.email,'fiscal@example.invalid');assert.ok(draft.body.data.dest.enderDest.fone);
+   const receipt=await send(`/sales/${detail.id}/receipt?width=80`);assert.equal(receipt.status,200,JSON.stringify(receipt.body));const parsed=await readPdfTable(receipt.body.data.base64);const text=parsed.pages.flatMap(p=>p.lines.flatMap(l=>l.items.map(i=>i.text))).join(' ');assert.match(text,/Rua do cadastro/);assert.match(text,/Centro/);assert.ok(!text.includes('Endereco alterado depois'));
+   assert.equal((await send(`/sales/${detail.id}/fiscal-draft?model=55`,'GET',undefined,{token:s2.token})).status,404);
   });
   await t.test('business hours block public checkout, validate calendars and keep conversations private',async()=>{
    const hours={enabled:true,ignoreWhatsappOutsideHours:true,closingSoonMinutes:30,days:Array.from({length:7},(_,day)=>({day,enabled:false,open:'08:00',close:'18:00'}))};

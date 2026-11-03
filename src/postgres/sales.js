@@ -1,4 +1,5 @@
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
+import {customerSnapshot,saleCustomerRecipient,receiptCustomerAddress} from './customer-fiscal.js';
 import {confirmManualDelivery} from './manual-delivery.js';
 import {routeUnitLock} from './delivery-route-state.js';
 import {createSmartposCharge} from './smartpos.js';
@@ -43,6 +44,9 @@ export async function saleView(c,id){
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
  if(!s)return null;
+ s.customer_details=Object.keys(s.customer_snapshot||{}).length?s.customer_snapshot:
+  s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
+ s.receipt_address=receiptCustomerAddress(s);
  s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
    (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at)
     FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id
@@ -87,7 +91,11 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
  if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir o documento fiscal.','SALE_NOT_PAID');}
  let customer={name:input.customerName,document:input.customerDocument,phone:input.customerPhone,address:input.deliveryAddress};
- if(input.customerId){customer=(await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active',[input.customerId])).rows[0];if(!customer)fail('Cliente não encontrado neste estabelecimento.','CUSTOMER_NOT_FOUND',404);}
+ if(input.customerId){customer=(await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active',[input.customerId])).rows[0];if(!customer)fail('Cliente não encontrado neste estabelecimento.','CUSTOMER_NOT_FOUND',404);
+  const document=input.customerDocument||customer.document;
+  customer={...customer,name:input.customerName||customer.name,document,phone:input.customerPhone||customer.phone,address:input.deliveryAddress||customer.address,
+   fiscal_data:customer.document&&document!==customer.document?{}:customer.fiscal_data};
+ }
  const deliverer=input.deliveryEmployeeId?(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active',[input.deliveryEmployeeId])).rows[0]:null;
  if(input.deliveryEmployeeId&&!deliverer)fail('Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND',404);
  // The recipient is checked when the user chooses and submits the fiscal document.
@@ -110,8 +118,8 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  if(parts.length&&parts.reduce((n,p)=>n+p.amountCents,0)!==total)fail('A soma dos pagamentos deve ser igual ao total da venda.','PAYMENT_TOTAL_MISMATCH',400);
  for(const part of parts)checkPayment(part,part.amountCents);
  const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);
- const {rows:[sale]}=await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'']);
+ const {rows:[sale]}=await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone,customer_snapshot)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'',customerSnapshot({...customer,address})]);
  for(const item of items){
   await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[i.tenantId,i.establishmentId,sale.id,item.productId,item.position,item.product.name,item.product.barcode,item.product.unit,item.product.ncm,item.quantity,item.unitPrice,item.gross,item.discount,item.product.cost_cents]);
@@ -257,7 +265,7 @@ export function saleFiscalDraft(sale,model='65'){
  const method={cash:'01',pix:'17',credit_card:'03',debit_card:'04'};
  const draft={det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.comb?{comb:structuredClone(item.fiscal_profile[model].comb)}:{}),...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
  total:{ICMSTot:{vBC:0,vICMS:0,vICMSDeson:0,vFCP:0,vBCST:0,vST:0,vFCPST:0,vFCPSTRet:0,vProd:sale.subtotal_cents/100,vFrete:sale.delivery_fee_cents/100,vSeg:0,vDesc:sale.discount_cents/100,vII:0,vIPI:0,vIPIDevol:0,vPIS:0,vCOFINS:0,vOutro:0,vNF:sale.total_cents/100}},
- pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:p.smartpos_charge_id?1:2,...(p.smartpos_charge_id?{CNPJ:p.acquirer_data?.acquirerCnpj,tBand:p.acquirer_data?.brandCode}:{}),...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...(sale.customer_document?{dest:{CNPJCPF:sale.customer_document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
+ pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:p.smartpos_charge_id?1:2,...(p.smartpos_charge_id?{CNPJ:p.acquirer_data?.acquirerCnpj,tBand:p.acquirer_data?.brandCode}:{}),...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...((sale.customer_document||sale.customer_details?.document)?{dest:model==='55'?saleCustomerRecipient(sale):{CNPJCPF:sale.customer_document||sale.customer_details.document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
  return applyTributaryUnits(draft,sale,model);
 }
 

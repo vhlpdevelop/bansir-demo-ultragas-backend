@@ -1,3 +1,4 @@
+import {receiptCustomerAddress} from './customer-fiscal.js';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -45,7 +46,7 @@ export async function danfePdf(doc,width=80){
 }
 export async function receiptPdf(sale,store,width=80){
  const w=width*72/25.4,margin=10,inner=w-margin*2,font=width===58?8:9,chars=Math.floor(inner/(font*.6));
- const address=sale.delivery_address||sale.receipt_customer_address||'',notes=sale.receipt_customer_notes||'',district=sale.customer_district||'';
+ const address=receiptCustomerAddress(sale),notes=sale.customer_details?.notes||sale.receipt_customer_notes||'',district=sale.customer_details?.fiscal?.enderDest?.xBairro||sale.customer_district||'';
  const textLines=v=>String(v||'').split('\n').reduce((n,l)=>n+Math.max(1,Math.ceil(l.length/chars)),0);
  const height=Math.max(700,600+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
  const doc=new PDFDocument({size:[w,height],margins:{top:12,left:margin,right:margin,bottom:12}}),chunks=[];
