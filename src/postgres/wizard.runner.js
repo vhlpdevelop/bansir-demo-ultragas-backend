@@ -46,7 +46,9 @@ process.once('message', async ({ action, model, key, payload, settings, certific
       await wizard.NFE_LoadEnvironment({ config });
       payload=prepareWizardPayload(payload,{action,key,technical:settings.technicalResponsible});
       stage = 'request';
-      if(action==='science'){
+      if(action==='cadastre'){
+        const service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;const axios=(await import('axios')).default;service.axios=axios.create({httpsAgent:agent,timeout:25000,maxContentLength:2*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0});result=await wizard.NFE_ConsultaCadastro(payload);
+      }else if(action==='science'){
         const axios=(await import('axios')).default,service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;
         const transport=axios.create({httpsAgent:agent,timeout:30000,maxContentLength:2*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0});let raw;
         transport.interceptors.response.use(response=>{raw=response.data;return response;});service.axios=transport;

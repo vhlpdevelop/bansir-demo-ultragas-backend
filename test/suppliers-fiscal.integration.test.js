@@ -22,7 +22,7 @@ test('Suppliers, fiscal recipients and inbound monitoring',{skip:!process.env.TE
   const unit=await createEstablishment(process.env.TEST_POSTGRES_ADMIN_URL,{tenantSlug:tenant.slug,name:'Second',memberships:[{userId:user.id,role:'admin',allowedRoutes:[]}]});
   const secret=randomBytes(48).toString('hex'),auth=createAuth(db,{jwtSecret:secret}),login=await auth.login({email:'inbound@test.invalid',password}),s=await auth.select({selectionToken:login.selectionToken,tenantId:tenant.id,establishmentId:tenant.establishmentId});
   const login2=await auth.login({email:'inbound@test.invalid',password}),s2=await auth.select({selectionToken:login2.selectionToken,tenantId:tenant.id,establishmentId:unit.establishmentId});
-  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',onError:e=>{if(!e.status&&!e.issues)console.error('Fiscal test:',e.code,e.message);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+  server=createPostgresApp({database:db,jwtSecret:secret,nodeEnv:'test',supplierWizard:async input=>{assert.equal(input.action,'cadastre');assert.equal(input.settings.environment,1);return {result:{infCad:{CNPJ:input.payload.cnpj,xNome:'Fornecedor consultado fixture',IE:'00123',cSit:'1',ender:{xLgr:'Rua teste',UF:input.payload.uf}}}};},onError:e=>{if(!e.status&&!e.issues)console.error('Fiscal test:',e.code,e.message);}}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const send=async(path,method='GET',body,token=s.token)=>{const r=await fetch(`http://127.0.0.1:${server.address().port}/api/v1`+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
   let monitor,job;
   await t.test('supplier contact and bank data are scoped, validated and deactivated without deletion',async()=>{
@@ -45,6 +45,15 @@ test('Suppliers, fiscal recipients and inbound monitoring',{skip:!process.env.TE
    // Discard only preceding disposable test fixtures, never contact an external provider.
    for(let n=0;n<100;n++){const next=await queue.claim('fiscal');if(!next)break;if(next.payload.monitorId===monitor.id){job=next;break;}await queue.finish(next,'dead','TEST_FIXTURE');}assert.ok(job);
    await queue.pool.query('SELECT bansir.schedule_fiscal_monitors()');assert.equal((await admin.query("SELECT count(*)::int AS n FROM bansir.jobs WHERE payload->>'monitorId'=$1 AND state IN('pending','running')",[monitor.id])).rows[0].n,1);
+  });
+  await t.test('supplier CNPJ lookup validates, requires this units certificate and fills only public registry fields',async()=>{
+   const body={cnpj:'11222333000181',uf:'MS'};
+   assert.equal((await send('/suppliers/cnpj/lookup','POST',body)).status,409);
+   await admin.query('INSERT INTO bansir.fiscal_settings(tenant_id,establishment_id,data,encrypted_csc) VALUES($1,$2,$3,$4)',[tenant.id,tenant.establishmentId,{cnpj:'11222333000181',environment:2,address:{uf:'MT'}},'fixture-unused-csc']);
+   assert.equal((await send('/suppliers/cnpj/lookup','POST',{...body,cnpj:'11222333000180'})).status,400);
+   const found=await send('/suppliers/cnpj/lookup','POST',body);assert.equal(found.status,200,JSON.stringify(found.body));assert.equal(found.body.data.name,'Fornecedor consultado fixture');assert.equal(found.body.data.stateRegistration,'00123');assert.equal(found.body.data.address.state,'MS');assert.equal(JSON.stringify(found.body).includes('certificate'),false);
+   assert.equal((await send('/suppliers/cnpj/lookup','POST',body,s2.token)).status,409);
+   assert.equal((await send('/suppliers?search=consultado')).body.data.length,0);
   });
   await t.test('bounded distribution keeps NSU, emits one scoped alert and requires consent for science',async()=>{
    const key='50261022333444000155550010000000011000000011';assert.equal(key.length,44);

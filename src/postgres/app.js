@@ -1,3 +1,4 @@
+import {mountSupplierCnpj} from './supplier-cnpj.js';
 import {mountFiscalIssuance} from './fiscal-issuance.js';
 import {mountSmartpos} from './smartpos.js';
 import {mountFiscalStock} from './fiscal-stock.js';
@@ -39,7 +40,7 @@ import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
-export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter,geocoder }) {
+export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter,geocoder,supplierWizard }) {
   const app = express();
   const allowed = corsOrigin.split(',').map(s => s.trim()).filter(Boolean);
   if (nodeEnv === 'production' && (!allowed.length || allowed.includes('*'))) throw new Error('Defina origens CORS explícitas em produção.');
@@ -191,6 +192,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountQzSigning(app,{scoped});
   mountCustomers(app,{scoped});
   mountSuppliers(app,{scoped});
+  mountSupplierCnpj(app,{scoped,wizard:supplierWizard});
   mountFiscalMonitor(app,{scoped});
   mountFiscalStock(app,{scoped});
   mountCustomerProfile(app,{scoped});
