@@ -154,6 +154,28 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    await send('/storefront/settings','PUT',{...config,config:{...config.config,acceptingOrders:false}});assert.equal((await publicSend('/start','POST',{phone:'65999996666'})).status,409);
    await send('/storefront/settings','PUT',{...config,enabled:false});assert.equal((await publicSend('')).status,404);
   });
+  await t.test('PDV full settlement can confirm delivery with an audited actor, without duplicates or partial completion',async()=>{
+   const saleId=(await admin.query('SELECT sale_id FROM bansir.storefront_orders WHERE id=$1',[order.id])).rows[0].sale_id;
+   const endpoint=`/sales/${saleId}/payments`,confirm=`/sales/${saleId}/confirm-delivery`;
+   const pay=(amount,extra={})=>({requestKey:randomUUID(),method:'pix',confirmed:true,amountCents:amount,...extra});
+   assert.equal((await send(confirm,'POST',{requestKey:randomUUID(),confirmed:true},{token:s2.token})).status,404);
+   assert.equal((await send(confirm,'POST',{requestKey:randomUUID(),confirmed:true})).body.code,'DELIVERY_PAYMENT_REQUIRED');
+   const partial=await send(endpoint,'POST',pay(100));assert.equal(partial.status,201,JSON.stringify(partial.body));assert.equal(partial.body.data.delivery.status,'assigned');
+   const refused=await send(endpoint,'POST',pay(100,{confirmDelivery:true}));assert.equal(refused.body.code,'DELIVERY_PAYMENT_REQUIRED');
+   assert.equal((await send(`/sales/${saleId}`)).body.data.paid_cents,100);
+   await admin.query("UPDATE bansir.establishment_memberships SET role='operador',allowed_routes=ARRAY['sales','sales-collect'] WHERE user_id=$1 AND establishment_id=$2",[actor,tenant.establishmentId]);
+   try{const denied=await send(endpoint,'POST',pay(24690,{confirmDelivery:true}));assert.equal(denied.status,403,JSON.stringify(denied.body));}finally{await admin.query("UPDATE bansir.establishment_memberships SET role='admin' WHERE user_id=$1 AND establishment_id=$2",[actor,tenant.establishmentId]);}
+   const body=pay(24690,{confirmDelivery:true});const result=await send(endpoint,'POST',body);assert.equal(result.status,201,JSON.stringify(result.body));assert.equal(result.body.data.status,'paid');assert.equal(result.body.data.delivery.status,'delivered');assert.equal(result.body.data.delivery.confirmation.userId,actor);assert.equal(result.body.data.delivery.confirmation.source,'complete_pdv');assert.ok(result.body.data.delivery.delivered_at);
+   assert.equal((await send(endpoint,'POST',body)).status,200);
+   const retry=await send(confirm,'POST',{requestKey:randomUUID(),confirmed:true});assert.equal(retry.status,200,JSON.stringify(retry.body));
+   assert.equal((await admin.query("SELECT count(*)::int AS n FROM bansir.delivery_events WHERE sale_id=$1 AND action='complete_pdv'",[saleId])).rows[0].n,1);
+   assert.equal((await admin.query('SELECT count(*)::int AS n FROM bansir.sale_payments WHERE sale_id=$1',[saleId])).rows[0].n,2);
+   const listed=(await send('/storefront/orders')).body.data.find(o=>o.id===order.id);assert.equal(listed.delivery_status,'delivered');assert.equal(listed.delivery_confirmation.source,'complete_pdv');
+   const map=(await send('/storefront/orders/map')).body.data.orders.find(o=>o.id===order.id);assert.equal(map.status,'delivered');
+   const direct=await send('/sales','POST',{requestKey:randomUUID(),items:[{productId:p.id,quantity:1,expectedUnitPriceCents:12045}],deliveryMode:'delivery',deliveryAddress:'Rua Teste 100',customerName:'Cliente teste',customerPhone:'65999997777',payment:{method:'pending',term:'delivery'}});assert.equal(direct.status,201,JSON.stringify(direct.body));
+   const paid=await send(`/sales/${direct.body.data.id}/payments`,'POST',pay(12045));assert.equal(paid.body.data.delivery.status,'pending');
+   const manual=await send(`/sales/${direct.body.data.id}/confirm-delivery`,'POST',{requestKey:randomUUID(),confirmed:true});assert.equal(manual.status,200,JSON.stringify(manual.body));assert.equal(manual.body.data.delivery.status,'delivered');assert.equal(manual.body.data.delivery.confirmation.userId,actor);
+  });
   await t.test('business hours block public checkout, validate calendars and keep conversations private',async()=>{
    const hours={enabled:true,ignoreWhatsappOutsideHours:true,closingSoonMinutes:30,days:Array.from({length:7},(_,day)=>({day,enabled:false,open:'08:00',close:'18:00'}))};
    const updated={...config,config:{...config.config,businessHours:hours}};

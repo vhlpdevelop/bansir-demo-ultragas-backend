@@ -1,4 +1,6 @@
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
+import {confirmManualDelivery} from './manual-delivery.js';
+import {routeUnitLock} from './delivery-route-state.js';
 import {createSmartposCharge} from './smartpos.js';
 import {expireSmartpos,assertNoSmartpos} from './smartpos-state.js';
 import {applyTributaryUnits} from './product-fiscal-profile.js';
@@ -41,6 +43,11 @@ export async function saleView(c,id){
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
  if(!s)return null;
+ s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
+   (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at)
+    FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id
+    WHERE e.sale_id=t.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS confirmation
+   FROM bansir.delivery_tasks t WHERE t.sale_id=$1`,[id])).rows[0]||null;
  for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
  s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
  s.payments=(await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
@@ -175,12 +182,22 @@ export function mountSales(app,{scoped}){
  }));
  app.get('/api/v1/sales/:id',scoped('sales',true,async(c,req,member)=>{await ownedSale(c,req.identity,member,req.params.id);return {data:await saleView(c,req.params.id)};}));
  app.post('/api/v1/sales/:id/payments',scoped('sales',false,async(c,req,member)=>{
-  const input=externalPayment.extend({requestKey:uuid,amountCents:cents.refine(n=>n>0)}).parse(req.body),i=req.identity;
+  const input=externalPayment.extend({requestKey:uuid,amountCents:cents.refine(n=>n>0),confirmDelivery:z.boolean().optional()}).parse(req.body),i=req.identity;
+  if(input.confirmDelivery)await routeUnitLock(c,i);
   // Idempotent retries still return their receipt after the original cash was closed.
   await lock(c,`${unitKey(i)}:payment:${input.requestKey}`);await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
   const sale=await ownedSale(c,i,member,req.params.id),previous=(await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
   if(previous){if(previous.sale_id!==sale.id||previous.request_hash!==hash({...input,userId:i.userId}))fail('Identificador já utilizado.','IDEMPOTENCY_CONFLICT');return {data:await saleView(c,sale.id)};}
-  const cash=await openCash(c,i);await recordPayment(c,i,sale,cash,input);return {status:201,data:await saleView(c,sale.id)};
+  const cash=await openCash(c,i);await recordPayment(c,i,sale,cash,input);
+  if(input.confirmDelivery)await confirmManualDelivery(c,i,member,await saleView(c,sale.id),input.requestKey);
+  return {status:201,data:await saleView(c,sale.id)};
+ }));
+ app.post('/api/v1/sales/:id/confirm-delivery',scoped('sales',false,async(c,req,member)=>{
+  const input=z.object({requestKey:uuid,confirmed:z.literal(true)}).strict().parse(req.body),i=req.identity;
+  await routeUnitLock(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
+  await ownedSale(c,i,member,req.params.id);
+  await confirmManualDelivery(c,i,member,await saleView(c,req.params.id),input.requestKey);
+  return {data:await saleView(c,req.params.id)};
  }));
  app.post('/api/v1/sales/:id/cancel',scoped('sales',false,async(c,req,member)=>{
   if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
