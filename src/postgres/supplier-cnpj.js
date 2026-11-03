@@ -7,9 +7,11 @@ import {runWizard} from './fiscal.worker.js';
 import {ufCodes} from './fiscal.js';
 export function validCnpj(v){if(!/^\d{14}$/.test(v)||/^(\d)\1+$/.test(v))return false;for(let end=12;end<14;end++){let sum=0;for(let i=0;i<end;i++)sum+=Number(v[i])*((end-i-1)%8+2);const digit=sum%11<2?0:11-sum%11;if(Number(v[end])!==digit)return false;}return true;}
 export function supplierFromCadastre(result,cnpj){
- const records=[];const parser=new XMLParser({removeNSPrefix:true,parseTagValue:false,ignoreAttributes:false});
- function walk(v,depth=0){if(depth>18)return;if(typeof v==='string'&&v.trim().startsWith('<')){if(v.length>2000000)return;walk(parser.parse(v),depth+1);}else if(v&&typeof v==='object'){if(v.xNome&&String(v.CNPJ||v.CNPJCPF||'').replace(/\D/g,'')===cnpj)records.push(v);for(const x of Object.values(v))walk(x,depth+1);}}
- walk(result);if(!records.length)throw httpError(404,'CNPJ não localizado no cadastro da SEFAZ desta UF. Confira a UF ou preencha manualmente.','CNPJ_NOT_FOUND');
+ const records=[],statuses=[];const parser=new XMLParser({removeNSPrefix:true,parseTagValue:false,ignoreAttributes:false});
+ function walk(v,depth=0){if(depth>18)return;if(typeof v==='string'&&v.trim().startsWith('<')){if(v.length>2000000)return;walk(parser.parse(v),depth+1);}else if(v&&typeof v==='object'){if(v.cStat!=null)statuses.push(String(v.cStat));if(v.xNome&&String(v.CNPJ||v.CNPJCPF||'').replace(/\D/g,'')===cnpj)records.push(v);for(const x of Object.values(v))walk(x,depth+1);}}
+ walk(result);
+ if(statuses.some(status=>!['111','112','258'].includes(status)))throw httpError(503,'A SEFAZ não concluiu a consulta cadastral. Tente mais tarde ou preencha manualmente.','CNPJ_LOOKUP_UNAVAILABLE');
+ if(!records.length)throw httpError(404,'CNPJ não localizado no cadastro da SEFAZ desta UF. Confira a UF ou preencha manualmente.','CNPJ_NOT_FOUND');
  const unique=[...new Map(records.map(r=>[String(r.IE||''),r])).values()];if(unique.length!==1)throw httpError(409,'A SEFAZ retornou mais de uma inscrição estadual. Confira o cadastro e informe a IE manualmente.','CNPJ_MULTIPLE_REGISTRATIONS');
  const r=unique[0],a=r.ender||r.enderEmit||{},clean=v=>String(v??'').slice(0,200);
  return {document:cnpj,name:clean(r.xNome),tradeName:clean(r.xFant),stateRegistration:clean(r.IE),phone:clean(a.fone),address:{street:clean(a.xLgr),number:clean(a.nro),complement:clean(a.xCpl),neighborhood:clean(a.xBairro),city:clean(a.xMun),state:clean(a.UF||r.UF),zipCode:clean(a.CEP)},registrationStatus:String(r.cSit||''),source:'SEFAZ'};

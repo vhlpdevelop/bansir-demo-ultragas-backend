@@ -1,4 +1,5 @@
 import {prepareWizardPayload} from './wizard-payload.js';
+import {consultCadastre} from './wizard-cadastre.js';
 import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ process.once('message', async ({ action, model, key, payload, settings, certific
     directory = workDirectory || await mkdtemp(join(tmpdir(), 'bansir-fiscal-'));
     const certPath=join(directory,'certificate.pfx');
     await writeFile(certPath,Buffer.from(certificate.base64,'base64'),{mode:0o600});
-    const config = { dfe: { UF: settings.address.uf, CPFCNPJ: settings.cnpj,
+    const config = { dfe: { UF: action === 'cadastre' ? payload.uf : settings.address.uf, CPFCNPJ: settings.cnpj,
       pathCertificado: certPath, senhaCertificado: certificate.password,
       armazenarXMLAutorizacao: true, pathXMLAutorizacao: directory,
       baixarXMLDistribuicao: false, armazenarXMLRetorno: false, armazenarXMLConsulta: false, armazenarRetornoEmJSON: false },
@@ -47,7 +48,7 @@ process.once('message', async ({ action, model, key, payload, settings, certific
       payload=prepareWizardPayload(payload,{action,key,technical:settings.technicalResponsible});
       stage = 'request';
       if(action==='cadastre'){
-        const service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;const axios=(await import('axios')).default;service.axios=axios.create({httpsAgent:agent,timeout:25000,maxContentLength:2*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0});result=await wizard.NFE_ConsultaCadastro(payload);
+        result=await consultCadastre(wizard,payload,(await import('axios')).default);
       }else if(action==='science'){
         const axios=(await import('axios')).default,service=wizard.nfeWizardService,agent=service.environment.getHttpAgent();agent.options.rejectUnauthorized=true;
         const transport=axios.create({httpsAgent:agent,timeout:30000,maxContentLength:2*1024*1024,maxBodyLength:2*1024*1024,maxRedirects:0});let raw;
