@@ -258,15 +258,22 @@ function mountSaleFiscal(app,{scoped}){
   requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
   await assertNoFiscalReservation(c,sale.id);
   if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir documento fiscal.','SALE_NOT_PAID');
-  const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown())}).strict().parse(req.body);
-  if(sale.document_id){const doc=(await c.query('SELECT request_key,payload FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];if(doc.request_key!==body.requestKey||hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Esta venda já possui documento fiscal.','SALE_ALREADY_INVOICED');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
+  const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown()),rejectedDocumentId:uuid.optional(),rejectionReviewed:z.literal(true).optional()}).strict().parse(req.body);
+  let rejectedDocumentId;
+  if(sale.document_id){const doc=(await c.query('SELECT request_key,payload,status FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];
+   if(doc.request_key===body.requestKey){if(hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Identificador fiscal reutilizado com outros dados.','IDEMPOTENCY_CONFLICT');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
+   if(doc.status!=='rejected'||body.rejectedDocumentId!==sale.document_id||body.rejectionReviewed!==true||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model)fail('Esta venda já possui documento fiscal. Nova tentativa exige rejeição definitiva e conferência explícita.','SALE_ALREADY_INVOICED');
+   rejectedDocumentId=sale.document_id;
+  }
   const expected=saleFiscalDraft(sale,body.model),draft=body.draft;
   if(body.model==='55'){nfeRecipient.parse(draft.dest);expected.dest=draft.dest;}
   if(!Array.isArray(draft.det)||draft.det.length!==expected.det.length)fail('Itens fiscais diferentes da venda.','FISCAL_SALE_MISMATCH',400);
   for(let n=0;n<expected.det.length;n++){const p=draft.det[n]?.prod,e=expected.det[n].prod;if(!p||p.cProd!==e.cProd||p.xProd!==e.xProd||p.qCom!==e.qCom||p.vUnCom!==e.vUnCom||p.vProd!==e.vProd||Number(p.vDesc||0)!==Number(e.vDesc||0)||Number(p.vFrete||0)!==Number(e.vFrete||0)||p.uCom!==e.uCom)fail('Valores ou produtos fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);}
   for(const key of ['vProd','vDesc','vFrete','vNF'])if(Number(draft.total?.ICMSTot?.[key]||0)!==Number(expected.total.ICMSTot[key]))fail('Totais fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);
   if(hash(draft.pag)!==hash(expected.pag)||hash(draft.dest||null)!==hash(expected.dest||null))fail('Pagamento ou destinatário fiscal diferem da venda.','FISCAL_SALE_MISMATCH',400);
-  const doc=await createFiscalDocument(c,i,body);await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)',[i.tenantId,i.establishmentId,sale.id,doc.id]);return {status:202,data:doc};
+  const {rejectedDocumentId:_old,rejectionReviewed:_reviewed,...command}=body;const doc=await createFiscalDocument(c,i,command);
+  if(rejectedDocumentId){await c.query('INSERT INTO bansir.rejected_fiscal_attempts(tenant_id,establishment_id,sale_id,document_id,replacement_document_id,user_id) VALUES($1,$2,$3,$4,$5,$6)',[i.tenantId,i.establishmentId,sale.id,rejectedDocumentId,doc.id,i.userId]);await c.query('UPDATE bansir.sale_fiscal_links SET document_id=$2 WHERE sale_id=$1',[sale.id,doc.id]);}
+  else await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)',[i.tenantId,i.establishmentId,sale.id,doc.id]);return {status:202,data:doc};
  }));
 }
 export function saleFiscalDraft(sale,model='65'){

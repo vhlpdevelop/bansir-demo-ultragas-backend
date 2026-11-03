@@ -13,3 +13,10 @@ API: `GET /sales/:id/edit` e `PATCH /sales/:id/edit`. O PATCH recebe UUID de ten
 Tributação PIS/COFINS CST 49 aparece no preenchimento assistido como outras operações de saída, com base, alíquota e valor visíveis. Esse código não determina sozinho isenção. A classificação da mercadoria e a composição água/vasilhame devem ser conferidas pelo estabelecimento e sua contabilidade.
 
 Verificação: `node scripts/test-postgres.js test/sale-editing.integration.test.js test/pdv.integration.test.js test/agreements.integration.test.js`; `node --test test/validation-message.test.js test/printing.test.js`. Testes de banco usam PostgreSQL descartável.
+
+
+## Nova tentativa após rejeição
+
+O PDV permite nova emissão do mesmo modelo quando a tentativa anterior está definitivamente `rejected`. O usuário precisa confirmar a conferência e enviar `rejectedDocumentId` e `rejectionReviewed:true` com um novo UUID. A migração 061 preserva a relação entre o documento rejeitado e seu substituto. Uma repetição do mesmo UUID retorna o documento existente. Status autorizado, desconhecido, pendente ou em revisão não liberam nova emissão. Nenhuma venda, pagamento ou estoque é criado novamente.
+
+O adaptador do SDK mantém a chave alocada em `Id` não enumerável e configurável: a biblioteca NF-e precisa removê-la durante a montagem do XML. O teste `wizard-sdk-key.test.js` deve ser executado na imagem Linux, com `--network none`; cobre NF-e/NFC-e e cNF com zeros iniciais sem usar certificado ou transporte HTTP.

@@ -141,6 +141,17 @@ test('PDV PostgreSQL: real sales, ledger, cash, manual payments and fiscal linka
    const edit=await send(`/sales/${sale.id}/edit`,'PATCH',{requestKey:randomUUID(),revision:state.revision,reason:'Attempt edit after document',customer:{...state.customer_details,name:'Changed name'},deliveryAddress:state.delivery_address});assert.equal(edit.body.code,'SALE_EDIT_LOCKED');
    assert.equal((await send(`/sales/${sale.id}/fiscal-draft`,'GET',undefined,operatorSession.token)).status,403);
   });
+  await t.test('rejected fiscal retry requires confirmation, archives history and never bypasses uncertain or authorized status',async()=>{
+   const sale=(await send('/sales','POST',order())).body.data,draft=(await send(`/sales/${sale.id}/fiscal-draft`)).body.data;draft.det[0].prod.CFOP='5102';draft.det[0].imposto={ICMS:{testOnly:true},PIS:{testOnly:true},COFINS:{testOnly:true}};
+   const first={requestKey:randomUUID(),draft};const initial=await send(`/sales/${sale.id}/fiscal`,'POST',first);assert.equal(initial.status,202,JSON.stringify(initial.body));const oldId=initial.body.data.id;
+   const retry={requestKey:randomUUID(),draft,rejectedDocumentId:oldId,rejectionReviewed:true};
+   for(const status of ['queued','unknown','manual_review','authorized']){await admin.query('UPDATE bansir.fiscal_documents SET status=$2 WHERE id=$1',[oldId,status]);assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',retry)).body.code,'SALE_ALREADY_INVOICED');}
+   await admin.query("UPDATE bansir.fiscal_documents SET status='rejected',rejection_code='562' WHERE id=$1",[oldId]);
+   assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',{requestKey:randomUUID(),draft})).body.code,'SALE_ALREADY_INVOICED');
+   const r=await send(`/sales/${sale.id}/fiscal`,'POST',retry);assert.equal(r.status,202,JSON.stringify(r.body));assert.notEqual(r.body.data.id,oldId);assert.equal((await send(`/sales/${sale.id}/fiscal`,'POST',retry)).body.data.id,r.body.data.id);
+   const history=(await admin.query('SELECT * FROM bansir.rejected_fiscal_attempts WHERE sale_id=$1',[sale.id])).rows;assert.equal(history.length,1);assert.equal(history[0].document_id,oldId);assert.equal(history[0].replacement_document_id,r.body.data.id);assert.equal((await admin.query('SELECT status FROM bansir.fiscal_documents WHERE id=$1',[oldId])).rows[0].status,'rejected');
+   const current=(await send(`/sales/${sale.id}`)).body.data;assert.equal(current.document_id,r.body.data.id);assert.equal(current.total_cents,sale.total_cents);assert.equal(current.payments.length,sale.payments.length);assert.equal(current.coupon_number,sale.coupon_number);
+  });
   await t.test('invoice checkout opens fiscal review before identifying the recipient; customer edits lock after invoice',async()=>{
    const before=await stock(product);
    const unassigned=await send('/sales','POST',{...order(),issueInvoice:true});assert.equal(unassigned.status,201);assert.equal(unassigned.body.data.document_id,null);

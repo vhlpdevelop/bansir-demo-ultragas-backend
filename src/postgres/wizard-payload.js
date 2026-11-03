@@ -23,5 +23,5 @@ export function prepareWizardPayload(input,{action,key,technical}){
  if(technical)n.infRespTec=order(technical,['CNPJ','xContato','email','fone','idCSRT','hashCSRT']);
  payload.NFe.infNFe=order(n,['ide','emit','avulsa','dest','retirada','entrega','autXML','det','total','transp','cobr','pag','infIntermed','infAdic','exporta','compra','cana','infRespTec','infSolicNFF']);
  // SDK uses Id to choose the already allocated key, but accidentally serializes enumerable Id as an XML element.
- Object.defineProperty(payload.NFe.infNFe,'Id',{value:key,enumerable:false});return payload;
+ Object.defineProperty(payload.NFe.infNFe,'Id',{value:key,enumerable:false,configurable:true});return payload;
 }
