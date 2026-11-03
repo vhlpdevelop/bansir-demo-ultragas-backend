@@ -1,9 +1,10 @@
+import {mountPrinting} from '../src/postgres/printing.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,createVerify} from 'node:crypto';
 import forge from 'node-forge';
 import {grantPrint,signingConfig,signQz} from '../src/postgres/qz-signing.js';
-test('QZ signs only fresh allowed commands and PDFs released to the selected user/unit',()=>{
+test('QZ signs only fresh allowed commands and PDFs released to the selected user/unit',async()=>{
  const keys=forge.pki.rsa.generateKeyPair(2048),cert=forge.pki.createCertificate();cert.publicKey=keys.publicKey;cert.serialNumber='1';cert.validity.notBefore=new Date(Date.now()-60000);cert.validity.notAfter=new Date(Date.now()+86400000);cert.setSubject([{name:'commonName',value:'TEST ONLY'}]);cert.setIssuer(cert.subject.attributes);cert.sign(keys.privateKey,forge.md.sha256.create());
  const config=signingConfig({QZ_SIGNING_CERTIFICATE_BASE64:Buffer.from(forge.pki.certificateToPem(cert)).toString('base64'),QZ_SIGNING_PRIVATE_KEY_BASE64:Buffer.from(forge.pki.privateKeyToPem(keys.privateKey)).toString('base64')});
  const identity={tenantId:'tenant-A',establishmentId:'unit-A',userId:'user-A'},pdf=Buffer.from('%PDF-TEST'),body=command=>{const message=JSON.stringify(command);return {message,digest:createHash('sha256').update(message).digest('hex')};};
@@ -17,4 +18,10 @@ test('QZ signs only fresh allowed commands and PDFs released to the selected use
  assert.throws(()=>signQz(identity,body({...command,params:{...command.params,printer:{file:'/tmp/test'}}}),config),e=>e.code==='PRINT_DENIED');
  assert.throws(()=>signQz(identity,b,null),e=>e.code==='QZ_NOT_READY');
  assert.ok(signQz(identity,body({call:'printers.find',timestamp:Date.now(),params:{}}),config));
+ let testHandler;mountPrinting({get:(path,handler)=>{if(path==='/api/v1/printing/test')testHandler=handler;}},{scoped:(_module,_read,fn)=>fn});
+ const generated=await testHandler(null,{identity,query:{width:'80'}});
+ assert.equal(Buffer.from(generated.data.base64,'base64').subarray(0,5).toString(),'%PDF-');
+ const testCommand={...command,params:{...command.params,data:[{type:'pixel',format:'pdf',flavor:'base64',data:generated.data.base64}]}};
+ assert.ok(signQz(identity,body(testCommand),config));
+ assert.throws(()=>signQz({...identity,userId:'other'},body(testCommand),config),e=>e.code==='PRINT_DENIED');
 });

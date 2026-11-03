@@ -1,7 +1,7 @@
 import test from 'node:test';
 import {writeFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import {receiptPdf,danfePdf} from '../src/postgres/printing.js';
+import {receiptPdf,danfePdf,printerTestPdf} from '../src/postgres/printing.js';
 test('thermal receipts create real PDF at both widths and reject missing fiscal evidence',async()=>{
  const sale={saleNumber:'34543',created_at:'2026-10-27T15:00:00Z',seller_name:'Operador',customer_name:'Cliente',status:'paid',subtotal_cents:15000,delivery_fee_cents:0,discount_cents:0,outstanding_cents:0,total_cents:15000,paid_cents:15000,items:Array.from({length:50},()=>({quantity:1,product_name:'Gás de teste',unit_price_cents:300,gross_cents:300,discount_cents:0})),payments:[{method:'cash',amount_cents:15000,received_cents:16000}]};
  for(const width of [58,80]){const pdf=await receiptPdf(sale,{store_name:'Loja de teste'},width);assert.equal(pdf.subarray(0,5).toString(),'%PDF-');assert.ok(pdf.length>1000);}
@@ -24,3 +24,5 @@ test('NF-e 55 renders a complete A4 PDF without a NFC-e QR Code',{skip:process.p
  const pdf=await danfePdf({status:'authorized',xml,access_key:key,environment:2});assert.equal(pdf.subarray(0,5).toString(),'%PDF-');assert.ok(pdf.length>3000);assert.match(pdf.toString('latin1'),/%%EOF/);
  await assert.rejects(danfePdf({status:'authorized',xml:xml.replace('<mod>55</mod>','<mod>65</mod>'),access_key:key,environment:2}),e=>e.code==='INVALID_FISCAL_EVIDENCE');
 });
+
+test('printer test is a server-generated thermal PDF in both widths',async()=>{for(const width of [58,80]){const pdf=await printerTestPdf(width);assert.equal(pdf.subarray(0,5).toString(),'%PDF-');assert.ok(pdf.length>1000);}});

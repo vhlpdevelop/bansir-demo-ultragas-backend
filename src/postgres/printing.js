@@ -76,7 +76,14 @@ export async function receiptPdf(sale,store,width=80){
  line('Que nosso dia seja abençoado.','center',font,true);doc.moveDown(.5);line('RECIBO DE VENDA - SEM VALOR FISCAL','center',width===58?6:7);line('Não substitui documento fiscal autorizado.','center',width===58?6:7);
  doc.page.dictionary.data.MediaBox=[0,Math.max(0,doc.page.height-doc.y-14),w,doc.page.height];doc.end();return result;
 }
+export async function printerTestPdf(width=80){
+ const doc=new PDFDocument({size:[width*72/25.4,90*72/25.4],margin:12});const chunks=[];
+ const output=new Promise((resolve,reject)=>{doc.on('data',chunk=>chunks.push(chunk));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
+ doc.fontSize(13).text('BANSIR',{align:'center'}).moveDown().fontSize(10).text('TESTE DE IMPRESSAO',{align:'center'}).moveDown();
+ doc.fontSize(9).text(`Papel: ${width} mm`).text('0123456789').text('ABCDEFGHIJKLMNOPQRSTUVWXYZ').moveDown().text('Se este texto esta legivel, o envio pelo Bansir e QZ Tray funcionou.').moveDown().text('SEM VALOR FISCAL',{align:'center'});doc.end();return output;
+}
 export function mountPrinting(app,{scoped}){
+ app.get('/api/v1/printing/test',scoped('sales',true,async(_c,req)=>{const pdf=await printerTestPdf(widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'bansir-teste-impressora.pdf'}};}));
  app.get('/api/v1/sales/:id/receipt',scoped('sales',true,async(c,req,member)=>{const id=z.uuid().parse(req.params.id);await ownedSale(c,req.identity,member,id);const sale=await saleView(c,id);if(sale.customer_id){const customer=(await c.query('SELECT address,notes FROM bansir.customers WHERE id=$1',[sale.customer_id])).rows[0];sale.receipt_customer_address=customer?.address||'';sale.receipt_customer_notes=customer?.notes||'';}const store=(await c.query('SELECT store_name,document_id,address,contact FROM bansir.store_settings')).rows[0]||{};const pdf=await receiptPdf(sale,store,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:'recibo-'+sale.saleNumber+'.pdf'}};}));
  app.get('/api/v1/fiscal/documents/:id/danfe',scoped('fiscal',true,async(c,req)=>{const doc=(await c.query('SELECT status,xml,access_key,environment FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');const pdf=await danfePdf(doc,widthOf(req));grantPrint(req.identity,pdf);return {data:{base64:pdf.toString('base64'),filename:(doc.access_key.slice(20,22)==='55'?'nfe-':'nfce-')+doc.access_key+'.pdf'}};}));
 }
