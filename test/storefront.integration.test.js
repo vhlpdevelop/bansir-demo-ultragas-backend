@@ -108,6 +108,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
   });
   await t.test('staff acceptance binds order to one sale and deliverer; receipt, stock and pending payment stay scoped',async()=>{
    const initialMap=await send('/storefront/orders/map');assert.equal(initialMap.status,200,JSON.stringify(initialMap.body));assert.equal(initialMap.body.data.orders.find(o=>o.id===order.id).status,'new');assert.equal(initialMap.body.data.store.latitude,-15.6);
+   const overview=await send('/storefront/orders?status=new&pageSize=1');assert.equal(overview.status,200,JSON.stringify(overview.body));assert.equal(overview.body.stats.pending,1);assert.equal(overview.body.stats.latest_pending.id,order.id);assert.match(overview.body.stats.latest_pending.createdAt,/^\d{4}-\d{2}-\d{2}T.*Z$/);
    const privateOrder=(await send('/storefront/orders')).body.data.find(o=>o.id===order.id);assert.ok(privateOrder.customer_id);assert.equal(privateOrder.customer_name,'Nome informado no pedido');
    assert.deepEqual((await send('/storefront/orders','GET',undefined,{token:s2.token})).body.data,[]);
    assert.equal((await send(`/storefront/orders/${order.id}/accept`,'POST',{customerConfirmed:true},{token:s2.token})).status,404);
