@@ -1,3 +1,4 @@
+import {financialCashLock} from './sale-financial-editing.js';
 import {mountSaleEditing} from './sale-editing.js';
 import {prepareAgreement,checkAgreementCredit,attachAgreement} from './agreements.js';
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
@@ -36,12 +37,18 @@ export async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('
 // Shared by sale details and printable receipts: unit RLS alone does not
 // authorize an operator to read another operator's sale in the same unit.
 export async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
-async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`,[cash.id]);return Number(cash.opening_cents)+Number(totals.delta);}
-export async function cashView(c,cash){if(!cash)return null;const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND p.created_at<=coalesce($2::timestamptz,now()) GROUP BY p.method`,[cash.id,cash.closed_at])).rows;
- const cutoff=cash.closed_at||new Date();
- const pending=(await c.query(`SELECT coalesce(sum(s.total_cents),0) AS sales_cents,coalesce(sum(s.total_cents-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.created_at<=$2),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`,[cash.id,cutoff])).rows[0];
- const refunds=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE p.cash_session_id=$1 AND x.created_at<=$2 GROUP BY p.method`,[cash.id,cutoff])).rows;
- return {...cash,sales_cents:Number(pending.sales_cents),receivable_cents:Number(pending.cents),refundTotals:Object.fromEntries(refunds.map(t=>[t.method,Number(t.cents)])),opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};}
+export async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`,[cash.id]);return Number(cash.opening_cents)+Number(totals.delta);}
+export async function cashView(c,cash){
+ if(!cash)return null;const cutoff=cash.closed_at||new Date();
+ const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND p.created_at<=$2 GROUP BY p.method`,[cash.id,cutoff])).rows;
+ const historicalTotal=`coalesce((SELECT (r.before_data#>>'{financial,totalCents}')::bigint FROM bansir.sale_revisions r WHERE r.sale_id=s.id AND r.created_at>$2 AND r.before_data?'financial' ORDER BY r.revision LIMIT 1),s.total_cents)`;
+ const pending=(await c.query(`SELECT coalesce(sum(${historicalTotal}),0) AS sales_cents,coalesce(sum(${historicalTotal}-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>$2)),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`,[cash.id,cutoff])).rows[0];
+ const refunds=(await c.query(`SELECT method,sum(cents)::bigint AS cents FROM(
+ SELECT 'cash'::text AS method,m.amount_cents AS cents FROM bansir.cash_movements m WHERE m.cash_session_id=$1 AND m.kind='refund' AND m.created_at<=$2
+ UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payments p JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE coalesce(x.cash_session_id,p.cash_session_id)=$1 AND p.method<>'cash' AND x.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>x.created_at)
+ UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.cash_session_id=$1 AND p.method<>'cash' AND r.created_at<=$2) r GROUP BY method`,[cash.id,cutoff])).rows;
+ return {...cash,sales_cents:Number(pending.sales_cents),receivable_cents:Number(pending.cents),refundTotals:Object.fromEntries(refunds.map(t=>[t.method,Number(t.cents)])),opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};
+}
 export async function saleView(c,id){
  const s=(await c.query(`SELECT s.*,cash.terminal_id,cash.terminal_name,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
  FROM bansir.sales s JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(s.tenant_id,s.establishment_id,s.cash_session_id)
@@ -61,7 +68,8 @@ export async function saleView(c,id){
  for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
  s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,gas_do_povo,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
  s.payments=(await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
-  FROM bansir.sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
+  FROM bansir.active_sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
+ s.paymentRevisions=(await c.query('SELECT r.created_at,r.reason,r.cash_session_id,p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.sale_id=$1 ORDER BY r.created_at',[id])).rows.map(r=>({...r,amount_cents:Number(r.amount_cents)}));
  s.smartpos=(await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]||null;
  s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
  s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=String(s.coupon_number);return s;
@@ -81,8 +89,8 @@ export async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquir
  const view=await saleView(c,sale.id);if(view.cancelled_at)fail('Venda cancelada.','SALE_CANCELLED');
  if(input.amountCents>view.outstanding_cents)fail('Pagamento supera o saldo pendente.','PAYMENT_EXCEEDS_BALANCE');
  const received=checkPayment(input,input.amountCents);
- const {rows:[payment]}=await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1,smartposChargeId||null,acquirerData||null]);
+ const {rows:[payment]}=await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data,created_at)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,clock_timestamp()) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1,smartposChargeId||null,acquirerData||null]);
  if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
  return payment.id;
@@ -168,14 +176,14 @@ export function mountSales(app,{scoped}){
  app.get('/api/v1/pdv/cash/history',scoped('sales',true,async(c,req)=>({data:await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30',[req.identity.userId])).rows.map(cash=>cashView(c,cash)))})));
  app.post('/api/v1/pdv/cash/:id/close',scoped('sales',false,async(c,req)=>{
   const input=z.object({countedCents:cents,note:z.string().trim().max(1000).default('')}).strict().parse(req.body),i=req.identity;
-  await lockCash(c,i);const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[uuid.parse(req.params.id),i.userId])).rows[0];if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
+  await financialCashLock(c,i);await lockCash(c,i);const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[uuid.parse(req.params.id),i.userId])).rows[0];if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
   if(cash.closed_at){if(Number(cash.counted_cents)!==input.countedCents||cash.closing_note!==input.note)fail('Caixa já fechado com outra conferência.','CASH_ALREADY_CLOSED');return {data:await cashView(c,cash)};}
   // Legacy shifts can always be closed; never invent or reassign their origin.
   if(cash.terminal_id)assertCashTerminal(cash,await requireTerminal(c,i));
   await expireSmartpos(c);await assertNoSmartpos(c,{cashId:cash.id});
   const expected=await cashBalance(c,cash),difference=input.countedCents-expected;
   if(difference&&!input.note)fail('Informe o motivo da diferença de caixa.','CASH_DIFFERENCE_NOTE',400);
-  const closed=(await c.query('UPDATE bansir.cash_sessions SET closed_at=now(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *',[cash.id,input.countedCents,expected,difference,input.note])).rows[0];return {data:await cashView(c,closed)};
+  const closed=(await c.query('UPDATE bansir.cash_sessions SET closed_at=clock_timestamp(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *',[cash.id,input.countedCents,expected,difference,input.note])).rows[0];return {data:await cashView(c,closed)};
  }));
  app.post('/api/v1/pdv/cash/movements',scoped('sales',false,async(c,req,member)=>{
   if(!manages(member)&&!member.allowed_routes?.includes('cash-adjust'))fail('Seu perfil não pode fazer sangria ou suprimento.','FORBIDDEN',403);
@@ -187,7 +195,7 @@ export function mountSales(app,{scoped}){
  app.get('/api/v1/sales',scoped('sales',true,async(c,req,member)=>{
   const q=z.object({page:z.coerce.number().int().min(0).max(10000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','pending']).default('all')}).parse(req.query);
   const ids=(await c.query(`SELECT s.id FROM bansir.sales s WHERE ($1::boolean OR s.created_by=$2) AND ($5='all' OR
-   (NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.sale_payments p WHERE p.sale_id=s.id)))
+   (NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id)))
    ORDER BY s.created_at DESC,s.id LIMIT $3 OFFSET $4`,[viewsAll(member),req.identity.userId,q.pageSize,q.page*q.pageSize,q.status])).rows;
   return {data:await Promise.all(ids.map(row=>saleView(c,row.id)))};
  }));
@@ -221,13 +229,13 @@ export function mountSales(app,{scoped}){
  app.post('/api/v1/sales/:id/cancel',scoped('sales',false,async(c,req,member)=>{
   if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
   const input=z.object({reason:z.string().trim().min(5).max(1000),refundConfirmed:z.literal(true),refundReference:text.default('')}).strict().parse(req.body),i=req.identity;
-  const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
+  await financialCashLock(c,i);const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
   if(sale.cancelled_at)return {data:sale};await assertNoFiscalReservation(c,sale.id,true);await expireSmartpos(c);await assertNoSmartpos(c,{saleId:sale.id});if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
   if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
   assertCashTerminal(cash,await requireTerminal(c,i));
   if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);
   const cashRefund=sale.payments.filter(p=>p.method==='cash').reduce((sum,p)=>sum+p.amount_cents,0);if(cashRefund>await cashBalance(c,cash))fail('Saldo de caixa insuficiente para devolver o dinheiro.','INSUFFICIENT_CASH');
-  await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference) VALUES($1,$2,$3,$4,$5,$6)',[i.tenantId,i.establishmentId,sale.id,i.userId,input.reason,input.refundReference]);
+  await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference,cash_session_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())',[i.tenantId,i.establishmentId,sale.id,i.userId,input.reason,input.refundReference,cash.id]);
   await c.query("UPDATE bansir.storefront_orders SET status='cancelled',updated_at=now() WHERE sale_id=$1 AND status='accepted'",[sale.id]);
   const items=[...sale.items].sort((a,b)=>a.product_id.localeCompare(b.product_id));
   for(const item of items){const p=(await c.query('UPDATE bansir.products SET stock=stock+$2,updated_at=now() WHERE id=$1 RETURNING *',[item.product_id,item.quantity])).rows[0];await stockMovement(c,i,p,item.quantity,'in',`Cancelamento ${sale.id}: ${input.reason}`);}

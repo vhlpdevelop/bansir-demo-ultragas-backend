@@ -11,7 +11,7 @@ export function mountCustomerProfile(app,{scoped}){
    coalesce(sum(p.paid) FILTER(WHERE x.sale_id IS NULL),0) AS paid_cents,
    coalesce(sum(s.total_cents-p.paid) FILTER(WHERE x.sale_id IS NULL),0) AS outstanding_cents,max(s.created_at) AS last_sale_at
    FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON x.sale_id=s.id
-   LEFT JOIN LATERAL(SELECT coalesce(sum(amount_cents),0) AS paid FROM bansir.sale_payments WHERE sale_id=s.id) p ON true WHERE s.customer_id=$1`,[id])).rows[0];
+   LEFT JOIN LATERAL(SELECT coalesce(sum(amount_cents),0) AS paid FROM bansir.active_sale_payments WHERE sale_id=s.id) p ON true WHERE s.customer_id=$1`,[id])).rows[0];
   for(const k of ['total_cents','paid_cents','outstanding_cents'])summary[k]=Number(summary[k]);
   const ids=(await c.query('SELECT id FROM bansir.sales WHERE customer_id=$1 ORDER BY created_at DESC,id LIMIT $2 OFFSET $3',[id,size,q.salePage*size])).rows;
   const sales=[];for(const row of ids)sales.push(await saleView(c,row.id));

@@ -1,8 +1,16 @@
 # Revisão de venda finalizada
 
-Administradores e perfis com `sales-manage` podem abrir **Editar venda** nos detalhes do cupom. A operação funciona após o fechamento do caixa, pois não altera valores financeiros.
+Administradores e perfis com `sales-manage` podem abrir **Editar venda** nos detalhes do cupom. As abas **Produtos e valores** e **Pagamentos** permitem revisar quantidade, preço unitário por linha, desconto, frete e recebimentos manuais. É possível manter os pagamentos, substituir as formas/valores, dividir pagamentos ou deixar saldo pendente. O catálogo e o número do cupom são preservados.
 
-Campos: nome/documento/contato do cliente, endereço do recibo, observações, endereço fiscal e perfis fiscais de cada item. Dados fiscais exigem também permissão `fiscal`. O motivo é obrigatório e o histórico registra usuário, horário, versão e dados anteriores/posteriores. Cadastro do cliente, catálogo, vínculo de convênio, produtos, quantidades, valores, pagamentos, estoque e caixa de origem são preservados.
+Alterações comerciais exigem caixa atual aberto no navegador/terminal correto, motivo e confirmação dos valores/quantidades/pagamentos. A diferença de quantidade movimenta o estoque. O pagamento anterior é preservado e recebe uma reversão auditada; os recebimentos corrigidos são novos registros. Devoluções/entradas em dinheiro são compensadas no caixa atual, com validação de saldo. A operação não cobra nem estorna bancos/maquininhas.
+
+O caixa de origem pode estar fechado: seus registros e valores de fechamento não são reescritos. O histórico de saldos usa os valores e pagamentos válidos até aquele fechamento, enquanto o ajuste financeiro aparece no caixa atual. Financeiro registra os recebimentos originais, suas reversões e os recebimentos corrigidos, sem duplicar receita líquida. Consultas de saldo e emissão fiscal usam somente `active_sale_payments`; relatórios de movimentos mantêm o histórico.
+
+Cliente, endereço, observações e tributação continuam editáveis sem ajuste financeiro ou caixa aberto. Dados fiscais exigem também `fiscal`. O motivo é obrigatório e a auditoria registra usuário, hora, versão, valores e dados anteriores/posteriores. A migração 063 adiciona reversões append-only com RLS, view `security_invoker` e trigger que impede invalidar um pagamento sem auditoria/caixa aberto.
+
+Vendas vinculadas a convênio/vale ou pagamento SmartPOS aprovado exigem seu fluxo específico. Mudança de total com comissão positiva registrada exige revisar a comissão; nenhum percentual histórico é presumido. Em vendas do link, pagamentos podem ser corrigidos, mas produtos/valores comerciais exigem revisão do pedido para preservar sua confirmação original. Edição não inclui adicionar/remover produtos: as quantidades dos itens existentes continuam positivas.
+
+**Operação/rollback:** aplicar 063 antes da versão nova. Depois de existir reversão financeira, retornar a uma API antiga que soma a tabela bruta `sale_payments` daria saldo incorreto; qualquer rollback deve preservar o suporte a `active_sale_payments` e às reversões. Não remover a migração/auditoria para voltar de versão.
 
 **Fiscal dos itens → Carregar fiscal atual do catálogo** copia a configuração para conferência. Escolher NF-e 55 ou NFC-e 65 e salvar a revisão permite corrigir a tributação congelada de um cupom antigo antes da emissão. Essa ação não emite notas. A atualização do catálogo sozinha continua sem reescrever vendas anteriores.
 

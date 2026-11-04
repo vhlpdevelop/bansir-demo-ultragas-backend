@@ -30,7 +30,7 @@ export const agreementBalancesSql=`SELECT l.sale_id,l.agreement_id,l.customer_id
  (SELECT jsonb_agg(jsonb_build_object('name',i.product_name,'quantity',i.quantity,'unitPriceCents',i.unit_price_cents) ORDER BY i.position) FROM bansir.sale_items i WHERE i.sale_id=s.id) AS items
  FROM bansir.sale_agreements l JOIN bansir.sales s ON(s.tenant_id,s.establishment_id,s.id)=(l.tenant_id,l.establishment_id,l.sale_id)
  LEFT JOIN bansir.sale_cancellations x ON(x.tenant_id,x.establishment_id,x.sale_id)=(s.tenant_id,s.establishment_id,s.id)
- LEFT JOIN LATERAL(SELECT sum(amount_cents) AS paid FROM bansir.sale_payments p WHERE(p.tenant_id,p.establishment_id,p.sale_id)=(s.tenant_id,s.establishment_id,s.id))p ON true`;
+ LEFT JOIN LATERAL(SELECT sum(amount_cents) AS paid FROM bansir.active_sale_payments p WHERE(p.tenant_id,p.establishment_id,p.sale_id)=(s.tenant_id,s.establishment_id,s.id))p ON true`;
 export async function checkAgreementCredit(c,a,total){
  if(!a)return;
  const balance=(await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS total,
