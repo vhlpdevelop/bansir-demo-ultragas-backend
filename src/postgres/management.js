@@ -1,3 +1,4 @@
+import {paymentSummary} from './payment-summary.js';
 import {z} from 'zod';
 import {httpError} from './database.js';
 import {fiscalDraftHash} from './fiscal.js';
@@ -70,7 +71,7 @@ export function mountManagement(app,{scoped}){
   if(old.status==='cancelled'&&status!=='cancelled')throw httpError(409,'Lançamento cancelado não pode ser reaberto.','ENTRY_CANCELLED');
   return {data:viewEntry((await c.query("UPDATE bansir.financial_entries SET status=$2,settled_at=CASE WHEN $2='completed' THEN coalesce(settled_at,now()) ELSE settled_at END WHERE id=$1 RETURNING *",[id,status])).rows[0])};
  }));
- app.get('/api/v1/financial/summary',scoped('financial',true,async(c,_r,m)=>{access(m,'financial-overview');const list=await financeEntries(c),sum=(type,status)=>list.filter(e=>e.type===type&&e.status===status).reduce((n,e)=>n+Math.round(e.amount*100),0)/100;const income=sum('income','completed'),expense=sum('expense','completed');return {data:{kpis:{totalRevenue:income,totalExpenses:expense,netIncome:income-expense,receivable:sum('income','pending'),payable:sum('expense','pending'),totalTransactions:list.length},recentTransactions:list.slice(0,8)}};}));
+ app.get('/api/v1/financial/summary',scoped('financial',true,async(c,_r,m)=>{access(m,'financial-overview');const list=await financeEntries(c),sum=(type,status)=>list.filter(e=>e.type===type&&e.status===status).reduce((n,e)=>n+Math.round(e.amount*100),0)/100;const income=sum('income','completed'),expense=sum('expense','completed');return {data:{kpis:{totalRevenue:income,totalExpenses:expense,netIncome:income-expense,receivable:sum('income','pending'),payable:sum('expense','pending'),totalTransactions:list.length},paymentSummary:paymentSummary(list),recentTransactions:list.slice(0,8)}};}));
  app.get('/api/v1/financial/pricing-intelligence',scoped('financial',true,async(c,_r,m)=>{access(m,'financial-intelligence');return {data:compute(await settings(c),await pricingEmployees(c))};}));
  app.put('/api/v1/financial/pricing-intelligence',scoped('financial',false,async(c,req,m)=>{
   manage(m);const current=await settings(c),p=req.body;const next={businessHours:{...current.businessHours,...p.businessHours},pricingRules:{...current.pricingRules,...p.pricingRules},fixedExpenses:p.fixedExpenses??current.fixedExpenses,variableExpenses:p.variableExpenses??current.variableExpenses};

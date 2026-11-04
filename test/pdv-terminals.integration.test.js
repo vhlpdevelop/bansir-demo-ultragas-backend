@@ -112,7 +112,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    const summary=(await send('/dashboard')).body.data.terminalCash;
    assert.equal((await send('/dashboard/terminal-cash')).body.data.totalExpectedCents,60);
    assert.equal(summary.totalExpectedCents,60);assert.equal(summary.terminals.find(t=>t.id===first.id).expected_cents,60);
-   assert.equal(summary.terminals.find(t=>t.id===first.id).cash_id,cash1.id);assert.equal(summary.legacyCount,0);
+   assert.equal(summary.terminals.find(t=>t.id===first.id).cash_id,cash1.id);assert.equal(summary.legacyCount,0);assert.ok(summary.terminals.find(t=>t.id===first.id).paymentTotals);assert.equal(typeof summary.terminals.find(t=>t.id===first.id).receivable_cents,'number');assert.equal(typeof summary.terminals.find(t=>t.id===first.id).sales_cents,'number');
    assert.deepEqual((await send('/dashboard','GET',undefined,foreign.token)).body.data.terminalCash.terminals,[]);
    await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['sales','dashboard'] WHERE user_id=$1 AND tenant_id=$2 AND establishment_id=$3",[operator.user.id,tenant.id,tenant.establishmentId]);
    assert.equal((await send('/dashboard','GET',undefined,operator.token)).status,200);

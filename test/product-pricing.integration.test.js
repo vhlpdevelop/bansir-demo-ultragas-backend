@@ -63,6 +63,20 @@ test('Product pricing, Saturday calendar and Gas do Povo',{skip:!process.env.TES
    const normal=await send('/sales','POST',{...payload,requestKey:randomUUID(),items:[{...item(program,14500),gasDoPovo:false}]});assert.equal(normal.status,201);assert.equal(normal.body.data.items[0].gas_do_povo,false);
    const split=await send('/sales','POST',{requestKey:randomUUID(),items:[item(regular,800)],payment:{method:'split',parts:[{method:'cash',confirmed:true,amountCents:300,receivedCents:500},{method:'online',confirmed:true,amountCents:500}]}});assert.equal(split.status,201,JSON.stringify(split.body));assert.equal((await send('/pdv/cash')).body.data.expected_cents,after.expected_cents+300);
   });
+  await t.test('cash closing, finance and reports separate receipts from outstanding balances',async()=>{
+   const starting=(await send('/pdv/cash')).body.data,previousPending=starting.receivable_cents;
+   const pending=await send('/sales','POST',{requestKey:randomUUID(),customerName:'Cliente teste',customerPhone:'67999990000',items:[item(regular,800)],payment:{method:'pending',term:'pickup'}});assert.equal(pending.status,201,JSON.stringify(pending.body));
+   const current=(await send('/pdv/cash')).body.data;assert.equal(current.receivable_cents,previousPending+800);assert.ok(current.paymentTotals.online>0);
+   const finance=(await send('/financial/summary')).body.data;assert.equal(finance.paymentSummary.pendingCents,previousPending+800);assert.equal(finance.paymentSummary.methods.find(m=>m.method==='online').receivedCents,current.paymentTotals.online);
+   const report=await send('/reports/summary?mode=resumo-pagamentos&startDate=2020-01-01&endDate=2020-12-31');assert.equal(report.status,200);assert.equal(report.body.data.paymentSummary.methods.find(m=>m.method==='online').receivedCents,0);assert.equal(report.body.data.paymentSummary.pendingCents,0);
+   const today=new Date().toLocaleDateString('en-CA',{timeZone:'America/Cuiaba'}),query='?mode=resumo-pagamentos&startDate='+today+'&endDate='+today;
+   const todayReport=await send('/reports/summary'+query);assert.equal(todayReport.status,200,JSON.stringify(todayReport.body));assert.equal(todayReport.body.data.paymentSummary.pendingCents,previousPending+800);assert.ok(todayReport.body.data.rows.some(r=>r[0]==='Pagamento online'));
+   const pdf=await send('/reports/pdf'+query);assert.equal(pdf.status,200);assert.equal(Buffer.from(pdf.body.data.base64,'base64').subarray(0,5).toString(),'%PDF-');assert.equal((await send('/reports/csv'+query)).status,200);
+   const closed=await send('/pdv/cash/'+current.id+'/close','POST',{countedCents:current.expected_cents});assert.equal(closed.status,200,JSON.stringify(closed.body));assert.equal(closed.body.data.receivable_cents,previousPending+800);
+   await send('/pdv/cash/open','POST',{openingCents:0});const paid=await send('/sales/'+pending.body.data.id+'/payments','POST',{requestKey:randomUUID(),amountCents:800,method:'online',confirmed:true});assert.equal(paid.status,201,JSON.stringify(paid.body));
+   const history=(await send('/pdv/cash/history')).body.data;const old=history.find(c=>c.id===current.id);assert.equal(old.receivable_cents,previousPending+800);assert.deepEqual(old.paymentTotals,current.paymentTotals);
+   const next=(await send('/pdv/cash')).body.data;assert.equal(next.paymentTotals.online,800);assert.equal(next.receivable_cents,0);assert.equal(next.sales_cents,0);assert.equal((await send('/financial/summary')).body.data.paymentSummary.pendingCents,previousPending);
+  });
   await t.test('promotions persist, quote real discounted amounts and preserve accepted order prices',async()=>{
    const result=await send('/products/'+water.id,'PUT',{fulfillmentPricing:{deliveryPrice:15,promotionPickupPrice:10,promotionDeliveryPrice:13}});assert.equal(result.status,200);
    const p=(await catalog()).products.find(p=>p.id===water.id);assert.equal(p.pickupOriginalCents,1200);assert.equal(p.deliveryOriginalCents,1500);assert.equal(p.pickupCents,1000);assert.equal(p.deliveryCents,1300);

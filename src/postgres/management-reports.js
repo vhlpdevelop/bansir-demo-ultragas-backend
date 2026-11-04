@@ -1,3 +1,4 @@
+import {paymentSummary,paymentLabels} from './payment-summary.js';
 import {reportCatalog} from './report-catalog.js';
 import {reportDetails} from './report-details.js';
 import {tenantFeatures} from './features.js';
@@ -9,7 +10,7 @@ const modes=reportCatalog.map(x=>x.key);
 const dateOnly=v=>v instanceof Date?`${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`:String(v).slice(0,10);
 const currency=v=>Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 export async function managementReport(c,query,member={role:'admin'},context=null){
- const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
+ const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online','pending']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
  if(d.endDate<d.startDate||(+new Date(d.endDate)-+new Date(d.startDate))>366*86400000)throw httpError(400,'Selecione um período de até um ano.','INVALID_PERIOD');
  const features=context?.features||await tenantFeatures(c),isAdmin=['admin','superadmin'].includes(member.role);
  const coverage=reportCatalog.map(x=>({...x,available:(!x.feature||features[x.feature]===true)&&(!x.adminOnly||isAdmin)}));
@@ -21,17 +22,18 @@ export async function managementReport(c,query,member={role:'admin'},context=nul
  FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON x.sale_id=s.id
  WHERE (s.created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date AND ($4='' OR s.seller_name=$4)
  AND ($5='' OR EXISTS(SELECT 1 FROM bansir.sale_items i JOIN bansir.products p ON p.id=i.product_id WHERE i.sale_id=s.id AND p.category=$5))
- AND ($6='' OR EXISTS(SELECT 1 FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod])).rows;
+ AND ($6='' OR ($6='pending' AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id),0)) OR EXISTS(SELECT 1 FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod])).rows;
  if(rawSales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
  const sales=rawSales.map(s=>({...s,status:s.cancelled?'cancelled':Number(s.paid)>=Number(s.total_cents)?'paid':'pending'})).filter(s=>!d.saleStatus||d.saleStatus===s.status);
  if(sales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
  const valid=sales.filter(s=>!s.cancelled),total=valid.reduce((n,s)=>n+Number(s.total_cents),0)/100,cost=valid.reduce((n,s)=>n+Number(s.cost),0)/100;
- const ledger=await financeEntries(c);const dated=await c.query("SELECT ($1::date AT TIME ZONE $3) AS start,(($2::date+1) AT TIME ZONE $3) AS finish",[d.startDate,d.endDate,timezone]);const bounds=dated.rows[0];
+ const ledger=await financeEntries(c);const dated=await c.query("SELECT ($1::date::timestamp AT TIME ZONE $3) AS start,(($2::date+1)::timestamp AT TIME ZONE $3) AS finish",[d.startDate,d.endDate,timezone]);const bounds=dated.rows[0];
  const entries=ledger.filter(e=>new Date(e.settledAt||e.date)>=bounds.start&&new Date(e.settledAt||e.date)<bounds.finish),received=entries.filter(e=>e.status==='completed'&&e.type==='income').reduce((n,e)=>n+Math.round(e.amount*100),0)/100,spent=entries.filter(e=>e.status==='completed'&&e.type==='expense').reduce((n,e)=>n+Math.round(e.amount*100),0)/100;
  context={timezone,sales,valid,total,cost,received,spent,ledger,entries,bounds,features};
  }
  const {timezone,sales,valid,total,cost,received,spent,ledger,entries,bounds}=context;
- const data={mode:d.mode,period:d,startDate:d.startDate,endDate:d.endDate,timeZone:timezone,kpis:{salesTotal:total,productCost:cost,grossMargin:total-cost,received,spent,balance:received-spent,salesCount:valid.length},columns:[],rows:[],coverage,basis:chosen.basis,generatedAt:new Date().toISOString()};
+ const data={mode:d.mode,period:d,startDate:d.startDate,endDate:d.endDate,timeZone:timezone,kpis:{salesTotal:total,productCost:cost,grossMargin:total-cost,received,spent,balance:received-spent,salesCount:valid.length},columns:[],rows:[],coverage,basis:chosen.basis,generatedAt:new Date().toISOString(),paymentSummary:paymentSummary(entries)};
+ if(d.mode==='resumo-pagamentos'){data.columns=['Forma de pagamento','Recebido','Saídas e estornos','Saldo'];data.rows=data.paymentSummary.methods.map(r=>[r.label,currency(r.receivedCents/100),currency(r.outflowCents/100),currency(r.netCents/100)]);data.rows.push(['A receber (lançamentos do período)',currency(data.paymentSummary.pendingCents/100),'','']);}
  if(d.mode==='vendas'||d.mode==='consolidado'){data.columns=['Venda','Data','Vendedor','Cliente','Situação','Valor','Recebido','Telefone','Subtotal','Desconto','Entrega','Modalidade','Endereço','Caixa','Vencimento'];data.rows=sales.map(s=>[s.id,new Date(s.created_at).toLocaleString('pt-BR',{timeZone:timezone}),s.seller_name,s.customer_name,s.status,currency(Number(s.total_cents)/100),currency(Number(s.paid)/100),s.customer_phone,currency(Number(s.subtotal_cents)/100),currency(Number(s.discount_cents)/100),currency(Number(s.delivery_fee_cents)/100),s.delivery_mode,s.delivery_address,s.cash_session_id,s.due_date?dateOnly(s.due_date):'']);}
  if(d.mode==='estoque'){data.columns=['Produto','Categoria','Estoque atual','Custo unitário','Preço','Alerta','Cadastro'];data.rows=(await c.query("SELECT * FROM bansir.products WHERE ($1='' OR category=$1) ORDER BY stock,name LIMIT 5001",[d.category])).rows.map(p=>[p.name,p.category,p.stock,currency(Number(p.cost_cents)/100),currency(Number(p.price_cents)/100),p.stock<=5?'Estoque baixo':'Regular',p.active?'Ativo':'Inativo']);}
  if(d.mode==='fiscal'){data.columns=['Documento','Modelo','Data','Ambiente','Situação','Protocolo','Chave'];data.rows=(await c.query('SELECT * FROM bansir.fiscal_documents WHERE (created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date ORDER BY created_at DESC LIMIT 5001',[d.startDate,d.endDate,timezone])).rows.map(f=>[f.access_key?`${Number(f.access_key.slice(25,34))} / série ${Number(f.access_key.slice(22,25))}`:'—',f.access_key?.slice(20,22)==='55'?'NF-e 55':'NFC-e 65',new Date(f.created_at).toLocaleString('pt-BR',{timeZone:timezone}),f.environment===1?'Produção':'Homologação',f.status,f.protocol||'',f.access_key||'']);}
@@ -40,7 +42,7 @@ export async function managementReport(c,query,member={role:'admin'},context=nul
  if(['financeiro','pagar','receber'].includes(d.mode)){
   const source=d.mode==='financeiro'?entries:ledger.filter(e=>{const day=e.dueDate?dateOnly(e.dueDate):new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.date));return e.type===(d.mode==='pagar'?'expense':'income')&&day>=d.startDate&&day<=d.endDate;});
   data.columns=['Lançamento','Tipo','Categoria','Origem','Valor','Situação','Vencimento','Liquidação','Pagamento'];
-  data.rows=source.map(e=>[e.title,e.type==='income'?'Entrada':'Saída',e.category,e.source,currency(e.amount),e.status,e.dueDate?dateOnly(e.dueDate):'',e.settledAt?new Date(e.settledAt).toLocaleString('pt-BR',{timeZone:timezone}):'',e.paymentMethod]);
+  data.rows=source.map(e=>[e.title,e.type==='income'?'Entrada':'Saída',e.category,e.source,currency(e.amount),e.status,e.dueDate?dateOnly(e.dueDate):'',e.settledAt?new Date(e.settledAt).toLocaleString('pt-BR',{timeZone:timezone}):'',paymentLabels[e.paymentMethod]||({dinheiro:'Dinheiro',cartao_credito:'Cartão de crédito',cartao_debito:'Cartão de débito'})[e.paymentMethod]||e.paymentMethod||'A receber']);
  }
  const detail=await reportDetails(c,d.mode,d,timezone);if(detail)Object.assign(data,detail);
  if(data.rows.length>5000)throw httpError(400,'Mais de 5.000 registros. Selecione um período menor.','REPORT_TOO_LARGE');

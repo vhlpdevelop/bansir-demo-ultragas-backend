@@ -1,3 +1,4 @@
+import {cashView} from './sales.js';
 import {z} from 'zod';
 export async function dashboard(c,query,member){
  const zone=z.string().max(100).parse(query.timezone||'America/Sao_Paulo');
@@ -28,6 +29,8 @@ export async function terminalCashSnapshot(c){
   LEFT JOIN bansir.users u ON u.id=c.user_id LEFT JOIN LATERAL(
    SELECT sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END) AS delta FROM bansir.cash_movements WHERE cash_session_id=c.id
   )m ON true ORDER BY t.created_at,t.id`)).rows.map(t=>({...t,opening_cents:t.opening_cents===null?null:Number(t.opening_cents),expected_cents:t.expected_cents===null?null:Number(t.expected_cents)}));
+ const open=(await c.query('SELECT * FROM bansir.cash_sessions WHERE closed_at IS NULL AND terminal_id IS NOT NULL')).rows;
+ for(const t of terminals.filter(t=>t.cash_id)){const snapshot=await cashView(c,open.find(cash=>cash.id===t.cash_id));if(snapshot)Object.assign(t,{paymentTotals:snapshot.paymentTotals,refundTotals:snapshot.refundTotals,receivable_cents:snapshot.receivable_cents,sales_cents:snapshot.sales_cents});}
  const legacy=(await c.query(`SELECT count(*)::int AS count,coalesce(sum(c.opening_cents+coalesce(m.delta,0)),0)::text AS expected FROM bansir.cash_sessions c
   LEFT JOIN LATERAL(SELECT sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END) AS delta FROM bansir.cash_movements WHERE cash_session_id=c.id)m ON true
   WHERE c.closed_at IS NULL AND c.terminal_id IS NULL`)).rows[0];
