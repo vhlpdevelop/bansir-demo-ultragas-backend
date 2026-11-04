@@ -1,3 +1,4 @@
+import {agreementLock} from './agreements.js';
 import {financialEditInput,financialProjection,financialBlock,financialCashLock,applyFinancialEdit} from './sale-financial-editing.js';
 import {z} from 'zod';
 import {httpError} from './database.js';
@@ -11,7 +12,7 @@ import {routeUnitLock} from './delivery-route-state.js';
 const manager=m=>['admin','superadmin'].includes(m.role)||m.allowed_routes?.includes('sales-manage');
 const customer=z.object({name:z.string().trim().min(1).max(200),document:z.string().regex(/^(\d{11}|\d{14})?$/),phone:z.string().regex(/^\d{0,14}$/),address:z.string().trim().max(1000),email:z.union([z.literal(''),z.email()]).default(''),notes:z.string().max(5000).default(''),fiscal:customerFiscalInput.default({})}).strict();
 const editInput=z.object({requestKey:z.uuid(),revision:z.number().int().nonnegative(),reason:z.string().trim().min(5).max(500),financial:financialEditInput.optional(),customer,deliveryAddress:z.string().trim().max(1000),itemProfiles:z.array(z.object({position:z.number().int().positive(),ncm:z.string().regex(/^(\d{8})?$/),fiscalProfile:productFiscalInput}).strict()).max(100).optional()}).strict();
-const projection=s=>({financial:financialProjection(s),customer:s.customer_details,deliveryAddress:s.delivery_address,itemProfiles:s.items.map(i=>({position:i.position,ncm:i.ncm,fiscalProfile:i.fiscal_profile}))});
+const projection=s=>({agreement:s.agreement,financial:financialProjection(s),customer:s.customer_details,deliveryAddress:s.delivery_address,itemProfiles:s.items.map(i=>({position:i.position,ncm:i.ncm,fiscalProfile:i.fiscal_profile}))});
 export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
  const route=fn=>scoped('sales',true,async(c,r,m)=>{if(!manager(m))throw httpError(403,'Editar vendas exige permissão de gestão de vendas.','FORBIDDEN');return fn(c,r,m);});
  app.get('/api/v1/sales/:id/edit',route(async(c,r,m)=>{
@@ -21,7 +22,7 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
  }));
  app.patch('/api/v1/sales/:id/edit',route(async(c,r,m)=>{
   const b=editInput.parse(r.body),i=r.identity,id=z.uuid().parse(r.params.id),fingerprint=fiscalDraftHash({saleId:id,userId:i.userId,...b});
-  if(b.financial){await financialCashLock(c,i);await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${i.tenantId}:${i.establishmentId}:cash:${i.userId}`]);}
+  if(b.financial){await financialCashLock(c,i);if(b.financial.useAgreement)await agreementLock(c,i);await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${i.tenantId}:${i.establishmentId}:cash:${i.userId}`]);}
   await routeUnitLock(c,i);await fiscalSaleLock(c,i,id);await ownedSale(c,i,m,id);
   const prior=(await c.query('SELECT request_hash FROM bansir.sale_revisions WHERE request_key=$1',[b.requestKey])).rows[0];
   if(prior){if(prior.request_hash!==fingerprint)throw httpError(409,'Tentativa de edição já utilizada com outros dados.','IDEMPOTENCY_CONFLICT');return {data:await saleView(c,id)};}
@@ -31,7 +32,7 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
   await assertNoFiscalReservation(c,id,true);await assertNoSmartpos(c,{saleId:id});
   if(b.deliveryAddress!==sale.delivery_address&&(await c.query("SELECT 1 FROM bansir.delivery_tasks WHERE sale_id=$1 AND status IN('assigned','en_route','delivered') UNION ALL SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1",[id])).rowCount)throw httpError(409,'O destino está vinculado a um pedido ou entrega. Revise a entrega antes de alterar o endereço operacional. O endereço fiscal pode ser corrigido separadamente.','SALE_DELIVERY_LOCKED');
   const before=projection(sale);
-  if(b.financial)await applyFinancialEdit(c,i,sale,b.financial,b.reason,b.requestKey,b.customer);
+  if(b.financial)await applyFinancialEdit(c,i,sale,b.financial,b.reason,b.requestKey,b.customer,m);
   if(b.itemProfiles){requirePermission(m,'fiscal');if(b.itemProfiles.length!==sale.items.length||new Set(b.itemProfiles.map(p=>p.position)).size!==sale.items.length||b.itemProfiles.some(p=>!sale.items.some(i=>i.position===p.position)))throw httpError(400,'Informe os mesmos itens da venda para revisar a tributação.','SALE_ITEMS_MISMATCH');
    for(const p of b.itemProfiles)await c.query('UPDATE bansir.sale_items SET ncm=$3,fiscal_profile=$4 WHERE sale_id=$1 AND position=$2',[id,p.position,p.ncm,p.fiscalProfile]);
   }
