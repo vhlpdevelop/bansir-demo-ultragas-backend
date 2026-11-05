@@ -62,6 +62,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountMetaWebhook(app,{database});
   const uploads=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
   app.use('/api/v1/fiscal/certificate',uploads,auth.protect,express.json({limit:'1500kb'}));
+  app.use('/api/v1/fiscal/inbound/import',uploads,auth.protect,express.json({limit:'5mb'}));
   app.use('/api/v1/customers/import',uploads,auth.protect,express.json({limit:'8mb'}));
   app.use('/api/v1/products/import',uploads,auth.protect,express.json({limit:'8mb'}));
   app.use('/api/v1/products/:id/image',(req,res,next)=>req.method==='PUT'?uploads(req,res,next):next(),auth.protect,express.raw({type:['image/jpeg','image/png','image/webp'],limit:'2mb'}));

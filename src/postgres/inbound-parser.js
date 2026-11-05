@@ -66,7 +66,10 @@ export function decodeDocument(docZip, monitor) {
   if (typeof encoded !== 'string' || encoded.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/\s]+=*$/.test(encoded)) throw new Error('INVALID_DOCZIP');
   const inflated = gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength: MAX_XML_BYTES });
   try {
-    const xml = inflated.toString('utf8');
+    return parseInboundDocument(inflated.toString('utf8'),monitor);
+  } finally { inflated.fill(0); }
+}
+export function parseInboundDocument(xml, monitor) {
     const root = parseXml(xml);
     if (root.resNFe) {
       const n = root.resNFe, accessKey = key(n.chNFe);
@@ -103,5 +106,4 @@ export function decodeDocument(docZip, monitor) {
     }
     // resEvento and other distribution schemas do not authorize stock entry.
     return null;
-  } finally { inflated.fill(0); }
 }

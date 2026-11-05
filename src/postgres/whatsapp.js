@@ -4,7 +4,7 @@ import {tenantFeatures} from './features.js';
 import {z} from 'zod';
 import {enqueue} from './queue.js';
 import {httpError} from './database.js';
-import {seal,secretContext} from './secrets.js';
+import {seal,unseal,secretContext} from './secrets.js';
 import {normalizePhone} from './phone.js';
 export async function queueWhatsapp(c,i,{key,payload}){
  if(!(await tenantFeatures(c)).whatsapp)return false;
@@ -15,6 +15,40 @@ export async function queueWhatsapp(c,i,{key,payload}){
  await enqueue(c,i,{kind:'whatsapp',key,payload:data,maxAttempts:5});return true;
 }
 export function mountWhatsapp(app,{scoped,metaConnect}){
+ const templates='/api/v1/whatsapp/templates';
+ for(const method of ['get','post'])app[method](templates,scoped('settings',method==='get',async(c,req,m)=>{
+  if(!delegatedSetting(m,'settings-whatsapp'))throw httpError(403,'Seu perfil não pode gerenciar modelos do WhatsApp.','FORBIDDEN');
+  if(!(await tenantFeatures(c)).whatsapp)throw httpError(403,'WhatsApp indisponível no contrato.','FEATURE_DISABLED');
+  const a=(await c.query('SELECT waba_id,encrypted_token FROM bansir.meta_accounts WHERE enabled')).rows[0];
+  if(!a)throw httpError(409,'Conecte o WhatsApp do estabelecimento.','META_SETUP_REQUIRED');
+  const version=process.env.META_GRAPH_VERSION;
+  if(!/^v\d+\.\d+$/.test(version||''))throw httpError(503,'A versão da API Meta não está configurada.','META_UNAVAILABLE');
+  const url=new URL(`https://graph.facebook.com/${version}/${a.waba_id}/message_templates`);
+  let body;
+  if(method==='get'){
+   const after=z.string().max(4096).optional().parse(req.query.after);
+   url.searchParams.set('fields','id,name,status,category,language,components');
+   url.searchParams.set('limit','25');
+   if(after)url.searchParams.set('after',after);
+  }else{
+   const d=z.object({name:z.string().regex(/^[a-z0-9_]+$/).max(200),language:z.enum(['pt_BR','en_US','es']),category:z.enum(['UTILITY','MARKETING']),message:z.string().trim().min(1).max(1024),example:z.string().trim().max(200).optional()}).strict().parse(req.body);
+   const variables=d.message.match(/\{\{.*?\}\}/g)||[];
+   if(variables.some(v=>v!=='{{1}}')||(variables.length&&!d.example))throw httpError(400,'Use apenas {{1}} e informe um exemplo para esse campo.','META_TEMPLATE_VARIABLE');
+   body=JSON.stringify({name:d.name,language:d.language,category:d.category,components:[{type:'BODY',text:d.message,...(variables.length?{example:{body_text:[[d.example]]}}:{})}]});
+  }
+  const token=unseal(a.encrypted_token,secretContext(req.identity,'whatsapp-meta'));
+  let response,result;
+  try{
+   response=await fetch(url,{method:method.toUpperCase(),headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body,signal:AbortSignal.timeout(12000),redirect:'error'});
+   result=await response.json();
+  }catch{throw httpError(502,method==='post'?'A Meta não confirmou o envio. Consulte a lista antes de tentar novamente.':'Não foi possível consultar os modelos na Meta.','META_UNAVAILABLE');}
+  if(!response.ok){
+   const code=Number(result?.error?.code)||response.status;
+   if([10,190,200].includes(code)||response.status===403)throw httpError(403,'A Meta recusou o acesso. Confira whatsapp_business_management e a autorização desta conta.','META_MANAGEMENT_PERMISSION');
+   throw httpError(422,`A Meta recusou a operação (código ${code}). Confira os dados do modelo no WhatsApp Manager.`,'META_TEMPLATE_REJECTED');
+  }
+  return method==='get'?{data:{templates:result.data||[],next:result.paging?.next?result.paging.cursors?.after:null}}:{status:201,data:{id:result.id,status:result.status}};
+ }));
  app.get('/api/v1/whatsapp/greeting',scoped('settings',true,async c=>({data:(await c.query('SELECT enabled,message,recipient_filter FROM bansir.meta_greetings')).rows[0]||{enabled:false,message:''}})));
  app.put('/api/v1/whatsapp/greeting',scoped('settings',false,async(c,req,m)=>{if(!delegatedSetting(m,'settings-whatsapp'))throw httpError(403,'Somente administrador pode configurar a saudação.','FORBIDDEN');const d=z.object({enabled:z.boolean(),message:z.string().trim().min(1).max(1024)}).strict().parse(req.body),i=req.identity;await c.query('INSERT INTO bansir.meta_greetings(tenant_id,establishment_id,enabled,message,sender_user_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET enabled=EXCLUDED.enabled,message=EXCLUDED.message,sender_user_id=EXCLUDED.sender_user_id,updated_at=now()',[i.tenantId,i.establishmentId,d.enabled,d.message,i.userId]);return {data:d};}));
  app.get('/api/v1/whatsapp/status',scoped('settings',true,async c=>{const account=(await c.query('SELECT phone_number_id,waba_id,display_phone,enabled,template_language,voucher_template,delivery_template FROM bansir.meta_accounts')).rows[0];return {data:{provider:'meta',status:account?.enabled?'CONFIGURED':'NOT_CONFIGURED',account:account||null,webhookConfigured:!!(process.env.META_APP_SECRET&&process.env.META_VERIFY_TOKEN)}};}));

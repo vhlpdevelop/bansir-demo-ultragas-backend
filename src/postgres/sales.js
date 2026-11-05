@@ -56,9 +56,13 @@ export async function saleView(c,id){
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
  if(!s)return null;
+ s.printableFiscalDocuments=(await c.query(`SELECT DISTINCT ON (model) d.id, d.payload#>>'{request,NFe,infNFe,ide,mod}' AS model
+  FROM bansir.sale_fiscal_links f JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id)
+  WHERE f.sale_id=$1 AND d.status='authorized' ORDER BY model,d.id`,[id])).rows;
  s.customer_details=Object.keys(s.customer_snapshot||{}).length?s.customer_snapshot:
   s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
  s.agreement=(await c.query('SELECT agreement_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1',[id])).rows[0]||null;
+ s.link_order=(await c.query('SELECT preferred_payment FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[id])).rows[0]||null;
  s.receipt_address=receiptCustomerAddress(s);
  s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
    (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at)

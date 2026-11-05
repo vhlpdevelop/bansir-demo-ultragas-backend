@@ -2,11 +2,28 @@ import {z} from 'zod';
 import {httpError} from './database.js';
 import {ufCodes} from './fiscal.js';
 import {unseal,secretContext,seal} from './secrets.js';
-import {parseDistribution,decodeDocument,nextPoll} from './inbound-parser.js';
+import {parseDistribution,decodeDocument,nextPoll,parseInboundDocument,MAX_XML_BYTES} from './inbound-parser.js';
 import {findNode,parseXml,list} from './inbound-parser.js';
 import {enqueue} from './queue.js';
 import {requirePermission} from './catalog.js';
 export function mountFiscalMonitor(app,{scoped}){
+ app.post('/api/v1/fiscal/inbound/import',scoped('fiscal',false,async(c,req)=>{
+  const {xml}=z.object({xml:z.string().min(1).max(MAX_XML_BYTES)}).strict().parse(req.body),i=req.identity;
+  const monitor=(await c.query('SELECT id,cnpj,environment FROM bansir.fiscal_monitors WHERE environment=1 ORDER BY active DESC,created_at DESC LIMIT 1')).rows[0];
+  if(!monitor)throw httpError(409,'Configure o monitor fiscal de produção deste estabelecimento antes de importar.','FISCAL_MONITOR_REQUIRED');
+  let doc;
+  try{doc=parseInboundDocument(xml,monitor);}catch{throw httpError(400,'XML inválido ou incompatível com uma NF-e de entrada de produção.','INVALID_INBOUND_XML');}
+  if(!doc?.xml)throw httpError(400,'Use o XML completo da NF-e modelo 55 emitida para o CNPJ do estabelecimento.','INVALID_INBOUND_XML');
+  const encrypted=seal(xml,secretContext(i,'inbound:'+doc.accessKey));
+  const {rows:[row]}=await c.query(`INSERT INTO bansir.fiscal_inbound(tenant_id,establishment_id,monitor_id,access_key,supplier_cnpj,supplier_name,number,issued_at,total_cents,status,items,encrypted_xml)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'AVAILABLE',$10,$11)
+   ON CONFLICT(tenant_id,establishment_id,monitor_id,access_key) DO UPDATE SET
+   supplier_cnpj=EXCLUDED.supplier_cnpj,supplier_name=EXCLUDED.supplier_name,number=EXCLUDED.number,issued_at=EXCLUDED.issued_at,total_cents=EXCLUDED.total_cents,status='AVAILABLE',items=EXCLUDED.items,encrypted_xml=EXCLUDED.encrypted_xml,updated_at=now()
+   WHERE bansir.fiscal_inbound.status<>'CANCELLED' AND bansir.fiscal_inbound.encrypted_xml IS NULL RETURNING id`,
+   [i.tenantId,i.establishmentId,monitor.id,doc.accessKey,doc.supplierCnpj,doc.supplierName,doc.number,doc.issuedAt,doc.totalCents,JSON.stringify(doc.items),encrypted]);
+  if(!row)throw httpError(409,'Esta nota já tem XML cadastrado ou foi cancelada.','INBOUND_ALREADY_REGISTERED');
+  return {status:201,data:row};
+ }));
  app.post('/api/v1/fiscal/inbound/:id/science',scoped('fiscal-manifest',false,async(c,req,member)=>{
   requirePermission(member,'fiscal',true);z.object({consent:z.literal(true)}).strict().parse(req.body);
   const doc=(await c.query("SELECT id,monitor_id,access_key FROM bansir.fiscal_inbound WHERE id=$1 AND status<>'CANCELLED'",[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota indisponível para manifestação.','NOT_FOUND');

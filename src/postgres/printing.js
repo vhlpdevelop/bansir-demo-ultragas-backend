@@ -49,7 +49,7 @@ export async function receiptPdf(sale,store,width=80){
  const w=width*72/25.4,margin=12,inner=w-margin*2,font=width===58?7.5:8.5,chars=Math.floor(inner/(font*.6));
  const address=receiptCustomerAddress(sale),notes=sale.customer_details?.notes||sale.receipt_customer_notes||'',district=sale.customer_details?.fiscal?.enderDest?.xBairro||sale.customer_district||'';
  const textLines=v=>String(v||'').split('\n').reduce((n,l)=>n+Math.max(1,Math.ceil(l.length/chars)),0);
- const height=Math.max(700,600+(sale.agreement?95:0)+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
+ const height=Math.max(700,600+(sale.link_order?38:0)+(sale.agreement?95:0)+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
  const doc=new PDFDocument({size:[w,height],margins:{top:12,left:margin,right:margin,bottom:12}}),chunks=[];
  const result=new Promise((resolve,reject)=>{doc.on('data',b=>chunks.push(b));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
  const money=v=>(Number(v||0)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -75,6 +75,7 @@ export async function receiptPdf(sale,store,width=80){
  let received=0,change=0;for(const p of sale.payments){const amount=Number(p.amount_cents),cashReceived=Number(p.received_cents??amount);totals[p.method]=(totals[p.method]||0)+amount;received+=p.method==='cash'?cashReceived:amount;if(p.method==='cash')change+=cashReceived-amount;}
  for(const [method,value]of Object.entries(totals))pair('(=) '+(labels[method]||method),money(value));
  pair('(=) Total recebido',money(received),font,true);pair('(=) Troco',money(change));rule();
+ if(sale.link_order){const labels={cash:'Dinheiro',pix:'Pix',credit_card:'Cartão de crédito',debit_card:'Cartão de débito'};pair('Previsto no pedido',labels[sale.link_order.preferred_payment]||"A combinar");line(sale.cancelled_at?'Venda cancelada':sale.outstanding_cents>0?(sale.paid_cents>0?'Parcialmente pago':'Pagamento a receber'):'Pagamento quitado','left',font,true);}
  pair('Saldo devedor:','R$ '+money(sale.outstanding_cents),font,true);rule();
  if(sale.cancelled_at){line('VENDA CANCELADA','center',font+1,true);line(sale.cancellation_reason||'');rule();}
  line('Que nosso dia seja abençoado.','center',font,true);doc.moveDown(.5);line('RECIBO DE VENDA - SEM VALOR FISCAL','center',width===58?6:7);line('Não substitui documento fiscal autorizado.','center',width===58?6:7);
