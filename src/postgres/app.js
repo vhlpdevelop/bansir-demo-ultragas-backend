@@ -186,7 +186,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountNotifications(app,{scoped,route,database});
   mountFiscal(app,{scoped});
   mountFiscalIssuance(app,{scoped});
-  mountSales(app,{scoped});
+  mountSales(app,{scoped,secret:jwtSecret});
   mountSmartpos(app,{scoped,secret:jwtSecret});
   mountAgreements(app,{scoped});
   mountManagement(app,{scoped});

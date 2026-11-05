@@ -43,7 +43,7 @@ test('agreements preserve sales ledger, membership history, scopes and daily not
    assert.equal((await send(`/agreements/customer/${customer.id}`,'GET',undefined,'seller')).body.data.id,agreement.id);
   });
   await t.test('only deferred credit joins the group and retains fiscal recipient identity',async()=>{
-   const r=await send('/sales','POST',sell(customer.id,2));assert.equal(r.status,201,JSON.stringify(r.body));first=r.body.data;assert.equal(first.total_cents,2000);assert.equal(first.agreement.agreement_id,agreement.id);assert.equal(first.agreement.snapshot.payerCustomerId,payer.id);assert.equal(first.customer_document,'11144477735');assert.ok(first.due_date);
+   const r=await send('/sales','POST',sell(customer.id,2));assert.equal(r.status,201,JSON.stringify(r.body));first=r.body.data;assert.equal(first.total_cents,2000);assert.deepEqual(first.agreement.snapshot.balanceAtEntry,{previousCents:0,entryCents:2000,totalCents:2000});assert.equal(first.agreement.agreement_id,agreement.id);assert.equal(first.agreement.snapshot.payerCustomerId,payer.id);assert.equal(first.customer_document,'11144477735');assert.ok(first.due_date);
    const stock=(await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[product.id])).rows[0].stock;
    const blocked=await send('/sales','POST',sell(customer.id));assert.equal(blocked.body.code,'AGREEMENT_MEMBER_LIMIT');assert.equal((await admin.query('SELECT stock FROM bansir.products WHERE id=$1',[product.id])).rows[0].stock,stock);
    const immediate=await send('/sales','POST',sell(customer.id,1,{payment:{method:'pix',confirmed:true}}));assert.equal(immediate.status,201,JSON.stringify(immediate.body));assert.equal(immediate.body.data.agreement,null);

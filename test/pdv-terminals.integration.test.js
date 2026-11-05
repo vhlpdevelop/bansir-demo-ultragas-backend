@@ -44,7 +44,7 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
   const activateSmart=async(id,provider='pagbank')=>send(`/pdv/terminals/${id}/smartpos/activation`,'POST',{provider,replaceExisting:true});
   const pair=async code=>send('/pdv/terminals/pair','POST',{code});
   const open=(token,terminal)=>send('/pdv/cash/open','POST',{openingCents:0},token,terminal);
-  const close=async(token,terminal)=>{const cash=(await send('/pdv/cash','GET',undefined,token)).body.data;return send(`/pdv/cash/${cash.id}/close`,'POST',{countedCents:cash.expected_cents,note:''},token,terminal);};
+  const close=async(token,terminal)=>{const cash=(await send('/pdv/cash','GET',undefined,token)).body.data;return send(`/pdv/cash/${cash.id}/close`,'POST',{countedCents:cash.expected_cents,reopenVersion:cash.reopen_version,note:''},token,terminal);};
   let first,second,binding1,binding2,legacy;const activeSmartTokens=[];
   await t.test('registration and activation are scoped and admin-only',async()=>{
    legacy=(await open(session.token)).body.data;assert.equal(legacy.terminal_id,null);
@@ -116,6 +116,25 @@ test('PDV terminals: enrollment, cash provenance, RBAC and receipt authorization
    assert.deepEqual((await send('/dashboard','GET',undefined,foreign.token)).body.data.terminalCash.terminals,[]);
    await admin.query("UPDATE bansir.establishment_memberships SET allowed_routes=ARRAY['sales','dashboard'] WHERE user_id=$1 AND tenant_id=$2 AND establishment_id=$3",[operator.user.id,tenant.id,tenant.establishmentId]);
    assert.equal((await send('/dashboard','GET',undefined,operator.token)).status,200);
+  });
+  await t.test('cash reopening commits PIN attempts and preserves the original close',async()=>{
+   const issuedPath=`/pdv/terminals/${second.id}/cash-reopen-code`;
+   const closed=await close(operator.token,binding2);assert.equal(closed.status,200);
+   const id=closed.body.data.id,path=`/pdv/cash/${id}/reopen`;
+   assert.equal((await send(issuedPath,'POST',{},operator.token)).status,403);
+   const issued=await send(issuedPath,'POST',{});assert.equal(issued.status,200,JSON.stringify(issued.body));
+   const code=issued.body.data.code;assert.match(code,/^\d{4}$/);
+   const wrong=code==='0000'?'0001':'0000';
+   for(let n=0;n<5;n++)assert.equal((await send(path,'POST',{requestKey:randomUUID(),code:wrong},operator.token,binding2)).body.code,'CASH_REOPEN_CODE_INVALID');
+   assert.equal((await send(path,'POST',{requestKey:randomUUID(),code},operator.token,binding2)).status,429);
+   const replacement=(await send(issuedPath,'POST',{})).body.data.code;
+   const body={requestKey:randomUUID(),code:replacement};
+   const reopened=await send(path,'POST',body,operator.token,binding2);assert.equal(reopened.status,200,JSON.stringify(reopened.body));assert.equal(reopened.body.data.id,id);assert.equal(reopened.body.data.closed_at,null);assert.equal(reopened.body.data.reopen_version,1);
+   assert.equal((await send(path,'POST',body,operator.token,binding2)).body.data.reopen_version,1);
+   const history=await send(`/pdv/cash/${id}/previous-closures`,'GET',undefined,operator.token);assert.equal(history.body.data.length,1);assert.equal(history.body.data[0].previous_close.closed_at,closed.body.data.closed_at);
+   assert.equal((await send(`/pdv/cash/${id}/close`,'POST',{countedCents:0},operator.token,binding2)).body.code,'STALE_CASH');
+   assert.equal((await close(session.token,binding1)).status,200);
+   const direct=await send(`/pdv/cash/${cash1.id}/reopen`,'POST',{requestKey:randomUUID()},session.token,binding1);assert.equal(direct.status,200,JSON.stringify(direct.body));
   });
   await t.test('terminal reuse never grants access to another operator receipt (SEC-01)',async()=>{
    assert.equal((await send(`/sales/${sale.id}/receipt`,'GET',undefined,operator.token,binding2)).status,404);

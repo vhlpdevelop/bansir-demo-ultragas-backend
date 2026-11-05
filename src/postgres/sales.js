@@ -11,7 +11,7 @@ import {applyTributaryUnits} from './product-fiscal-profile.js';
 import {mountSaleCustomization} from './sale-customization.js';
 import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
 import {z} from 'zod';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,randomInt,createHmac,timingSafeEqual} from 'node:crypto';
 import {httpError} from './database.js';
 import {requirePermission,stockMovement} from './catalog.js';
 import {enqueueNotification} from './notifications.js';
@@ -155,7 +155,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  return saleView(c,sale.id);
 }
 
-export function mountSales(app,{scoped}){
+export function mountSales(app,{scoped,secret}){
  mountSaleEditing(app,{scoped,saleView,ownedSale});
  mountSaleCustomization(app,{scoped});
  app.get('/api/v1/pdv/terminal-notice',scoped('sales',true,async(c,req)=>{
@@ -174,9 +174,69 @@ export function mountSales(app,{scoped}){
   const {rows:[cash]}=await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents,terminal_id,terminal_name) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[i.tenantId,i.establishmentId,i.userId,openingCents,terminal?.id||null,terminal?.name||null]);return {status:201,data:await cashView(c,cash)};
  }));
  app.get('/api/v1/pdv/cash/history',scoped('sales',true,async(c,req)=>({data:await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30',[req.identity.userId])).rows.map(cash=>cashView(c,cash)))})));
+ const cashAdmin=member=>['admin','superadmin'].includes(member.role);
+ const reopenDigest=(i,terminalId,code)=>createHmac('sha256',secret)
+  .update(JSON.stringify(['cash-reopen',i.tenantId,i.establishmentId,terminalId,code])).digest('hex');
+ app.post('/api/v1/pdv/terminals/:id/cash-reopen-code',scoped('settings-terminals',false,async(c,req,member)=>{
+  if(!cashAdmin(member))fail('Somente administradores podem gerar este código.','FORBIDDEN',403);
+  const i=req.identity,id=uuid.parse(req.params.id);
+  if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1 AND active',[id])).rowCount)fail('Terminal indisponível.','NOT_FOUND',404);
+  const code=String(randomInt(10000)).padStart(4,'0');
+  const {rows:[row]}=await c.query(`INSERT INTO bansir.cash_reopen_codes(tenant_id,establishment_id,terminal_id,issuer_id,digest,expires_at)
+   VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '5 minutes')
+   ON CONFLICT(tenant_id,establishment_id,terminal_id) DO UPDATE
+   SET issuer_id=excluded.issuer_id,digest=excluded.digest,expires_at=excluded.expires_at,attempts=0
+   RETURNING expires_at`,[i.tenantId,i.establishmentId,id,i.userId,reopenDigest(i,id,code)]);
+  return {data:{code,expiresAt:row.expires_at}};
+ }));
+ app.post('/api/v1/pdv/cash/:id/reopen',scoped('sales',false,async(c,req,member)=>{
+  const input=z.object({requestKey:uuid,code:z.string().regex(/^\d{4}$/).optional()}).strict().parse(req.body);
+  const i=req.identity,id=uuid.parse(req.params.id);
+  await financialCashLock(c,i);
+  const current=await lockCash(c,i),terminal=await requireTerminal(c,i);
+  if(!terminal||terminal.client_type!=='browser')fail('Use o navegador vinculado ao terminal deste caixa.','TERMINAL_REQUIRED');
+  await lock(c,`${unitKey(i)}:terminal:${terminal.id}`);
+  const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[id,i.userId])).rows[0];
+  if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
+  assertCashTerminal(cash,terminal);
+  const prior=(await c.query('SELECT cash_id,operator_id FROM bansir.cash_reopenings WHERE request_key=$1',[input.requestKey])).rows[0];
+  if(prior){
+   if(prior.cash_id!==id||prior.operator_id!==i.userId)fail('Identificador já utilizado.','IDEMPOTENCY_CONFLICT');
+   return {data:await cashView(c,cash)};
+  }
+  if(!cash.closed_at||current)fail('Feche o caixa atual antes de reabrir outro.','CASH_ALREADY_OPEN');
+  const newest=(await c.query('SELECT id FROM bansir.cash_sessions WHERE terminal_id=$1 ORDER BY opened_at DESC,id DESC LIMIT 1',[terminal.id])).rows[0];
+  if(newest?.id!==id)fail('Somente o último caixa deste terminal pode ser reaberto.','CASH_REOPEN_NOT_LATEST');
+  await assertNoSmartpos(c,{cashId:id});
+  let approver=i.userId;
+  if(!cashAdmin(member)){
+   const row=(await c.query(`SELECT *,expires_at>clock_timestamp() AS valid FROM bansir.cash_reopen_codes WHERE terminal_id=$1 FOR UPDATE`,[terminal.id])).rows[0];
+   if(!row?.valid||row.attempts>=5)fail('Solicite um novo código ao administrador.','CASH_REOPEN_CODE_UNAVAILABLE',429);
+   const supplied=Buffer.from(reopenDigest(i,terminal.id,input.code||''),'hex');
+   if(!timingSafeEqual(supplied,Buffer.from(row.digest,'hex'))){
+    await c.query('UPDATE bansir.cash_reopen_codes SET attempts=attempts+1 WHERE terminal_id=$1',[terminal.id]);
+    // Return normally so the failed attempt is committed.
+    return {status:403,meta:{success:false,code:'CASH_REOPEN_CODE_INVALID',message:`Código incorreto. Tentativas restantes: ${4-row.attempts}.`}};
+   }
+   approver=row.issuer_id;
+   await c.query('DELETE FROM bansir.cash_reopen_codes WHERE terminal_id=$1',[terminal.id]);
+  }
+  await c.query(`INSERT INTO bansir.cash_reopenings(tenant_id,establishment_id,cash_id,request_key,operator_id,approver_id,previous_close)
+   VALUES($1,$2,$3,$4,$5,$6,$7)`,[i.tenantId,i.establishmentId,id,input.requestKey,i.userId,approver,await cashView(c,cash)]);
+  const {rows:[opened]}=await c.query(`UPDATE bansir.cash_sessions SET closed_at=NULL,counted_cents=NULL,expected_cents=NULL,
+   difference_cents=NULL,closing_note=NULL,reopen_version=reopen_version+1 WHERE id=$1 RETURNING *`,[id]);
+  return {data:await cashView(c,opened)};
+ }));
+ app.get('/api/v1/pdv/cash/:id/previous-closures',scoped('sales',true,async(c,req)=>{
+  const {rows}=await c.query(`SELECT r.previous_close,r.created_at FROM bansir.cash_reopenings r
+   JOIN bansir.cash_sessions s ON (s.tenant_id,s.establishment_id,s.id)=(r.tenant_id,r.establishment_id,r.cash_id)
+   WHERE s.id=$1 AND s.user_id=$2 ORDER BY r.created_at DESC`,[uuid.parse(req.params.id),req.identity.userId]);
+  return {data:rows};
+ }));
  app.post('/api/v1/pdv/cash/:id/close',scoped('sales',false,async(c,req)=>{
-  const input=z.object({countedCents:cents,note:z.string().trim().max(1000).default('')}).strict().parse(req.body),i=req.identity;
+  const input=z.object({countedCents:cents,reopenVersion:z.number().int().nonnegative().default(0),note:z.string().trim().max(1000).default('')}).strict().parse(req.body),i=req.identity;
   await financialCashLock(c,i);await lockCash(c,i);const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[uuid.parse(req.params.id),i.userId])).rows[0];if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
+  if(cash.reopen_version!==input.reopenVersion)fail('Atualize a conferência deste caixa antes de fechar.','STALE_CASH');
   if(cash.closed_at){if(Number(cash.counted_cents)!==input.countedCents||cash.closing_note!==input.note)fail('Caixa já fechado com outra conferência.','CASH_ALREADY_CLOSED');return {data:await cashView(c,cash)};}
   // Legacy shifts can always be closed; never invent or reassign their origin.
   if(cash.terminal_id)assertCashTerminal(cash,await requireTerminal(c,i));

@@ -40,8 +40,12 @@ export async function checkAgreementCredit(c,a,total){
  if(a.limit_cents!==null&&Number(balance.total)+total>Number(a.limit_cents))throw httpError(409,'Limite disponível do convênio insuficiente.','AGREEMENT_LIMIT');
  if(a.member_limit_cents!==null&&Number(balance.member)+total>Number(a.member_limit_cents))throw httpError(409,'Limite disponível do participante insuficiente.','AGREEMENT_MEMBER_LIMIT');
 }
-export async function attachAgreement(c,i,sale,a){if(!a)return;await c.query(`INSERT INTO bansir.sale_agreements(tenant_id,establishment_id,sale_id,agreement_id,customer_id,period_end,due_date,snapshot)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents}]);}
+export async function attachAgreement(c,i,sale,a){
+ if(!a)return;
+ const {rows:[balance]}=await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1) balances`,[a.id]);
+ const previousCents=Number(balance.cents),entryCents=Number(sale.total_cents);
+ await c.query(`INSERT INTO bansir.sale_agreements(tenant_id,establishment_id,sale_id,agreement_id,customer_id,period_end,due_date,snapshot)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents,balanceAtEntry:{previousCents,entryCents,totalCents:previousCents+entryCents}}]);}
 
 export async function nextAgreementTerms(c,a,today){
  let terms=agreementTerms(today,a.cut_day,a.due_day);
