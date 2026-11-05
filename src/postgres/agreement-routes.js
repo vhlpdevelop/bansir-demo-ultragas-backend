@@ -1,4 +1,4 @@
-import PDFDocument from 'pdfkit';
+import {agreementReportPdf} from './agreement-report-pdf.js';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
 import {httpError} from './database.js';
@@ -118,37 +118,7 @@ export function mountAgreements(app,{scoped}){
   const monthStart=month?date.parse(month+'-01'):null;
   const timeZone=(await c.query("SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)")).rows[0]?.name||'America/Cuiaba';
   const data=await statement(c,uuid.parse(r.params.id),period,{monthStart,timeZone});
-  const doc=new PDFDocument({size:'A4',margin:36}),chunks=[];
-  const output=new Promise((resolve,reject)=>{doc.on('data',b=>chunks.push(b));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
-  const money=n=>(Number(n)/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-  const quantity=sale=>(sale.items||[]).reduce((sum,item)=>sum+Number(item.quantity),0);
-  const valid=data.sales.filter(sale=>!sale.cancelled_at);
-  const total=field=>valid.reduce((sum,sale)=>sum+sale[field],0);
-  const quantityText=n=>n.toLocaleString('pt-BR');
-  const dateText=value=>value.split('-').reverse().join('/');
-  const heading=label=>doc.fontSize(19).fillColor('#34459c').text(label).moveDown(.4).fontSize(13).fillColor('#263344').text(data.agreement.name).moveDown();
-  heading('Relatório sintético do convênio');
-  doc.fontSize(11).text('Responsável pelo pagamento: '+data.agreement.payer_name)
-   .text(period?'Ciclo de cobrança: '+dateText(period):'Mês das vendas: '+month.split('-').reverse().join('/')).moveDown();
-  for(const row of [
-   ['Vendas válidas',valid.length],['Quantidade total de itens',quantityText(valid.reduce((sum,sale)=>sum+quantity(sale),0))],
-   ['Valor das vendas',money(total('total_cents'))],['Valor recebido',money(total('paid_cents'))],['Saldo a receber',money(data.outstandingCents)],
-   ['Vendas canceladas',data.sales.length-valid.length]
-  ])doc.fontSize(12).text(row.join('  ·  ')).moveDown(.6);
-  doc.fontSize(9).text('O resumo financeiro considera as vendas válidas. Relatório sem valor fiscal.');
-  doc.addPage();heading('Relatório analítico de vendas');
-  if(!data.sales.length)doc.fontSize(11).text('Nenhuma venda no período selecionado.');
-  for(const sale of data.sales){
-   if(doc.y>690){doc.addPage();heading('Relatório analítico de vendas');}
-   const issued=new Date(sale.created_at).toLocaleString('pt-BR',{timeZone});
-   doc.fontSize(11).text('Cupom '+sale.coupon_number+'  ·  '+issued+(sale.cancelled_at?'  ·  CANCELADA':''));
-   doc.fontSize(10).text(sale.customer_name||'Cliente não identificado')
-    .text('Itens: '+quantityText(quantity(sale))+'  ·  Venda: '+money(sale.total_cents)+'  ·  Saldo: '+money(sale.outstanding_cents))
-    .text('Vencimento: '+dateText(sale.due_date));
-   for(const item of sale.items||[])doc.fontSize(9).text('  '+quantityText(Number(item.quantity))+' × '+item.name);
-   doc.moveDown(.8);
-  }
-  doc.end();const pdf=await output;
+  const pdf=await agreementReportPdf(data,{month,period,timeZone});
   return {data:{base64:pdf.toString('base64'),filename:`relatorio-convenio-${month||period}.pdf`}};
  }));
  app.post('/api/v1/agreements/:id/close',route('close',async(c,r)=>{
