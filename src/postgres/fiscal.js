@@ -94,7 +94,8 @@ export function mountFiscal(app,{scoped}) {
  app.get('/api/v1/fiscal/documents',scoped('fiscal',true,async(c,req)=>{
   const month=fiscalMonth.optional().parse(req.query.month)||null;
   const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page);
-  const {rows}=await c.query(`SELECT id,environment,substring(access_key FROM 21 FOR 2) AS model,access_key,status,protocol,rejection_code,s3_key,created_at
+  const {rows}=await c.query(`SELECT id,environment,substring(access_key FROM 21 FOR 2) AS model,access_key,status,protocol,rejection_code,s3_key,created_at,
+   (status IN ('authorized','cancelled') AND coalesce(xml<>'',false)) AS xml_available
    FROM bansir.fiscal_documents WHERE ${inMonth} ORDER BY created_at DESC,id LIMIT 101 OFFSET $2`,[month,page*100]);
   return {data:rows.slice(0,100),meta:{hasNext:rows.length>100}};
  }));
