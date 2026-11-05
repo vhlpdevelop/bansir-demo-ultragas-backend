@@ -14,8 +14,10 @@ const hash=(i,b)=>fiscalDraftHash({...b,userId:i.userId});
 async function group(c,id){const a=(await c.query('SELECT a.*,p.name AS payer_name,p.document AS payer_document FROM bansir.agreements a JOIN bansir.customers p ON(p.tenant_id,p.establishment_id,p.id)=(a.tenant_id,a.establishment_id,a.payer_customer_id) WHERE a.id=$1',[uuid.parse(id)])).rows[0];if(!a)fail('Convênio não encontrado.','NOT_FOUND',404);return a;}
 async function audit(c,i,id,key,action,b,fingerprint=hash(i,b)){await c.query('INSERT INTO bansir.agreement_audit(tenant_id,establishment_id,agreement_id,user_id,request_key,request_hash,action,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,id,i.userId,key,fingerprint,action,b]);}
 async function prior(c,i,b){const r=(await c.query('SELECT agreement_id,request_hash FROM bansir.agreement_audit WHERE request_key=$1',[b.requestKey])).rows[0];if(r&&r.request_hash!==hash(i,b))fail('Tentativa já utilizada com outros dados.','IDEMPOTENCY_CONFLICT');return r;}
-async function statement(c,id,period){
- const a=await group(c,id);const result=await c.query(`${agreementBalancesSql} WHERE l.agreement_id=$1 AND($2::date IS NULL OR l.period_end=$2) ORDER BY l.due_date,s.created_at,s.id LIMIT 1001`,[id,period||null]);
+async function statement(c,id,period,{monthStart=null,timeZone='America/Cuiaba'}={}){
+ const a=await group(c,id);const result=await c.query(`${agreementBalancesSql} WHERE l.agreement_id=$1 AND($2::date IS NULL OR l.period_end=$2)
+  AND ($3::date IS NULL OR ((s.created_at AT TIME ZONE $4)::date >= $3::date AND (s.created_at AT TIME ZONE $4)::date < $3::date + interval '1 month'))
+  ORDER BY l.due_date,s.created_at,s.id LIMIT 1001`,[id,period||null,monthStart,timeZone]);
  if(result.rows.length>1000)fail('Selecione um período para consultar até 1.000 vendas.','AGREEMENT_STATEMENT_LIMIT');
  const sales=result.rows.map(r=>({...r,total_cents:Number(r.total_cents),paid_cents:Number(r.paid_cents),outstanding_cents:Number(r.outstanding_cents)}));
  const cycles=(await c.query('SELECT period_end::text,closed_at,closed_by,snapshot FROM bansir.agreement_cycles WHERE agreement_id=$1 ORDER BY period_end DESC LIMIT 100',[id])).rows;
@@ -109,13 +111,45 @@ export function mountAgreements(app,{scoped}){
  app.get('/api/v1/agreements/:id/periods',route('view',async(c,r)=>{await group(c,r.params.id);return {data:(await c.query('SELECT DISTINCT period_end::text FROM bansir.sale_agreements WHERE agreement_id=$1 ORDER BY period_end DESC LIMIT 120',[r.params.id])).rows};}));
  app.get('/api/v1/agreements/:id/statement',route('view',async(c,r)=>({data:await statement(c,uuid.parse(r.params.id),date.optional().parse(r.query.period))})));
  app.get('/api/v1/agreements/:id/statement-pdf',route('view',async(c,r)=>{
-  const data=await statement(c,uuid.parse(r.params.id),date.optional().parse(r.query.period));const doc=new PDFDocument({size:'A4',margin:36}),chunks=[];
+  const period=date.optional().parse(r.query.period);
+  const requestedMonth=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().parse(r.query.month);
+  if(period&&requestedMonth)throw httpError(400,'Selecione o mês das vendas ou o ciclo de cobrança.','INVALID_PERIOD');
+  const month=period?null:requestedMonth||(await agreementToday(c)).slice(0,7);
+  const monthStart=month?date.parse(month+'-01'):null;
+  const timeZone=(await c.query("SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)")).rows[0]?.name||'America/Cuiaba';
+  const data=await statement(c,uuid.parse(r.params.id),period,{monthStart,timeZone});
+  const doc=new PDFDocument({size:'A4',margin:36}),chunks=[];
   const output=new Promise((resolve,reject)=>{doc.on('data',b=>chunks.push(b));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
   const money=n=>(Number(n)/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-  doc.fontSize(17).text('Demonstrativo de convênio').moveDown().fontSize(11).text(data.agreement.name).text('Responsável pelo pagamento: '+data.agreement.payer_name).text('Período: '+(r.query.period||'Todos')).text('Saldo a receber: '+money(data.outstandingCents)).moveDown();
-  for(const sale of data.sales){if(doc.y>710)doc.addPage();doc.fontSize(10).text('Cupom '+sale.coupon_number+' | '+sale.customer_name+' | Vencimento '+sale.due_date).text('Total '+money(sale.total_cents)+' | Saldo '+money(sale.outstanding_cents)+(sale.cancelled_at?' | CANCELADA':''));for(const item of sale.items||[])doc.fontSize(9).text('  '+item.quantity+' x '+item.name);doc.moveDown(.5);}
-  doc.fontSize(9).text('Demonstrativo de cobrança. Sem valor fiscal. Os documentos fiscais das vendas são emitidos separadamente.');doc.end();const pdf=await output;
-  return {data:{base64:pdf.toString('base64'),filename:'extrato-convenio.pdf'}};
+  const quantity=sale=>(sale.items||[]).reduce((sum,item)=>sum+Number(item.quantity),0);
+  const valid=data.sales.filter(sale=>!sale.cancelled_at);
+  const total=field=>valid.reduce((sum,sale)=>sum+sale[field],0);
+  const quantityText=n=>n.toLocaleString('pt-BR');
+  const dateText=value=>value.split('-').reverse().join('/');
+  const heading=label=>doc.fontSize(19).fillColor('#34459c').text(label).moveDown(.4).fontSize(13).fillColor('#263344').text(data.agreement.name).moveDown();
+  heading('Relatório sintético do convênio');
+  doc.fontSize(11).text('Responsável pelo pagamento: '+data.agreement.payer_name)
+   .text(period?'Ciclo de cobrança: '+dateText(period):'Mês das vendas: '+month.split('-').reverse().join('/')).moveDown();
+  for(const row of [
+   ['Vendas válidas',valid.length],['Quantidade total de itens',quantityText(valid.reduce((sum,sale)=>sum+quantity(sale),0))],
+   ['Valor das vendas',money(total('total_cents'))],['Valor recebido',money(total('paid_cents'))],['Saldo a receber',money(data.outstandingCents)],
+   ['Vendas canceladas',data.sales.length-valid.length]
+  ])doc.fontSize(12).text(row.join('  ·  ')).moveDown(.6);
+  doc.fontSize(9).text('O resumo financeiro considera as vendas válidas. Relatório sem valor fiscal.');
+  doc.addPage();heading('Relatório analítico de vendas');
+  if(!data.sales.length)doc.fontSize(11).text('Nenhuma venda no período selecionado.');
+  for(const sale of data.sales){
+   if(doc.y>690){doc.addPage();heading('Relatório analítico de vendas');}
+   const issued=new Date(sale.created_at).toLocaleString('pt-BR',{timeZone});
+   doc.fontSize(11).text('Cupom '+sale.coupon_number+'  ·  '+issued+(sale.cancelled_at?'  ·  CANCELADA':''));
+   doc.fontSize(10).text(sale.customer_name||'Cliente não identificado')
+    .text('Itens: '+quantityText(quantity(sale))+'  ·  Venda: '+money(sale.total_cents)+'  ·  Saldo: '+money(sale.outstanding_cents))
+    .text('Vencimento: '+dateText(sale.due_date));
+   for(const item of sale.items||[])doc.fontSize(9).text('  '+quantityText(Number(item.quantity))+' × '+item.name);
+   doc.moveDown(.8);
+  }
+  doc.end();const pdf=await output;
+  return {data:{base64:pdf.toString('base64'),filename:`relatorio-convenio-${month||period}.pdf`}};
  }));
  app.post('/api/v1/agreements/:id/close',route('close',async(c,r)=>{
   const b=z.object({requestKey:uuid,periodEnd:date}).strict().parse(r.body),i=r.identity;await agreementLock(c,i);const a=await group(c,r.params.id),payload={...b,agreementId:a.id};

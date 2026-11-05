@@ -6,14 +6,18 @@ import {z} from 'zod';
 import PDFDocument from 'pdfkit';
 import {httpError} from './database.js';
 import {employees,financeEntries} from './management.js';
+import {agreementAllowed} from './agreements.js';
 const modes=reportCatalog.map(x=>x.key);
 const dateOnly=v=>v instanceof Date?`${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`:String(v).slice(0,10);
 const currency=v=>Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const reportAvailable=(entry,features,member)=>(!entry.feature||features[entry.feature]===true)
+ &&(!entry.adminOnly||['admin','superadmin'].includes(member.role))
+ &&(entry.key!=='convenios'||agreementAllowed(member,'view'));
 export async function managementReport(c,query,member={role:'admin'},context=null){
  const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online','pending']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
  if(d.endDate<d.startDate||(+new Date(d.endDate)-+new Date(d.startDate))>366*86400000)throw httpError(400,'Selecione um período de até um ano.','INVALID_PERIOD');
- const features=context?.features||await tenantFeatures(c),isAdmin=['admin','superadmin'].includes(member.role);
- const coverage=reportCatalog.map(x=>({...x,available:(!x.feature||features[x.feature]===true)&&(!x.adminOnly||isAdmin)}));
+ const features=context?.features||await tenantFeatures(c);
+ const coverage=reportCatalog.map(x=>({...x,available:reportAvailable(x,features,member)}));
  const chosen=coverage.find(x=>x.key===d.mode);if(!chosen.available)throw httpError(403,'Relatório indisponível no contrato ou nas permissões deste usuário.','REPORT_UNAVAILABLE');
  if(!context){
  const timezone=(await c.query("SELECT coalesce(config->>'timeZone','America/Cuiaba') AS tz FROM bansir.storefronts")).rows[0]?.tz||'America/Cuiaba';
@@ -33,6 +37,18 @@ export async function managementReport(c,query,member={role:'admin'},context=nul
  }
  const {timezone,sales,valid,total,cost,received,spent,ledger,entries,bounds}=context;
  const data={mode:d.mode,period:d,startDate:d.startDate,endDate:d.endDate,timeZone:timezone,kpis:{salesTotal:total,productCost:cost,grossMargin:total-cost,received,spent,balance:received-spent,salesCount:valid.length},columns:[],rows:[],coverage,basis:chosen.basis,generatedAt:new Date().toISOString(),paymentSummary:paymentSummary(entries)};
+ if(d.mode==='convenios'){
+  const links=(await c.query(`SELECT l.sale_id,a.name,l.due_date::text,
+   (SELECT coalesce(sum(i.quantity),0) FROM bansir.sale_items i WHERE i.sale_id=l.sale_id) AS quantity
+   FROM bansir.sale_agreements l JOIN bansir.agreements a ON (a.tenant_id,a.establishment_id,a.id)=(l.tenant_id,l.establishment_id,l.agreement_id)
+   WHERE l.sale_id=ANY($1::uuid[])`,[sales.map(s=>s.id)])).rows;
+  const bySale=new Map(links.map(link=>[link.sale_id,link]));
+  data.columns=['Convênio','Cupom','Data da venda','Cliente','Quantidade','Valor','Recebido','Saldo','Situação','Vencimento'];
+  data.rows=sales.filter(s=>bySale.has(s.id)).map(s=>{
+   const link=bySale.get(s.id);
+   return [link.name,String(s.coupon_number),new Date(s.created_at).toLocaleString('pt-BR',{timeZone:timezone}),s.customer_name,Number(link.quantity),currency(Number(s.total_cents)/100),currency(Number(s.paid)/100),currency(s.cancelled?0:(Number(s.total_cents)-Number(s.paid))/100),s.status,dateOnly(link.due_date)];
+  });
+ }
  if(d.mode==='resumo-pagamentos'){data.columns=['Forma de pagamento','Recebido','Saídas e estornos','Saldo'];data.rows=data.paymentSummary.methods.map(r=>[r.label,currency(r.receivedCents/100),currency(r.outflowCents/100),currency(r.netCents/100)]);data.rows.push(['A receber (lançamentos do período)',currency(data.paymentSummary.pendingCents/100),'','']);}
  if(d.mode==='vendas'||d.mode==='consolidado'){data.columns=['Venda','Data','Vendedor','Cliente','Situação','Valor','Recebido','Telefone','Subtotal','Desconto','Entrega','Modalidade','Endereço','Caixa','Vencimento'];data.rows=sales.map(s=>[s.id,new Date(s.created_at).toLocaleString('pt-BR',{timeZone:timezone}),s.seller_name,s.customer_name,s.status,currency(Number(s.total_cents)/100),currency(Number(s.paid)/100),s.customer_phone,currency(Number(s.subtotal_cents)/100),currency(Number(s.discount_cents)/100),currency(Number(s.delivery_fee_cents)/100),s.delivery_mode,s.delivery_address,s.cash_session_id,s.due_date?dateOnly(s.due_date):'']);}
  if(d.mode==='estoque'){data.columns=['Produto','Categoria','Estoque atual','Custo unitário','Preço','Alerta','Cadastro'];data.rows=(await c.query("SELECT * FROM bansir.products WHERE ($1='' OR category=$1) ORDER BY stock,name LIMIT 5001",[d.category])).rows.map(p=>[p.name,p.category,p.stock,currency(Number(p.cost_cents)/100),currency(Number(p.price_cents)/100),p.stock<=5?'Estoque baixo':'Regular',p.active?'Ativo':'Inativo']);}
@@ -73,7 +89,7 @@ function reportCsv(data){
  return Buffer.from('\uFEFF'+rows.map(r=>r.map(cell).join(';')).join('\r\n'),'utf8');
 }
 export function mountManagementReports(app,{scoped}){
- app.get('/api/v1/reports/catalog',scoped('reports',true,async(c,r,m)=>{const f=await tenantFeatures(c);return {data:{modes:reportCatalog.map(x=>({...x,available:(!x.feature||f[x.feature]===true)&&(!x.adminOnly||['admin','superadmin'].includes(m.role))})),drivers:(await c.query('SELECT id,name FROM bansir.deliverers ORDER BY name')).rows}};}));
+ app.get('/api/v1/reports/catalog',scoped('reports',true,async(c,r,m)=>{const f=await tenantFeatures(c);return {data:{modes:reportCatalog.map(x=>({...x,available:reportAvailable(x,f,m)})),drivers:(await c.query('SELECT id,name FROM bansir.deliverers ORDER BY name')).rows}};}));
  app.get('/api/v1/reports/csv',scoped('reports',true,async(c,r,m)=>({data:{base64:reportCsv(await managementReport(c,r.query,m)).toString('base64')}})));
  app.get('/api/v1/reports/sellers',scoped('reports',true,async c=>({data:(await c.query('SELECT DISTINCT seller_name AS name FROM bansir.sales ORDER BY seller_name')).rows})));
  app.get('/api/v1/reports/summary',scoped('reports',true,async(c,req,m)=>({data:await managementReport(c,req.query,m)})));

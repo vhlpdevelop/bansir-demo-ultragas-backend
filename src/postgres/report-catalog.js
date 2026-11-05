@@ -1,5 +1,6 @@
 // Business report catalogue. Every export uses explicit fields; credentials and location points are excluded.
 export const reportCatalog=[
+ ['convenios','Convênios','Data da venda vinculada ao convênio','agreements'],
  ['consolidado','Visão completa do estabelecimento','Todos os módulos disponíveis'],['vendas','Vendas e performance','Data da venda'],['itens','Produtos vendidos','Data da venda'],['resumo-pagamentos','Resumo por forma de pagamento','Recebimentos e saídas no período; saldo pendente atual dos lançamentos do período'],['pagamentos','Pagamentos e parcelas','Data do recebimento'],['cancelamentos','Cancelamentos e devoluções','Data do cancelamento'],
  ['financeiro','Financeiro: entradas e saídas','Data de liquidação ou lançamento'],['pagar','Contas a pagar','Vencimento ou lançamento'],['receber','Contas a receber','Vencimento ou lançamento'],['caixas','Caixas por terminal e operador','Abertura do caixa'],['movimentos-caixa','Movimentos de caixa','Data do movimento'],
  ['estoque','Catálogo e posição de estoque','Posição atual'],['movimentos-estoque','Entradas e saídas de estoque','Data do movimento'],['fiscal','Notas emitidas','Criação do documento'],['notas-entrada','Notas de fornecedores','Emissão ou recebimento'],

@@ -7,6 +7,14 @@ import {findNode,parseXml,list} from './inbound-parser.js';
 import {enqueue} from './queue.js';
 import {requirePermission} from './catalog.js';
 export function mountFiscalMonitor(app,{scoped}){
+ const unseen="d.badge_since IS NOT NULL AND d.status<>'CANCELLED' AND NOT EXISTS(SELECT 1 FROM bansir.fiscal_inbound_seen s WHERE (s.tenant_id,s.establishment_id,s.document_id)=(d.tenant_id,d.establishment_id,d.id) AND s.user_id=bansir.actor_id())";
+ app.get('/api/v1/fiscal/inbound/unseen',scoped('fiscal',true,async c=>({data:(await c.query(`SELECT count(*)::int AS count FROM bansir.fiscal_inbound d WHERE ${unseen}`)).rows[0]})));
+ app.post('/api/v1/fiscal/inbound/seen',scoped('fiscal',true,async(c,req)=>{
+  const {id}=z.object({id:z.uuid()}).strict().parse(req.body),i=req.identity;
+  await c.query(`INSERT INTO bansir.fiscal_inbound_seen(tenant_id,establishment_id,document_id,user_id)
+   SELECT d.tenant_id,d.establishment_id,d.id,$2 FROM bansir.fiscal_inbound d WHERE d.id=$1 AND ${unseen} ON CONFLICT DO NOTHING`,[id,i.userId]);
+  return {data:true};
+ }));
  app.post('/api/v1/fiscal/inbound/import',scoped('fiscal',false,async(c,req)=>{
   const {xml}=z.object({xml:z.string().min(1).max(MAX_XML_BYTES)}).strict().parse(req.body),i=req.identity;
   const monitor=(await c.query('SELECT id,cnpj,environment FROM bansir.fiscal_monitors WHERE environment=1 ORDER BY active DESC,created_at DESC LIMIT 1')).rows[0];
@@ -36,7 +44,7 @@ export function mountFiscalMonitor(app,{scoped}){
   return {status:201,data:(await c.query(`INSERT INTO bansir.fiscal_monitors(tenant_id,establishment_id,cnpj,uf,environment) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,establishment_id,cnpj,environment) DO UPDATE SET active=true,uf=EXCLUDED.uf RETURNING *`,[i.tenantId,i.establishmentId,cert.cnpj,input.uf,input.environment])).rows[0]};
  }));
  app.patch('/api/v1/fiscal/monitor/:id',scoped('settings',false,async(c,req)=>{const {active}=z.object({active:z.boolean()}).strict().parse(req.body);const row=(await c.query('UPDATE bansir.fiscal_monitors SET active=$2 WHERE id=$1 RETURNING *',[z.uuid().parse(req.params.id),active])).rows[0];if(!row)throw httpError(404,'Monitor não encontrado.','NOT_FOUND');return {data:row};}));
- app.get('/api/v1/fiscal/inbound',scoped('fiscal',true,async(c,req)=>{const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page);return {data:(await c.query('SELECT id,monitor_id,access_key,supplier_name,supplier_cnpj,number,issued_at,total_cents,status,items,science_status,science_at,encrypted_xml IS NOT NULL AS xml_available,EXISTS(SELECT 1 FROM bansir.fiscal_stock_receipts r WHERE r.access_key=fiscal_inbound.access_key) AS stock_received,created_at FROM bansir.fiscal_inbound ORDER BY created_at DESC,id LIMIT 30 OFFSET $1',[page*30])).rows,meta:{total:(await c.query('SELECT count(*)::int AS n FROM bansir.fiscal_inbound')).rows[0].n}};}));
+ app.get('/api/v1/fiscal/inbound',scoped('fiscal',true,async(c,req)=>{const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page);return {data:(await c.query(`SELECT (${unseen}) AS unseen,id,monitor_id,access_key,supplier_name,supplier_cnpj,number,issued_at,total_cents,status,items,science_status,science_at,encrypted_xml IS NOT NULL AS xml_available,EXISTS(SELECT 1 FROM bansir.fiscal_stock_receipts r WHERE r.access_key=d.access_key) AS stock_received,created_at FROM bansir.fiscal_inbound d ORDER BY created_at DESC,id LIMIT 30 OFFSET $1`,[page*30])).rows,meta:{total:(await c.query('SELECT count(*)::int AS n FROM bansir.fiscal_inbound')).rows[0].n}};}));
  app.get('/api/v1/fiscal/inbound/:id/xml',scoped('fiscal',true,async(c,req)=>{
   const doc=(await c.query('SELECT id,access_key,encrypted_xml FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota não encontrada.','NOT_FOUND');if(!doc.encrypted_xml)throw httpError(409,'A SEFAZ disponibilizou apenas o resumo. O XML completo ainda não está disponível.','XML_NOT_AVAILABLE');
   return {data:{filename:doc.access_key+'.xml',xml:unseal(doc.encrypted_xml,secretContext(req.identity,'inbound:'+doc.access_key))}};
