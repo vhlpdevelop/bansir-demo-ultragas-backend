@@ -4,14 +4,15 @@ import {randomUUID} from 'node:crypto';
 import {httpError} from './database.js';
 import {requireFeature,tenantFeatures} from './features.js';
 import {fiscalDraftHash} from './fiscal.js';
+import {assertNoFiscalReservation,fiscalSaleLock} from './fiscal-issuance.js';
 import {openCash,recordPayment,saleView} from './sales.js';
-import {agreementPermission,agreementLock,agreementToday,nextAgreementTerms,customerAgreement,agreementBalancesSql} from './agreements.js';
+import {agreementPermission,agreementLock,agreementToday,nextAgreementTerms,customerAgreement,agreementBalancesSql,attachAgreement,checkAgreementCredit} from './agreements.js';
 const uuid=z.uuid(),cents=z.number().int().min(0).max(1000000000),date=z.iso.date();
 const config=z.object({requestKey:uuid,name:z.string().trim().min(2).max(120),payerCustomerId:uuid,contact:z.string().trim().max(200).default(''),cutDay:z.number().int().min(1).max(31),dueDay:z.number().int().min(1).max(31),limitCents:cents.nullable().default(null),blockOverdue:z.boolean().default(true),active:z.boolean().default(true),version:z.number().int().min(1).optional()}).strict();
 const fail=(message,code='AGREEMENT_CONFLICT',status=409)=>{throw httpError(status,message,code);};
 const hash=(i,b)=>fiscalDraftHash({...b,userId:i.userId});
 async function group(c,id){const a=(await c.query('SELECT a.*,p.name AS payer_name,p.document AS payer_document FROM bansir.agreements a JOIN bansir.customers p ON(p.tenant_id,p.establishment_id,p.id)=(a.tenant_id,a.establishment_id,a.payer_customer_id) WHERE a.id=$1',[uuid.parse(id)])).rows[0];if(!a)fail('Convênio não encontrado.','NOT_FOUND',404);return a;}
-async function audit(c,i,id,key,action,b){await c.query('INSERT INTO bansir.agreement_audit(tenant_id,establishment_id,agreement_id,user_id,request_key,request_hash,action,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,id,i.userId,key,hash(i,b),action,b]);}
+async function audit(c,i,id,key,action,b,fingerprint=hash(i,b)){await c.query('INSERT INTO bansir.agreement_audit(tenant_id,establishment_id,agreement_id,user_id,request_key,request_hash,action,details) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,id,i.userId,key,fingerprint,action,b]);}
 async function prior(c,i,b){const r=(await c.query('SELECT agreement_id,request_hash FROM bansir.agreement_audit WHERE request_key=$1',[b.requestKey])).rows[0];if(r&&r.request_hash!==hash(i,b))fail('Tentativa já utilizada com outros dados.','IDEMPOTENCY_CONFLICT');return r;}
 async function statement(c,id,period){
  const a=await group(c,id);const result=await c.query(`${agreementBalancesSql} WHERE l.agreement_id=$1 AND($2::date IS NULL OR l.period_end=$2) ORDER BY l.due_date,s.created_at,s.id LIMIT 1001`,[id,period||null]);
@@ -53,6 +54,46 @@ export function mountAgreements(app,{scoped}){
   await audit(c,i,a.id,b.requestKey,method==='post'?'create':'update',payload);return {status:method==='post'?201:200,data:a};
  }));
  app.get('/api/v1/agreements/:id/members',route('view',async(c,r)=>{await group(c,r.params.id);return {data:(await c.query('SELECT m.*,c.name,c.phone FROM bansir.agreement_members m JOIN bansir.customers c ON c.id=m.customer_id WHERE m.agreement_id=$1 ORDER BY c.name',[r.params.id])).rows};}));
+ app.get('/api/v1/agreements/:id/members/:customerId/coupons',route('manage',async(c,r)=>{
+  const ids=[uuid.parse(r.params.id),uuid.parse(r.params.customerId)];
+  return {data:(await c.query(`SELECT b.sale_id,b.coupon_number,b.outstanding_cents,
+   b.paid_cents=0 AND b.cancelled_at IS NULL AND cy.agreement_id IS NULL AS editable
+   FROM (${agreementBalancesSql} WHERE l.agreement_id=$1 AND l.customer_id=$2)b
+   LEFT JOIN bansir.agreement_cycles cy ON cy.agreement_id=b.agreement_id AND cy.period_end=b.period_end::date
+   ORDER BY b.created_at DESC`,ids)).rows};
+ }));
+ app.post('/api/v1/agreements/:id/members/:customerId/reassign',route('manage',async(c,r)=>{
+  await requireFeature(c,'agreements');
+  const b=z.object({requestKey:uuid,destinationId:uuid.nullable(),saleIds:z.array(uuid).max(500)}).strict().parse(r.body);
+  const i=r.identity,id=uuid.parse(r.params.customerId),source=uuid.parse(r.params.id);
+  const payload={...b,source,customerId:id,action:'reassign-member'};
+  await agreementLock(c,i);
+  if(await prior(c,i,payload))return {data:true};
+  if((await customerAgreement(c,id))?.id!==source)fail('O vínculo mudou. Atualize a lista.');
+  const destination=b.destinationId?await group(c,b.destinationId):null;
+  if(destination&&(!destination.active||destination.id===source))fail('Escolha outro convênio ativo.');
+  await c.query('UPDATE bansir.agreement_members SET active=false,updated_at=now() WHERE agreement_id=$1 AND customer_id=$2',[source,id]);
+  if(destination)await c.query('INSERT INTO bansir.agreement_members(tenant_id,establishment_id,agreement_id,customer_id,active) VALUES($1,$2,$3,$4,true) ON CONFLICT(tenant_id,establishment_id,agreement_id,customer_id) DO UPDATE SET active=true,updated_at=now()',[i.tenantId,i.establishmentId,destination.id,id]);
+  const target=destination?await customerAgreement(c,id):null;
+  if(target){target.today=await agreementToday(c);Object.assign(target,await nextAgreementTerms(c,target,target.today));}
+  const moved=[];
+  for(const saleId of [...new Set(b.saleIds)].sort()){
+   await fiscalSaleLock(c,i,saleId);
+   const row=(await c.query(`${agreementBalancesSql} WHERE l.agreement_id=$1 AND l.customer_id=$2 AND l.sale_id=$3`,[source,id,saleId])).rows[0];
+   if(!row||row.cancelled_at||Number(row.paid_cents)!==0||(await c.query('SELECT 1 FROM bansir.agreement_cycles WHERE agreement_id=$1 AND period_end=$2',[source,row.period_end])).rowCount)fail('Um cupom selecionado não pode mais ser alterado.');
+   if((await saleView(c,saleId)).document_id)fail('O cupom possui documento fiscal vinculado.');
+   await assertNoFiscalReservation(c,saleId,true);
+   await checkAgreementCredit(c,target,Number(row.total_cents));
+   await c.query('DELETE FROM bansir.sale_agreements WHERE sale_id=$1',[saleId]);
+   if(target){
+    await attachAgreement(c,i,{id:saleId,total_cents:row.total_cents},target);
+    await c.query('UPDATE bansir.sales SET due_date=$2 WHERE id=$1',[saleId,target.dueDate]);
+   }
+   moved.push({saleId,snapshot:row.snapshot,dueDate:row.due_date});
+  }
+  await audit(c,i,source,b.requestKey,'reassign-member',{...payload,moved},hash(i,payload));
+  return {data:true};
+ }));
  app.put('/api/v1/agreements/:id/members/:customerId',route('manage',async(c,r)=>{
   await requireFeature(c,'agreements');const b=z.object({requestKey:uuid,active:z.boolean(),limitCents:cents.nullable().default(null)}).strict().parse(r.body),i=r.identity;
   await agreementLock(c,i);const a=await group(c,r.params.id),id=uuid.parse(r.params.customerId),payload={...b,agreementId:a.id,customerId:id};if(await prior(c,i,payload))return {data:true};
