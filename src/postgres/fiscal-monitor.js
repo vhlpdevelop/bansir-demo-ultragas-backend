@@ -37,6 +37,16 @@ export function mountFiscalMonitor(app,{scoped}){
   const doc=(await c.query("SELECT id,monitor_id,access_key FROM bansir.fiscal_inbound WHERE id=$1 AND status<>'CANCELLED'",[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota indisponível para manifestação.','NOT_FOUND');
   const jobId=await enqueue(c,req.identity,{kind:'fiscal',key:'science:'+doc.id,payload:{action:'science',monitorId:doc.monitor_id,documentId:doc.id,userId:req.identity.userId},maxAttempts:5});return {status:202,data:{jobId}};
  }));
+ app.get('/api/v1/fiscal/inbound/:id/science',scoped('fiscal-manifest',true,async(c,req,member)=>{
+  requirePermission(member,'fiscal',true);
+  const {rows:[row]}=await c.query(`SELECT d.science_status,d.encrypted_xml IS NOT NULL AS xml_available,j.state,j.last_error
+   FROM bansir.fiscal_inbound d LEFT JOIN bansir.jobs j ON
+   (j.tenant_id,j.establishment_id)=(d.tenant_id,d.establishment_id) AND j.kind='fiscal' AND j.dedupe_key='science:'||d.id
+   WHERE d.id=$1`,[z.uuid().parse(req.params.id)]);
+  if(!row)throw httpError(404,'Nota não encontrada.','NOT_FOUND');
+  return {data:{confirmed:row.science_status==='acknowledged',xmlAvailable:row.xml_available,state:row.state,
+   error:row.last_error==='SCIENCE_NOT_ACCEPTED'?'A SEFAZ não confirmou o registro da Ciência da Operação.':null}};
+ }));
  app.get('/api/v1/fiscal/monitor',scoped('settings',true,async c=>({data:(await c.query('SELECT * FROM bansir.fiscal_monitors ORDER BY created_at DESC')).rows})));
  app.post('/api/v1/fiscal/monitor',scoped('settings',false,async(c,req)=>{
   const input=z.object({uf:z.enum(Object.keys(ufCodes)),environment:z.coerce.number().int().refine(n=>[1,2].includes(n))}).strict().parse(req.body),i=req.identity;

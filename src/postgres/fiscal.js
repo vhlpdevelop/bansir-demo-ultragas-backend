@@ -2,6 +2,7 @@ import {assertReferenceDate} from './fiscal-reference-rules.js';
 import {fuelInput} from './product-fiscal-profile.js';
 import {mountFiscalCancellation} from './fiscal-cancellation.js';
 import {z} from 'zod';
+import {zipSync,strToU8} from 'fflate';
 import {randomInt,createHash} from 'node:crypto';
 import {httpError} from './database.js';
 import {seal,inspectCertificate,secretContext} from './secrets.js';
@@ -84,7 +85,28 @@ export function mountFiscal(app,{scoped}) {
   }
   return {data};
  }));
- app.get('/api/v1/fiscal/documents',scoped('fiscal',true,async c=>({data:(await c.query('SELECT id,environment,substring(access_key FROM 21 FOR 2) AS model,access_key,status,protocol,rejection_code,s3_key,created_at FROM bansir.fiscal_documents ORDER BY created_at DESC LIMIT 100')).rows})));
+ const fiscalMonth=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).transform(value=>z.iso.date().parse(value+'-01'));
+ const inMonth=`($1::date IS NULL OR (created_at AT TIME ZONE coalesce(
+  (SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)),
+  'America/Cuiaba'))::date >= $1::date AND (created_at AT TIME ZONE coalesce(
+  (SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)),
+  'America/Cuiaba'))::date < $1::date + interval '1 month')`;
+ app.get('/api/v1/fiscal/documents',scoped('fiscal',true,async(c,req)=>{
+  const month=fiscalMonth.optional().parse(req.query.month)||null;
+  const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page);
+  const {rows}=await c.query(`SELECT id,environment,substring(access_key FROM 21 FOR 2) AS model,access_key,status,protocol,rejection_code,s3_key,created_at
+   FROM bansir.fiscal_documents WHERE ${inMonth} ORDER BY created_at DESC,id LIMIT 101 OFFSET $2`,[month,page*100]);
+  return {data:rows.slice(0,100),meta:{hasNext:rows.length>100}};
+ }));
+ app.post('/api/v1/fiscal/documents/export',scoped('fiscal',true,async(c,req)=>{
+  const {month,statuses}=z.object({month:fiscalMonth,statuses:z.array(z.enum(['authorized','cancelled'])).min(1).max(2)}).strict().parse(req.body);
+  const {rows}=await c.query(`SELECT id,environment,status,access_key,xml FROM bansir.fiscal_documents
+   WHERE ${inMonth} AND status=ANY($2::text[]) AND xml IS NOT NULL ORDER BY created_at,id LIMIT 1001`,[month,statuses]);
+  if(!rows.length)throw httpError(404,'Nenhum XML disponível para o mês e as situações selecionadas.','NO_FISCAL_XML');
+  if(rows.length>1000||rows.reduce((size,row)=>size+Buffer.byteLength(row.xml),0)>20*1024*1024)throw httpError(400,'O lote excede o limite. Selecione uma situação por vez ou baixe os XMLs individualmente.','FISCAL_EXPORT_TOO_LARGE');
+  const files=Object.fromEntries(rows.map(row=>[`${row.environment===1?'producao':'homologacao'}/${row.status==='authorized'?'autorizadas':'canceladas'}/${row.access_key||row.id}-${row.id}.xml`,strToU8(row.xml)]));
+  return {data:{base64:Buffer.from(zipSync(files)).toString('base64'),filename:`notas-fiscais-${month.slice(0,7)}.zip`}};
+ }));
  app.get('/api/v1/fiscal/documents/:id/xml',scoped('fiscal',true,async(c,req)=>{
   const doc=(await c.query('SELECT access_key,status,xml FROM bansir.fiscal_documents WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];
   if(!doc)throw httpError(404,'Documento não encontrado.','NOT_FOUND');
