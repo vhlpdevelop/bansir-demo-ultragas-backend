@@ -56,7 +56,8 @@ export function mountAgreements(app,{scoped}){
  app.get('/api/v1/agreements/:id/members',route('view',async(c,r)=>{await group(c,r.params.id);return {data:(await c.query('SELECT m.*,c.name,c.phone FROM bansir.agreement_members m JOIN bansir.customers c ON c.id=m.customer_id WHERE m.agreement_id=$1 ORDER BY c.name',[r.params.id])).rows};}));
  app.get('/api/v1/agreements/:id/members/:customerId/coupons',route('manage',async(c,r)=>{
   const ids=[uuid.parse(r.params.id),uuid.parse(r.params.customerId)];
-  return {data:(await c.query(`SELECT b.sale_id,b.coupon_number,b.outstanding_cents,
+  const remaining=(await c.query('SELECT count(*)::int AS count FROM bansir.agreement_members WHERE agreement_id=$1 AND customer_id<>$2 AND active',ids)).rows[0].count;
+  return {meta:{meta:{lastParticipant:remaining===0}},data:(await c.query(`SELECT b.sale_id,b.coupon_number,b.outstanding_cents,
    b.paid_cents=0 AND b.cancelled_at IS NULL AND cy.agreement_id IS NULL AS editable
    FROM (${agreementBalancesSql} WHERE l.agreement_id=$1 AND l.customer_id=$2)b
    LEFT JOIN bansir.agreement_cycles cy ON cy.agreement_id=b.agreement_id AND cy.period_end=b.period_end::date
@@ -64,12 +65,14 @@ export function mountAgreements(app,{scoped}){
  }));
  app.post('/api/v1/agreements/:id/members/:customerId/reassign',route('manage',async(c,r)=>{
   await requireFeature(c,'agreements');
-  const b=z.object({requestKey:uuid,destinationId:uuid.nullable(),saleIds:z.array(uuid).max(500)}).strict().parse(r.body);
+  const b=z.object({requestKey:uuid,destinationId:uuid.nullable(),saleIds:z.array(uuid).max(500),confirmArchive:z.boolean().default(false)}).strict().parse(r.body);
   const i=r.identity,id=uuid.parse(r.params.customerId),source=uuid.parse(r.params.id);
   const payload={...b,source,customerId:id,action:'reassign-member'};
   await agreementLock(c,i);
   if(await prior(c,i,payload))return {data:true};
   if((await customerAgreement(c,id))?.id!==source)fail('O vínculo mudou. Atualize a lista.');
+  const lastParticipant=!(await c.query('SELECT 1 FROM bansir.agreement_members WHERE agreement_id=$1 AND customer_id<>$2 AND active LIMIT 1',[source,id])).rowCount;
+  if(lastParticipant!==b.confirmArchive)fail('A lista de participantes mudou. Reabra a operação para confirmar o estado atual.');
   const destination=b.destinationId?await group(c,b.destinationId):null;
   if(destination&&(!destination.active||destination.id===source))fail('Escolha outro convênio ativo.');
   await c.query('UPDATE bansir.agreement_members SET active=false,updated_at=now() WHERE agreement_id=$1 AND customer_id=$2',[source,id]);
@@ -91,6 +94,7 @@ export function mountAgreements(app,{scoped}){
    }
    moved.push({saleId,snapshot:row.snapshot,dueDate:row.due_date});
   }
+  if(lastParticipant)await c.query('UPDATE bansir.agreements SET active=false,version=version+1,updated_at=now() WHERE id=$1',[source]);
   await audit(c,i,source,b.requestKey,'reassign-member',{...payload,moved},hash(i,payload));
   return {data:true};
  }));
