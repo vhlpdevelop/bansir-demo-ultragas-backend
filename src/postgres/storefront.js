@@ -104,6 +104,16 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),i
  })})));
 }
 
+const ordersPeriod=z.enum(['all','today','24h','7d','30d']).default('all');
+function ordersSince(parameter){
+ return `CASE ${parameter}::text
+  WHEN 'today' THEN date_trunc('day',now(),coalesce(
+   (SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)),'America/Cuiaba'))
+  WHEN '24h' THEN now()-interval '24 hours'
+  WHEN '7d' THEN now()-interval '168 hours'
+  WHEN '30d' THEN now()-interval '720 hours'
+  ELSE '-infinity'::timestamptz END`;
+}
 export function mountStorefrontAdmin(app,{scoped}){
  app.get('/api/v1/storefront/settings',scoped('settings',true,async c=>({data:(await c.query('SELECT slug,enabled,config FROM bansir.storefronts')).rows[0]||{slug:'',enabled:false,config:defaultStorefront}})));
  app.put('/api/v1/storefront/settings',scoped('settings',false,async(c,req,member)=>{
@@ -135,25 +145,28 @@ export function mountStorefrontAdmin(app,{scoped}){
    ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[search,page*30]);
   return {data:result.rows.map(({total,...r})=>r),meta:{total:Number(result.rows[0]?.total||0),serverNow:new Date().toISOString()}};
  }));
- app.get('/api/v1/storefront/orders/map',scoped('sales',true,async c=>{
+ app.get('/api/v1/storefront/orders/map',scoped('sales',true,async(c,req)=>{
+  const period=ordersPeriod.parse(req.query.period);
   const store=point((await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config?.location);
-  const rows=(await c.query(`SELECT o.id,o.customer_name,o.delivery_address,o.delivery_location,d.latitude,d.longitude,d.status AS delivery_status,d.delivered_at,
+  const rows=(await c.query(`SELECT o.id,o.sale_id,o.customer_name,o.delivery_address,o.delivery_location,d.latitude,d.longitude,d.status AS delivery_status,d.delivered_at,d.driver_id,d.version,
    o.status AS order_status,count(*) OVER()::int AS total
    FROM bansir.storefront_orders o LEFT JOIN bansir.delivery_tasks d ON (d.tenant_id,d.establishment_id,d.sale_id)=(o.tenant_id,o.establishment_id,o.sale_id)
-   WHERE o.fulfillment='delivery' AND o.status IN('new','accepted')
+   WHERE o.fulfillment='delivery' AND o.status IN('new','accepted') AND o.created_at>=${ordersSince('$1')}
    AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE(x.tenant_id,x.establishment_id,x.sale_id)=(o.tenant_id,o.establishment_id,o.sale_id))
    AND (d.status IS NULL OR d.status<>'cancelled')
    AND (d.status IS DISTINCT FROM 'delivered' OR d.delivered_at>now()-interval '5 minutes')
-   ORDER BY (o.status='new') DESC,o.created_at,id LIMIT 1000`)).rows;
-  const data=rows.map(o=>({id:o.id,name:o.customer_name,address:o.delivery_address,point:point(o)||point(o.delivery_location),status:o.delivery_status==='delivered'?'delivered':o.delivery_status==='en_route'?'en_route':o.delivery_status==='failed'?'failed':o.order_status==='accepted'?'accepted':'new',deliveredAt:o.delivered_at}));
+   ORDER BY (o.status='new') DESC,o.created_at,o.id LIMIT 1000`,[period])).rows;
+  const data=rows.map(o=>({id:o.id,saleId:o.sale_id,deliveryStatus:o.delivery_status,assigned:!!o.driver_id,version:o.version,name:o.customer_name,address:o.delivery_address,point:point(o)||point(o.delivery_location),status:o.delivery_status==='delivered'?'delivered':o.delivery_status==='en_route'?'en_route':o.delivery_status==='failed'?'failed':o.order_status==='accepted'?'accepted':'new',deliveredAt:o.delivered_at}));
   return {data:{store,orders:data,total:rows[0]?.total||0,limited:(rows[0]?.total||0)>1000,updatedAt:new Date().toISOString()}};
  }));
  app.get('/api/v1/storefront/orders',scoped('sales',true,async(c,req)=>{
-  const q=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','new','accepted','rejected','cancelled']).default('all'),search:z.string().trim().max(200).default('')}).parse(req.query);
-  const where="($1='all' OR status=$1) AND($2='' OR strpos(lower(customer_name||' '||phone||' '||delivery_address||' '||id::text),lower($2))>0)";
-  const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.storefront_orders WHERE ${where}`,[q.status,q.search])).rows[0].total;
-  const stats=(await c.query("SELECT count(*)::int AS total,count(*) FILTER(WHERE status='new')::int AS pending,count(*) FILTER(WHERE status='accepted')::int AS accepted,count(*) FILTER(WHERE status IN('rejected','cancelled'))::int AS closed,(SELECT jsonb_build_object('id',o.id,'createdAt',to_char(o.created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')) FROM bansir.storefront_orders o WHERE o.status='new' ORDER BY o.created_at DESC,o.id DESC LIMIT 1) AS latest_pending FROM bansir.storefront_orders")).rows[0];
-  const rows=(await c.query(`SELECT *, (SELECT t.status FROM bansir.delivery_tasks t WHERE t.sale_id=storefront_orders.sale_id) AS delivery_status, (SELECT jsonb_build_object('name',u.name,'source',e.action,'confirmedAt',e.created_at) FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id WHERE e.sale_id=storefront_orders.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS delivery_confirmation FROM bansir.storefront_orders WHERE ${where} ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC,id LIMIT $3 OFFSET $4`,[q.status,q.search,q.pageSize,q.page*q.pageSize])).rows;
+  const q=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','new','processed','accepted','rejected','cancelled']).default('all'),period:ordersPeriod,search:z.string().trim().max(200).default('')}).parse(req.query);
+  const where=`($1='all' OR status=$1 OR ($1='processed' AND status<>'new'))
+   AND ($2='' OR strpos(lower(customer_name||' '||phone||' '||delivery_address||' '||id::text),lower($2))>0)
+   AND created_at>=${ordersSince('$3')}`;
+  const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.storefront_orders WHERE ${where}`,[q.status,q.search,q.period])).rows[0].total;
+  const stats=(await c.query(`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='new')::int AS pending,count(*) FILTER(WHERE status='accepted')::int AS accepted,count(*) FILTER(WHERE status IN('rejected','cancelled'))::int AS closed,(SELECT jsonb_build_object('id',o.id,'createdAt',to_char(o.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) FROM bansir.storefront_orders o WHERE o.status='new' AND o.created_at>=${ordersSince('$1')} ORDER BY o.created_at DESC,o.id DESC LIMIT 1) AS latest_pending FROM bansir.storefront_orders WHERE created_at>=${ordersSince('$1')}`,[q.period])).rows[0];
+  const rows=(await c.query(`SELECT *, (SELECT t.status FROM bansir.delivery_tasks t WHERE t.sale_id=storefront_orders.sale_id) AS delivery_status, (SELECT jsonb_build_object('name',u.name,'source',e.action,'confirmedAt',e.created_at) FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id WHERE e.sale_id=storefront_orders.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS delivery_confirmation FROM bansir.storefront_orders WHERE ${where} ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC,id LIMIT $4 OFFSET $5`,[q.status,q.search,q.period,q.pageSize,q.page*q.pageSize])).rows;
   return {data:rows.map(o=>({...o,subtotal_cents:Number(o.subtotal_cents),shipping_cents:Number(o.shipping_cents),total_cents:Number(o.total_cents)})),meta:{total,stats,page:q.page,pageSize:q.pageSize}};
  }));
  app.post('/api/v1/storefront/orders/:id/accept',scoped('sales',false,async(c,req,member)=>{
