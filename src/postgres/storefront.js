@@ -119,17 +119,17 @@ export function mountStorefrontAdmin(app,{scoped}){
  }));
  app.get('/api/v1/storefront/conversations',scoped('sales',true,async(c,req)=>{
   const page=z.coerce.number().int().min(0).max(10000).default(0).parse(req.query.page),search=z.string().max(200).default('').parse(req.query.search);
-  const result=await c.query(`WITH contacts AS (SELECT phone FROM bansir.meta_messages WHERE message_id NOT LIKE 'attempt:%' UNION SELECT phone FROM bansir.storefront_orders)
+  const result=await c.query(`WITH contacts AS (SELECT phone FROM bansir.meta_messages WHERE message_id NOT LIKE 'attempt:%' AND received_at>=now()-interval '24 hours' UNION SELECT phone FROM bansir.storefront_orders WHERE created_at>=now()-interval '24 hours')
    SELECT p.phone,coalesce(nullif(CASE WHEN customer.name ~ '[[:alpha:]]' THEN customer.name END,''),nullif(CASE WHEN ord.customer_name ~ '[[:alpha:]]' THEN ord.customer_name END,''),p.phone) AS name,
    last_msg.body AS last_message,last_msg.direction,last_msg.received_at AS last_message_at,inbound.last_inbound,
    inbound.last_inbound+interval '24 hours' AS window_expires_at,ord.created_at AS last_order_at,
    (SELECT count(*) FROM bansir.storefront_orders o WHERE o.phone=p.phone) AS order_count,
-   coalesce((SELECT jsonb_agg(x ORDER BY x.received_at) FROM (SELECT direction,body,status,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' ORDER BY received_at DESC LIMIT 20)x),'[]') AS messages,
+   coalesce((SELECT jsonb_agg(x ORDER BY x.received_at) FROM (SELECT direction,body,status,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' AND received_at>=now()-interval '24 hours' ORDER BY received_at DESC LIMIT 20)x),'[]') AS messages,
    count(*) OVER() AS total
    FROM contacts p
    LEFT JOIN LATERAL(SELECT name FROM bansir.customers WHERE active AND bansir.customer_lookup_phone(phone,import_metadata)=p.phone ORDER BY created_at LIMIT 1) customer ON true
    LEFT JOIN LATERAL(SELECT customer_name,created_at FROM bansir.storefront_orders WHERE phone=p.phone ORDER BY created_at DESC LIMIT 1) ord ON true
-   LEFT JOIN LATERAL(SELECT body,direction,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' ORDER BY received_at DESC LIMIT 1) last_msg ON true
+   LEFT JOIN LATERAL(SELECT body,direction,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' AND received_at>=now()-interval '24 hours' ORDER BY received_at DESC LIMIT 1) last_msg ON true
    LEFT JOIN LATERAL(SELECT max(received_at) AS last_inbound FROM bansir.meta_messages WHERE phone=p.phone AND direction='in') inbound ON true
    WHERE ($1='' OR p.phone ILIKE '%'||$1||'%' OR customer.name ILIKE '%'||$1||'%' OR ord.customer_name ILIKE '%'||$1||'%')
    ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[search,page*30]);
