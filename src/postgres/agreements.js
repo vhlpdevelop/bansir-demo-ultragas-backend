@@ -42,10 +42,10 @@ export async function checkAgreementCredit(c,a,total){
 }
 export async function attachAgreement(c,i,sale,a){
  if(!a)return;
- const {rows:[balance]}=await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1) balances`,[a.id]);
+ const {rows:[balance]}=await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1 AND ($2::uuid IS NULL OR l.customer_id=$2)) balances`,[a.id,a.individual_balance?a.customer_id:null]);
  const previousCents=Number(balance.cents),entryCents=Number(sale.total_cents);
  await c.query(`INSERT INTO bansir.sale_agreements(tenant_id,establishment_id,sale_id,agreement_id,customer_id,period_end,due_date,snapshot)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents,balanceAtEntry:{previousCents,entryCents,totalCents:previousCents+entryCents}}]);}
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents,balanceAtEntry:{scope:a.individual_balance?'individual':'group',visible:a.show_receipt_balance!==false,previousCents,entryCents,totalCents:previousCents+entryCents}}]);}
 
 export async function nextAgreementTerms(c,a,today){
  let terms=agreementTerms(today,a.cut_day,a.due_day);
