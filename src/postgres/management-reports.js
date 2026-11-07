@@ -41,7 +41,10 @@ export async function managementReport(c,query,member={role:'admin'},context=nul
   const links=(await c.query(`SELECT l.sale_id,a.name,l.due_date::text,
    (SELECT coalesce(sum(i.quantity),0) FROM bansir.sale_items i WHERE i.sale_id=l.sale_id) AS quantity
    FROM bansir.sale_agreements l JOIN bansir.agreements a ON (a.tenant_id,a.establishment_id,a.id)=(l.tenant_id,l.establishment_id,l.agreement_id)
-   WHERE l.sale_id=ANY($1::uuid[])`,[sales.map(s=>s.id)])).rows;
+   WHERE l.sale_id=ANY($1::uuid[])
+   AND NOT (l.snapshot @> '{"hideCancelledFromReports":true}' AND EXISTS(
+    SELECT 1 FROM bansir.sale_cancellations x WHERE (x.tenant_id,x.establishment_id,x.sale_id)=(l.tenant_id,l.establishment_id,l.sale_id)
+   ))`,[sales.map(s=>s.id)])).rows;
   const bySale=new Map(links.map(link=>[link.sale_id,link]));
   data.columns=['Convênio','Cupom','Data da venda','Cliente','Quantidade','Valor','Recebido','Saldo','Situação','Vencimento'];
   data.rows=sales.filter(s=>bySale.has(s.id)).map(s=>{

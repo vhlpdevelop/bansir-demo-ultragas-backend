@@ -112,6 +112,22 @@ export function mountAgreements(app,{scoped}){
  }));
  app.get('/api/v1/agreements/:id/periods',route('view',async(c,r)=>{await group(c,r.params.id);return {data:(await c.query('SELECT DISTINCT period_end::text FROM bansir.sale_agreements WHERE agreement_id=$1 ORDER BY period_end DESC LIMIT 120',[r.params.id])).rows};}));
  app.get('/api/v1/agreements/:id/statement',route('view',async(c,r)=>({data:await statement(c,uuid.parse(r.params.id),date.optional().parse(r.query.period))})));
+ app.post('/api/v1/agreements/:id/coupons/:saleId/report-visibility',route('manage',async(c,r)=>{
+  const b=z.object({requestKey:uuid,hidden:z.boolean()}).strict().parse(r.body);
+  const i=r.identity,id=uuid.parse(r.params.id),saleId=uuid.parse(r.params.saleId);
+  const payload={...b,agreementId:id,saleId,action:'report-visibility'};
+  await agreementLock(c,i);
+  if(await prior(c,i,payload))return {data:true};
+  await fiscalSaleLock(c,i,saleId);
+  const updated=await c.query(`UPDATE bansir.sale_agreements l
+   SET snapshot=jsonb_set(l.snapshot,'{hideCancelledFromReports}',to_jsonb($3::boolean),true)
+   WHERE l.agreement_id=$1 AND l.sale_id=$2 AND EXISTS(
+    SELECT 1 FROM bansir.sale_cancellations x WHERE (x.tenant_id,x.establishment_id,x.sale_id)=(l.tenant_id,l.establishment_id,l.sale_id)
+   )`,[id,saleId,b.hidden]);
+  if(!updated.rowCount)fail('Somente cupons cancelados deste convênio podem ser ocultados do relatório.','AGREEMENT_COUPON_NOT_CANCELLED');
+  await audit(c,i,id,b.requestKey,'report-visibility',payload);
+  return {data:true};
+ }));
  app.get('/api/v1/agreements/:id/statement-pdf',route('view',async(c,r)=>{
   const period=date.optional().parse(r.query.period);
   const requestedMonth=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().parse(r.query.month);
@@ -120,7 +136,8 @@ export function mountAgreements(app,{scoped}){
   const monthStart=month?date.parse(month+'-01'):null;
   const timeZone=(await c.query("SELECT name FROM pg_timezone_names WHERE name=(SELECT config->>'timeZone' FROM bansir.storefronts LIMIT 1)")).rows[0]?.name||'America/Cuiaba';
   const data=await statement(c,uuid.parse(r.params.id),period,{monthStart,timeZone});
-  const pdf=await agreementReportPdf(data,{month,period,timeZone});
+  const sales=data.sales.filter(sale=>!(sale.cancelled_at&&sale.snapshot.hideCancelledFromReports===true));
+  const pdf=await agreementReportPdf({...data,sales},{month,period,timeZone});
   return {data:{base64:pdf.toString('base64'),filename:`relatorio-convenio-${month||period}.pdf`}};
  }));
  app.post('/api/v1/agreements/:id/close',route('close',async(c,r)=>{
