@@ -3,6 +3,7 @@ import {mountSaleEditing} from './sale-editing.js';
 import {prepareAgreement,checkAgreementCredit,attachAgreement} from './agreements.js';
 import {assertNoFiscalReservation} from './fiscal-issuance.js';
 import {customerSnapshot,saleCustomerRecipient,receiptCustomerAddress} from './customer-fiscal.js';
+import {cashSchedule} from './business-hours.js';
 import {confirmManualDelivery} from './manual-delivery.js';
 import {routeUnitLock} from './delivery-route-state.js';
 import {createSmartposCharge} from './smartpos.js';
@@ -166,10 +167,9 @@ export function mountSales(app,{scoped,secret}){
   const terminal=await currentTerminal(c,req.identity);if(!terminal)return {data:null};
   const cash=(await c.query('SELECT c.id,c.user_id,c.opened_at,u.name AS operator_name FROM bansir.cash_sessions c JOIN bansir.users u ON u.id=c.user_id WHERE c.terminal_id=$1 AND c.closed_at IS NULL',[terminal.id])).rows[0];
   const other=(await c.query('SELECT EXISTS(SELECT 1 FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL AND terminal_id IS DISTINCT FROM $2) AS open',[req.identity.userId,terminal.id])).rows[0].open;
-  const config=(await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config||{};
-  return {data:{terminal,cash:cash?{id:cash.id,openedAt:cash.opened_at,operatorName:cash.operator_name,own:cash.user_id===req.identity.userId}:null,operatorHasOtherCash:other,timeZone:config.timeZone||'America/Cuiaba',businessHours:config.businessHours||{enabled:false,days:[]}}};
+  return {data:{terminal,cash:cash?{id:cash.id,openedAt:cash.opened_at,operatorName:cash.operator_name,own:cash.user_id===req.identity.userId}:null,operatorHasOtherCash:other,...await cashSchedule(c)}};
  }));
- app.get('/api/v1/pdv/business-hours',scoped('sales',true,async c=>{const config=(await c.query('SELECT config FROM bansir.storefronts')).rows[0]?.config||{};return {data:{timeZone:config.timeZone||'America/Cuiaba',businessHours:config.businessHours||{enabled:false,days:[]}}};}));
+ app.get('/api/v1/pdv/business-hours',scoped('sales',true,async c=>({data:await cashSchedule(c)})));
  app.get('/api/v1/pdv/cash',scoped('sales',true,async(c,req)=>({data:await cashView(c,await lockCash(c,req.identity))})));
  app.post('/api/v1/pdv/cash/open',scoped('sales',false,async(c,req)=>{
   const {openingCents}=z.object({openingCents:cents}).strict().parse(req.body),i=req.identity;

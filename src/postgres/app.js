@@ -36,7 +36,9 @@ import {mountSuppliers} from './suppliers.js';
 import {mountFiscalMonitor} from './fiscal-monitor.js';
 import {mountCustomerProfile} from './customer-profile.js';
 import {mountProductImport} from './product-import.js';
-import {mountPublicStorefront,mountStorefrontAdmin} from './storefront.js';
+import {mountPublicStorefront,mountStorefrontAdmin,businessHoursInput} from './storefront.js';
+import {cashSchedule} from './business-hours.js';
+import {storeTimeZones} from './product-pricing.js';
 import {mountWhatsapp} from './whatsapp.js';
 import {mountVouchersFleet} from './vouchers-fleet.js';
 import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
@@ -106,6 +108,17 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   mountAccess(app,{scoped});
   mountDeliveries(app,{database,route,deliveryRouter});
   mountBridge(app,{scoped,database,nodeEnv});
+  app.get('/api/v1/settings/cash-schedule',scoped('settings',true,async client=>({data:await cashSchedule(client)})));
+  app.put('/api/v1/settings/cash-schedule',scoped('settings',false,async(client,req)=>{
+    const data=z.object({timeZone:z.enum(storeTimeZones),businessHours:z.object({
+      enabled:z.boolean(),days:businessHoursInput.shape.days,closingSoonMinutes:z.number().int().min(5).max(120)
+    }).strict()}).strict().parse(req.body);
+    const {tenantId,establishmentId}=req.identity;
+    await client.query(`INSERT INTO bansir.store_settings(tenant_id,establishment_id,cash_schedule)
+      VALUES($1,$2,$3) ON CONFLICT(tenant_id,establishment_id)
+      DO UPDATE SET cash_schedule=EXCLUDED.cash_schedule,updated_at=now()`,[tenantId,establishmentId,data]);
+    return {data:{...data,source:'cash'}};
+  }));
   app.get('/api/v1/settings', scoped('settings', true, async (client, req) => {
     const { rows: [row] } = await client.query('SELECT * FROM bansir.store_settings WHERE tenant_id=$1', [req.identity.tenantId]);
     return { data: row ? { storeName: row.store_name, contact:row.contact, pixKey: row.pix_key, documentId: row.document_id, address: row.address, merchantCity: row.merchant_city } : {} };

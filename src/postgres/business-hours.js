@@ -6,3 +6,9 @@ export function businessStatus(config={},now=new Date()) {
  for(const offset of [-1,0]) {const row=h.days.find(r=>r.day===(day+offset+7)%7);if(!row?.enabled)continue;const start=toMinutes(row.open),end=toMinutes(row.close)+(row.close<row.open?1440:0),point=minute-offset*1440;if(point>=start&&point<end){const remaining=end-point;return {state:config.acceptingOrders===false?'paused':remaining<=h.closingSoonMinutes?'closing':'open',open:config.acceptingOrders!==false,closesAt:row.close,remainingMinutes:remaining};}}
  return {state:'closed',open:false};
 }
+export async function cashSchedule(client){
+ const {rows:[row]}=await client.query('SELECT cash_schedule FROM bansir.store_settings');
+ if(row?.cash_schedule)return {...row.cash_schedule,source:'cash'};
+ const legacy=(await client.query('SELECT config FROM bansir.storefronts')).rows[0]?.config;
+ return {timeZone:legacy?.timeZone||'America/Cuiaba',businessHours:legacy?.businessHours||{enabled:false,days:[]},source:'storefront'};
+}
