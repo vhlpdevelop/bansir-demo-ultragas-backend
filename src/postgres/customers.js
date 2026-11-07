@@ -6,14 +6,14 @@ import {normalizePhone,customersForPhone} from './phone.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {readPdfTable,pdfLine,customerReportRows} from './pdf-import.js';
 
-export const customerInput=z.object({fiscalData:customerFiscalInput.optional(),name:z.string().trim().min(2).max(200),phone:z.string().max(40).default('').transform(v=>normalizePhone(v,{optional:true})),document:z.string().max(25).default('').transform(v=>v.replace(/\D/g,'')).refine(v=>!v||[11,14].includes(v.length),'Documento deve ter 11 ou 14 dígitos.'),address:z.string().trim().max(1000).default(''),email:z.union([z.email(),z.literal('')]).default(''),birthDate:z.union([z.iso.date(),z.literal('')]).default(''),notes:z.string().trim().max(3000).default('')}).strict();
+export const customerInput=z.object({additionalPhone:z.string().max(40).transform(v=>normalizePhone(v,{optional:true})).optional(),additionalInfo:z.string().trim().max(500).optional(),fiscalData:customerFiscalInput.optional(),name:z.string().trim().min(2).max(200),phone:z.string().max(40).default('').transform(v=>normalizePhone(v,{optional:true})),document:z.string().max(25).default('').transform(v=>v.replace(/\D/g,'')).refine(v=>!v||[11,14].includes(v.length),'Documento deve ter 11 ou 14 dígitos.'),address:z.string().trim().max(1000).default(''),email:z.union([z.email(),z.literal('')]).default(''),birthDate:z.union([z.iso.date(),z.literal('')]).default(''),notes:z.string().trim().max(3000).default('')}).strict();
 export async function createCustomer(c,identity,body,{useExisting=false}={}){
  const data=customerInput.parse(body);
  if(data.phone){await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`customer:${identity.tenantId}:${identity.establishmentId}:${data.phone}`]);const found=await customersForPhone(c,data.phone);
   if(found.length>1)throw httpError(409,'Há cadastros duplicados para este telefone. Revise os clientes ativos.','DUPLICATE_PHONE');
   if(found.length){if(useExisting)return found[0];throw httpError(409,'Este telefone já está cadastrado. Busque e selecione o cliente existente.','CUSTOMER_EXISTS');}
  }
- return (await c.query('INSERT INTO bansir.customers(tenant_id,establishment_id,name,document,phone,address,email,birth_date,notes,fiscal_data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,name,document,phone,address,fiscal_data',[identity.tenantId,identity.establishmentId,data.name,data.document,data.phone,data.address,data.email,data.birthDate,data.notes,data.fiscalData||{}])).rows[0];
+ return (await c.query('INSERT INTO bansir.customers(tenant_id,establishment_id,name,document,phone,address,email,birth_date,notes,fiscal_data,additional_phone,additional_info) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,name,document,phone,address,fiscal_data,notes,additional_phone,additional_info',[identity.tenantId,identity.establishmentId,data.name,data.document,data.phone,data.address,data.email,data.birthDate,data.notes,data.fiscalData||{},data.additionalPhone??'',data.additionalInfo??''])).rows[0];
 }
 
 export function rowsFromPdfLines(lines){
@@ -70,20 +70,33 @@ export async function importCustomers(c,i,body){
  await c.query('INSERT INTO bansir.customer_imports(tenant_id,establishment_id,request_key,source_sha256,request_hash,created_by,result) VALUES($1,$2,$3,$4,$5,$6,$7)',[i.tenantId,i.establishmentId,data.requestKey,data.fileHash,fingerprint,i.userId,result]);return result;
 }
 export function mountCustomers(app,{scoped}){
+ app.patch('/api/v1/pdv/customers/:id',scoped('sales',false,async(c,req)=>{
+  const data=customerInput.pick({name:true,phone:true,document:true,address:true,notes:true,additionalPhone:true,additionalInfo:true}).parse(req.body);
+  const id=z.uuid().parse(req.params.id),{tenantId,establishmentId}=req.identity;
+  if(data.phone){
+   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`customer:${tenantId}:${establishmentId}:${data.phone}`]);
+   const found=await customersForPhone(c,data.phone);
+   if(found.some(row=>row.id!==id))throw httpError(409,'Telefone já vinculado a outro cliente ativo.','CUSTOMER_EXISTS');
+  }
+  const {rows:[customer]}=await c.query(`UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,notes=$6,additional_phone=coalesce($7,additional_phone),additional_info=coalesce($8,additional_info)
+   WHERE id=$1 AND active RETURNING id,name,phone,document,address,notes,additional_phone,additional_info`,[id,data.name,data.phone,data.document,data.address,data.notes,data.additionalPhone??null,data.additionalInfo??null]);
+  if(!customer)throw httpError(404,'Cliente ativo não encontrado neste estabelecimento.','NOT_FOUND');
+  return {data:customer};
+ }));
  app.get('/api/v1/customers',scoped('settings',true,async(c,req)=>{
   const q=z.string().trim().max(200).default('').parse(req.query.q);
   const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page),pageSize=z.coerce.number().int().min(1).max(1000).default(1000).parse(req.query.pageSize);
   let lookup='';try{lookup=normalizePhone(q);}catch{}
-  const where="($1='' OR strpos(lower(name||' '||document||' '||phone||' '||address||' '||source_code||' '||email),lower($1))>0 OR ($2<>'' AND bansir.customer_lookup_phone(phone,import_metadata)=$2))";
+  const where="($1='' OR strpos(lower(name||' '||document||' '||phone||' '||additional_phone||' '||address||' '||source_code||' '||email),lower($1))>0 OR ($2<>'' AND bansir.customer_lookup_phone(phone,import_metadata)=$2))";
   const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.customers WHERE ${where}`,[q,lookup])).rows[0].total;
-  return {data:(await c.query(`SELECT id,name,document,phone,address,active,source_code,import_metadata,email,birth_date,notes,fiscal_data FROM bansir.customers WHERE ${where} ORDER BY name,id LIMIT $3 OFFSET $4`,[q,lookup,pageSize,page*pageSize])).rows,meta:{total,page,pageSize}};
+  return {data:(await c.query(`SELECT id,name,document,phone,address,active,source_code,import_metadata,email,birth_date,notes,fiscal_data,additional_phone,additional_info FROM bansir.customers WHERE ${where} ORDER BY name,id LIMIT $3 OFFSET $4`,[q,lookup,pageSize,page*pageSize])).rows,meta:{total,page,pageSize}};
  }));
  app.post('/api/v1/customers',scoped('settings',false,async(c,req)=>({status:201,data:await createCustomer(c,req.identity,req.body)})));
  app.put('/api/v1/customers/:id',scoped('settings',false,async(c,req)=>{
   const data=customerInput.extend({active:z.boolean().default(true)}).parse(req.body),id=z.uuid().parse(req.params.id);
   if(data.phone)await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`customer:${req.identity.tenantId}:${req.identity.establishmentId}:${data.phone}`]);
   if(data.phone&&data.active){const found=await customersForPhone(c,data.phone);if(found.some(row=>row.id!==id))throw httpError(409,'Telefone já vinculado a outro cliente ativo.','CUSTOMER_EXISTS');}
-  const row=(await c.query('UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,active=$6,email=$7,birth_date=$8,notes=$9,fiscal_data=coalesce($10::jsonb,fiscal_data) WHERE id=$1 RETURNING id,name,phone,document,address,active',[id,data.name,data.phone,data.document,data.address,data.active,data.email,data.birthDate,data.notes,data.fiscalData??null])).rows[0];if(!row)throw httpError(404,'Cliente não encontrado.','NOT_FOUND');return {data:row};
+  const row=(await c.query('UPDATE bansir.customers SET name=$2,phone=$3,document=$4,address=$5,active=$6,email=$7,birth_date=$8,notes=$9,fiscal_data=coalesce($10::jsonb,fiscal_data),additional_phone=coalesce($11,additional_phone),additional_info=coalesce($12,additional_info) WHERE id=$1 RETURNING id,name,phone,document,address,active',[id,data.name,data.phone,data.document,data.address,data.active,data.email,data.birthDate,data.notes,data.fiscalData??null,data.additionalPhone??null,data.additionalInfo??null])).rows[0];if(!row)throw httpError(404,'Cliente não encontrado.','NOT_FOUND');return {data:row};
  }));
  app.post('/api/v1/customers/import/pdf',scoped('settings',false,async(c,req)=>({data:await withPdfRequest(req,options=>extractCustomerPdf(z.object({base64:z.string().max(7000000)}).strict().parse(req.body).base64,options))})));
  app.post('/api/v1/customers/import/confirm',scoped('settings',false,async(c,req)=>({status:201,data:await importCustomers(c,req.identity,req.body)})));

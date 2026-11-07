@@ -30,7 +30,7 @@ const viewsAll=member=>manages(member)||member.allowed_routes?.includes('sales-c
 const discounts=member=>manages(member)||member.allowed_routes?.includes('sales-discount');
 const externalPayment=z.object({method:z.enum(['cash','pix','credit_card','debit_card','online']),confirmed:z.literal(true),reference:text.default(''),receivedCents:cents.optional(),installments:z.number().int().min(1).max(24).optional()}).strict();
 const paymentSchema=z.union([z.object({method:z.literal('split'),parts:z.array(externalPayment.extend({amountCents:cents.refine(n=>n>0)})).min(2).max(10)}).strict(),externalPayment,z.object({method:z.literal('pending'),term:z.enum(['delivery','pickup','credit']),dueDate:z.iso.date().optional()}).strict()]);
-const saleInput=z.object({requestKey:uuid,smartposProvider:z.enum(['pagbank','mercadopago','caixa']).optional(),issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,gasDoPovo:z.boolean().optional(),quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerNotes:z.string().trim().max(3000).optional(),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
+const saleInput=z.object({requestKey:uuid,smartposProvider:z.enum(['pagbank','mercadopago','caixa']).optional(),issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,gasDoPovo:z.boolean().optional(),quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerNotes:z.string().trim().max(3000).optional(),customerAdditionalPhone:z.string().regex(/^\d{0,14}$/).optional(),customerAdditionalInfo:z.string().trim().max(500).optional(),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
 const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
 const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
 async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
@@ -61,8 +61,8 @@ export async function saleView(c,id){
   FROM bansir.sale_fiscal_links f JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id)
   WHERE f.sale_id=$1 AND d.status='authorized' ORDER BY model,d.id`,[id])).rows;
  s.customer_details=Object.keys(s.customer_snapshot||{}).length?s.customer_snapshot:
-  s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
- s.agreement=(await c.query('SELECT agreement_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1',[id])).rows[0]||null;
+  s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data,additional_phone,additional_info FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
+ s.agreement=(await c.query('SELECT agreement_id,customer_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1',[id])).rows[0]||null;
  s.link_order=(await c.query('SELECT preferred_payment FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[id])).rows[0]||null;
  s.receipt_address=receiptCustomerAddress(s);
  s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
@@ -121,10 +121,10 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  if(input.deliveryEmployeeId&&!deliverer)fail('Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND',404);
  // The recipient is checked when the user chooses and submits the fiscal document.
  const address=input.deliveryAddress||customer.address;
- if(input.deliveryMode==='delivery'&&(!address||!customer.name||!customer.phone))fail('Entrega exige nome, telefone e endereço do cliente.','DELIVERY_CUSTOMER_REQUIRED',400);
+ if(input.deliveryMode==='delivery'&&!address)fail('Informe o endereço da entrega.','DELIVERY_CUSTOMER_REQUIRED',400);
  if(input.deliveryMode==='pickup'&&input.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.','INVALID_DELIVERY_FEE',400);
  if(input.payment.method==='pending'){
-  if(!customer.name||!customer.phone)fail('Venda a receber exige cliente identificado e telefone.','CUSTOMER_REQUIRED',400);
+  if(input.payment.term!=='delivery'&&(!customer.name||!customer.phone))fail('Venda a receber exige cliente identificado e telefone.','CUSTOMER_REQUIRED',400);
   if(input.payment.term==='delivery'&&input.deliveryMode!=='delivery')fail('Cobrança na entrega exige entrega.','INVALID_PAYMENT_TERM',400);
   if(input.payment.term==='pickup'&&input.deliveryMode!=='pickup')fail('Cobrança na retirada exige retirada no balcão.','INVALID_PAYMENT_TERM',400);
   if(input.payment.term==='credit'&&!input.payment.dueDate)fail('Informe vencimento da venda a prazo.','DUE_DATE_REQUIRED',400);
@@ -141,7 +141,7 @@ export async function registerSale(c,i,member,body,{quotedItems,voucherReservati
  await checkAgreementCredit(c,agreement,total);
  const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);
  const {rows:[sale]}=await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone,customer_snapshot)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'',customerSnapshot({...customer,address,notes:input.customerNotes??customer.notes})]);
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'',customerSnapshot({...customer,address,notes:input.customerNotes??customer.notes,additional_phone:input.customerAdditionalPhone??customer.additional_phone,additional_info:input.customerAdditionalInfo??customer.additional_info})]);
  await attachAgreement(c,i,sale,agreement);
  for(const item of items){
   await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents,gas_do_povo)
@@ -257,11 +257,14 @@ export function mountSales(app,{scoped,secret}){
   await c.query('INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,cash.id,input.requestKey,fingerprint,input.kind,input.amountCents,input.reason]);return {status:201,data:await cashView(c,cash)};
  }));
  app.get('/api/v1/sales',scoped('sales',true,async(c,req,member)=>{
-  const q=z.object({page:z.coerce.number().int().min(0).max(10000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','pending']).default('all')}).parse(req.query);
+  const q=z.object({page:z.coerce.number().int().min(0).max(10000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','pending']).default('all'),search:z.string().trim().max(200).default(''),deliveryMode:z.enum(['all','delivery','pickup']).default('all')}).parse(req.query);
+  const coupon=/^#?\d+$/.test(q.search)?q.search.replace(/^#?0*(?=\d)/,''):'';
   const ids=(await c.query(`SELECT s.id FROM bansir.sales s WHERE ($1::boolean OR s.created_by=$2) AND ($5='all' OR
    (NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id)))
-   ORDER BY s.created_at DESC,s.id LIMIT $3 OFFSET $4`,[viewsAll(member),req.identity.userId,q.pageSize,q.page*q.pageSize,q.status])).rows;
-  return {data:await Promise.all(ids.map(row=>saleView(c,row.id)))};
+   AND ($6='all' OR s.delivery_mode=$6)
+   AND ($7='' OR strpos(lower(s.customer_name),lower($7))>0 OR ($8<>'' AND s.coupon_number::text=$8))
+   ORDER BY s.created_at DESC,s.id LIMIT $3 OFFSET $4`,[viewsAll(member),req.identity.userId,q.pageSize+1,q.page*q.pageSize,q.status,q.deliveryMode,q.search,coupon])).rows;
+  return {data:await Promise.all(ids.slice(0,q.pageSize).map(row=>saleView(c,row.id))),meta:{hasNext:ids.length>q.pageSize}};
  }));
  app.post('/api/v1/sales',scoped('sales',false,async(c,req,member)=>({status:201,data:await registerSale(c,req.identity,member,req.body)})));
  app.post('/api/v1/sales/:id/resend-whatsapp',scoped('sales',false,async(c,req,member)=>{
@@ -311,7 +314,8 @@ export function mountSales(app,{scoped,secret}){
   const settings=(await c.query('SELECT * FROM bansir.store_settings')).rows[0];const brCode=pixCode({key:settings?.pix_key||'',name:settings?.store_name||'',city:settings?.merchant_city||'',amountCents:sale.outstanding_cents,txid:sale.id});return {data:{brCode,amountCents:sale.outstanding_cents,manualConfirmationRequired:true}};
  }));
  app.get('/api/v1/customers/search',scoped('sales',true,async(c,req)=>{
-  const q=z.string().trim().min(2).max(200).parse(req.query.q);return {data:(await c.query(`SELECT id,name,document,phone,address FROM bansir.customers WHERE active AND strpos(lower(name||' '||phone||' '||document),lower($1))>0 ORDER BY name LIMIT 20`,[q])).rows};
+  const q=z.string().trim().min(2).max(200).parse(req.query.q);return {data:(await c.query(`SELECT id,name,document,phone,address,notes,additional_phone,additional_info FROM bansir.customers
+   WHERE active AND strpos(lower(concat_ws(' ',name,phone,additional_phone,document,address)),lower($1))>0 ORDER BY name LIMIT 20`,[q])).rows};
  }));
  app.post('/api/v1/customers',scoped('sales',false,async(c,req)=>({status:201,data:await createCustomer(c,req.identity,req.body)})));
  mountSaleFiscal(app,{scoped});

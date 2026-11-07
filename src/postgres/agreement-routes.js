@@ -68,17 +68,18 @@ export function mountAgreements(app,{scoped}){
  }));
  app.post('/api/v1/agreements/:id/members/:customerId/reassign',route('manage',async(c,r)=>{
   await requireFeature(c,'agreements');
-  const b=z.object({requestKey:uuid,destinationId:uuid.nullable(),saleIds:z.array(uuid).max(500),confirmArchive:z.boolean().default(false)}).strict().parse(r.body);
+  const b=z.object({requestKey:uuid,destinationId:uuid.nullable(),saleIds:z.array(uuid).max(500),confirmArchive:z.boolean().default(false),keepMembership:z.literal(true).optional()}).strict().parse(r.body);
   const i=r.identity,id=uuid.parse(r.params.customerId),source=uuid.parse(r.params.id);
   const payload={...b,source,customerId:id,action:'reassign-member'};
   await agreementLock(c,i);
   if(await prior(c,i,payload))return {data:true};
-  if((await customerAgreement(c,id))?.id!==source)fail('O vínculo mudou. Atualize a lista.');
-  const lastParticipant=!(await c.query('SELECT 1 FROM bansir.agreement_members WHERE agreement_id=$1 AND customer_id<>$2 AND active LIMIT 1',[source,id])).rowCount;
+  if(b.keepMembership&&(b.destinationId||!b.saleIds.length))fail('Selecione os cupons que deseja retirar mantendo o vínculo.');
+  if(!b.keepMembership&&(await customerAgreement(c,id))?.id!==source)fail('O vínculo mudou. Atualize a lista.');
+  const lastParticipant=!b.keepMembership&&!(await c.query('SELECT 1 FROM bansir.agreement_members WHERE agreement_id=$1 AND customer_id<>$2 AND active LIMIT 1',[source,id])).rowCount;
   if(lastParticipant!==b.confirmArchive)fail('A lista de participantes mudou. Reabra a operação para confirmar o estado atual.');
   const destination=b.destinationId?await group(c,b.destinationId):null;
   if(destination&&(!destination.active||destination.id===source))fail('Escolha outro convênio ativo.');
-  await c.query('UPDATE bansir.agreement_members SET active=false,updated_at=now() WHERE agreement_id=$1 AND customer_id=$2',[source,id]);
+  if(!b.keepMembership)await c.query('UPDATE bansir.agreement_members SET active=false,updated_at=now() WHERE agreement_id=$1 AND customer_id=$2',[source,id]);
   if(destination)await c.query('INSERT INTO bansir.agreement_members(tenant_id,establishment_id,agreement_id,customer_id,active) VALUES($1,$2,$3,$4,true) ON CONFLICT(tenant_id,establishment_id,agreement_id,customer_id) DO UPDATE SET active=true,updated_at=now()',[i.tenantId,i.establishmentId,destination.id,id]);
   const target=destination?await customerAgreement(c,id):null;
   if(target){target.today=await agreementToday(c);Object.assign(target,await nextAgreementTerms(c,target,target.today));}

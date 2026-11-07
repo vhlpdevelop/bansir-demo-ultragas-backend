@@ -15,6 +15,7 @@ import {normalizePhone} from './phone.js';
 import {createCustomer} from './customers.js';
 import {registerSale,saleView} from './sales.js';
 import {pricingDay,productQuote,basketShipping,storeTimeZones} from './product-pricing.js';
+import {agreementLock,agreementPermission,customerAgreement} from './agreements.js';
 
 const money=z.number().int().min(0).max(1000000000),slugInput=z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/),text=z.string().trim();
 const image=z.string().url().max(2048).refine(v=>{try{const u=new URL(v);return u.protocol==='https:'&&!u.username&&!u.password;}catch{return false;}},'Use uma URL HTTPS de imagem.');
@@ -170,16 +171,29 @@ export function mountStorefrontAdmin(app,{scoped}){
   return {data:rows.map(o=>({...o,subtotal_cents:Number(o.subtotal_cents),shipping_cents:Number(o.shipping_cents),total_cents:Number(o.total_cents)})),meta:{total,stats,page:q.page,pageSize:q.pageSize}};
  }));
  app.post('/api/v1/storefront/orders/:id/accept',scoped('sales',false,async(c,req,member)=>{
-  const input=z.object({customerConfirmed:z.literal(true),deliveryEmployeeId:z.uuid().optional(),routePlan:routePlanInput.optional()}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;
+  const input=z.object({customerConfirmed:z.literal(true),deliveryEmployeeId:z.uuid().optional(),routePlan:routePlanInput.optional(),preferredPayment:z.enum(['cash','pix','credit_card','debit_card']).nullable().optional(),useAgreement:z.boolean().optional(),agreementId:z.uuid().optional()}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`accept:${i.tenantId}:${i.establishmentId}:${id}`]);
   const order=(await c.query('SELECT * FROM bansir.storefront_orders WHERE id=$1',[id])).rows[0];if(!order)throw httpError(404,'Pedido não encontrado.','NOT_FOUND');
   if(order.sale_id)return {data:await saleView(c,order.sale_id)};if(order.status!=='new')throw httpError(409,'Pedido já encerrado.','ORDER_CLOSED');
   if(input.routePlan){await requireFeature(c,'deliveries');if(!input.deliveryEmployeeId||order.fulfillment!=='delivery')throw httpError(400,'Escolha um entregador para aplicar a rota sugerida.','INVALID_ROUTE_PLAN');}
+  if(input.useAgreement)await agreementLock(c,i);
   const customer=await createCustomer(c,i,{name:order.customer_name,phone:order.phone,document:'',address:order.delivery_address},{useExisting:true});
-  const sale=await registerSale(c,i,member,{requestKey:order.id,items:order.items.map(item=>({productId:item.productId,quantity:item.quantity,expectedUnitPriceCents:item.priceCents})),customerId:customer.id,deliveryMode:order.fulfillment,deliveryAddress:order.delivery_address,deliveryFeeCents:Number(order.shipping_cents),payment:{method:'pending',term:order.fulfillment==='delivery'?'delivery':'pickup'},...(input.deliveryEmployeeId?{deliveryEmployeeId:input.deliveryEmployeeId}:{})},{quotedItems:order.items});
+  if(input.useAgreement){
+   await requireFeature(c,'agreements');
+   agreementPermission(member,'use');
+   const current=await customerAgreement(c,customer.id);
+   if(input.agreementId&&current?.id!==input.agreementId){
+    agreementPermission(member,'manage');
+    if(current)throw httpError(409,'Este cliente já tem outro convênio. Use o convênio atual ou altere o vínculo em Convênios.','AGREEMENT_MEMBER_EXISTS');
+    if(!(await c.query('SELECT 1 FROM bansir.agreements WHERE id=$1 AND active',[input.agreementId])).rowCount)throw httpError(409,'Escolha um convênio ativo.','AGREEMENT_SUSPENDED');
+    await c.query(`INSERT INTO bansir.agreement_members(tenant_id,establishment_id,agreement_id,customer_id,active)
+     VALUES($1,$2,$3,$4,true) ON CONFLICT(tenant_id,establishment_id,agreement_id,customer_id) DO UPDATE SET active=true,updated_at=now()`,[i.tenantId,i.establishmentId,input.agreementId,customer.id]);
+   }else if(!current?.active)throw httpError(409,'O cliente precisa de um convênio ativo para faturar o pedido.','AGREEMENT_REQUIRED');
+  }
+  const sale=await registerSale(c,i,member,{requestKey:order.id,items:order.items.map(item=>({productId:item.productId,quantity:item.quantity,expectedUnitPriceCents:item.priceCents})),customerId:customer.id,deliveryMode:order.fulfillment,deliveryAddress:order.delivery_address,deliveryFeeCents:Number(order.shipping_cents),payment:{method:'pending',term:input.useAgreement?'credit':order.fulfillment==='delivery'?'delivery':'pickup'},...(input.deliveryEmployeeId?{deliveryEmployeeId:input.deliveryEmployeeId}:{})},{quotedItems:order.items});
   if(order.delivery_location)await c.query("UPDATE bansir.delivery_tasks SET latitude=$2,longitude=$3,accuracy=$4,destination_source='customer-confirmed' WHERE sale_id=$1",[sale.id,order.delivery_location.latitude,order.delivery_location.longitude,order.delivery_location.accuracy]);
   if(input.routePlan)await applySuggestedInsertion(c,i,sale.id,input.deliveryEmployeeId,input.routePlan);
-  await c.query("UPDATE bansir.storefront_orders SET status='accepted',sale_id=$2,accepted_by=$3,customer_id=$4,updated_at=now() WHERE id=$1",[id,sale.id,i.userId,customer.id]);return {status:201,data:sale};
+  await c.query("UPDATE bansir.storefront_orders SET status='accepted',sale_id=$2,accepted_by=$3,customer_id=$4,preferred_payment=$5,updated_at=now() WHERE id=$1",[id,sale.id,i.userId,customer.id,input.preferredPayment===undefined?order.preferred_payment:input.preferredPayment]);return {status:201,data:sale};
  }));
  app.post('/api/v1/storefront/orders/:id/reject',scoped('sales',false,async(c,req)=>{
   const {reason}=z.object({reason:text.min(3).max(500)}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;

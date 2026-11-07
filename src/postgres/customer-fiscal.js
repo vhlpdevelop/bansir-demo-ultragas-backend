@@ -7,7 +7,7 @@ export const customerFiscalInput=z.object({
  UF:z.enum('AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(' ')).optional(),CEP:digits(8)}).strict().optional()
 }).strict();
 export function customerSnapshot(customer){
- return {name:customer.name||'',document:customer.document||'',phone:customer.phone||'',address:customer.address||'',email:customer.email||'',notes:customer.notes||'',fiscal:customer.fiscal_data||{}};
+ return {name:customer.name||'',document:customer.document||'',phone:customer.phone||'',address:customer.address||'',email:customer.email||'',notes:customer.notes||'',...(customer.additional_phone?{additionalPhone:customer.additional_phone}:{}),...(customer.additional_info?{additionalInfo:customer.additional_info}:{}),fiscal:customer.fiscal_data||{}};
 }
 export function receiptCustomerAddress(sale){
  const c=sale.customer_details||sale.customer_snapshot||{},a=c.fiscal?.enderDest;
