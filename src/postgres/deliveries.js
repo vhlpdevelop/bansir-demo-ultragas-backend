@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import {httpError} from './database.js';
 import {manageDeliveries,driveDeliveries,monitorDeliveries,viewDeliveryHistory} from './delivery-permissions.js';
+import {queueWhatsapp} from './whatsapp.js';
 const fail=(message,code='DELIVERY_CONFLICT',status=409)=>{throw httpError(status,message,code);};
 const hash=x=>createHash('sha256').update(typeof x==='string'?x:JSON.stringify(x)).digest('hex');
 const uuid=z.uuid(),text=z.string().trim().max(1000);
@@ -180,6 +181,14 @@ export function mountDeliveries(app,{database,route,deliveryRouter}){
   if(b.action==='depart'&&!['assigned','failed'].includes(t.status)||b.action!=='depart'&&t.status!=='en_route')fail('Transição de entrega inválida.');
   if(!t.driver_id)fail('Selecione um entregador primeiro.');if(b.action==='failed'&&b.reason.length<5)fail('Informe o motivo da tentativa sem sucesso.','REASON_REQUIRED',400);
   await c.query(`UPDATE bansir.delivery_tasks SET status=$2,departed_at=CASE WHEN $2='en_route' THEN now() ELSE departed_at END,delivered_at=CASE WHEN $2='delivered' THEN now() ELSE delivered_at END,version=version+1,updated_at=now() WHERE sale_id=$1`,[t.sale_id,target]);
-  await audit(c,i,b.requestKey,payload,t.sale_id);return {data:true};
+  await audit(c,i,b.requestKey,payload,t.sale_id);
+  if(target==='en_route'||target==='delivered'){
+   const ord=(await c.query('SELECT id,phone FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[t.sale_id])).rows[0];
+   if(ord?.phone){
+    const code=String(ord.id).slice(0,8).toUpperCase(),msg=target==='en_route'?`Seu pedido #${code} acabou de sair para entrega!`:`Seu pedido #${code} foi entregue! Obrigado pela preferência.`;
+    await queueWhatsapp(c,i,{key:`storefront-${b.action}:${t.sale_id}:${t.version}`,payload:{permission:'deliveries',action:'storefront-status',phone:ord.phone,message:msg}});
+   }
+  }
+  return {data:true};
  }));
 }

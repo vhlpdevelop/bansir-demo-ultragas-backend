@@ -27,8 +27,15 @@ export async function processMetaJob(queue,job,{transport=fetch,version=process.
    if(!recent)throw terminal('META_GREETING_WINDOW_EXPIRED');
   }
   const message=String(job.payload.message||'');if(!message||message.length>4000)throw terminal('META_INVALID_MESSAGE');
+  if(job.payload.action==='storefront-status'&&(!recent||optIn===false))return {skipped:true};
   let content;
-  if(recent)content={type:'text',text:{body:message,preview_url:false}};
+  if(job.payload.action==='auto-greeting'){
+   const urlMatch=message.match(/https:\/\/[^\s<>"{}|\\^`[\]]+/i);
+   const ctaUrl=urlMatch?.[0]?.replace(/[.,;!?)]+$/,'');
+   content=ctaUrl&&message.length<=1024
+    ?{type:'interactive',interactive:{type:'cta_url',body:{text:message},action:{name:'cta_url',parameters:{display_text:'Fazer pedido',url:ctaUrl}}}}
+    :{type:'text',text:{body:message,preview_url:false}};
+  }else if(recent)content={type:'text',text:{body:message,preview_url:false}};
   else{if(!optIn)throw terminal('META_OPT_IN_REQUIRED');const name=job.payload.action==='send-voucher'?a.voucher_template:a.delivery_template;if(!name)throw terminal('META_TEMPLATE_REQUIRED');if(message.length>1024)throw terminal('META_TEMPLATE_TEXT_TOO_LONG');content={type:'template',template:{name,language:{code:a.template_language},components:[{type:'body',parameters:[{type:'text',text:message}]}]}};}
   await c.query("INSERT INTO bansir.meta_messages(tenant_id,establishment_id,message_id,direction,phone,status,job_id) VALUES($1,$2,$3,'out',$4,'submitting',$5) ON CONFLICT(tenant_id,establishment_id,message_id) DO UPDATE SET status='submitting'",[job.tenant_id,job.establishment_id,'attempt:'+job.id,phone,job.id]);
   return {account:a,phone,message,body:{messaging_product:'whatsapp',recipient_type:'individual',to:phone,...content},token:unseal(a.encrypted_token,secretContext({tenantId:job.tenant_id,establishmentId:job.establishment_id},'whatsapp-meta'))};
