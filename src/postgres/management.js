@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import {paymentSummary} from './payment-summary.js';
 import {z} from 'zod';
 import {httpError} from './database.js';
@@ -95,7 +96,7 @@ export function mountManagement(app,{scoped}){
   const old=(await c.query('SELECT * FROM bansir.employee_advances WHERE request_key=$1',[d.requestKey])).rows[0];if(old){if(old.request_hash!==hash)throw httpError(409,'Tentativa já utilizada.','IDEMPOTENCY_CONFLICT');return {data:old};}
   const e=(await c.query('SELECT * FROM bansir.employees WHERE id=$1 AND active FOR UPDATE',[d.employeeId])).rows[0];if(!e)throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');
   if(d.vehicleId){const v=(await c.query('SELECT * FROM bansir.vehicles WHERE id=$1 FOR UPDATE',[d.vehicleId])).rows[0];if(!v)throw httpError(404,'Veículo não encontrado.','NOT_FOUND');if(d.vehicleKm===undefined||d.vehicleKm<Number(v.current_km))throw httpError(400,'Informe quilometragem igual ou superior à atual.','INVALID_KM');await c.query('UPDATE bansir.vehicles SET current_km=$2,last_km_update=now() WHERE id=$1',[v.id,d.vehicleKm]);}
-  const entry=await createEntry(c,i,{requestKey:d.requestKey,title:'Vale funcionário: '+e.name,type:'expense',category:'adiantamento',amount:d.amount,status:'completed',paymentMethod:'outro',notes:d.justification});
+  const entry=await createEntry(c,i,{requestKey:randomUUID(),title:'Vale funcionário: '+e.name,type:'expense',category:'adiantamento',amount:d.amount,status:'completed',paymentMethod:'outro',notes:d.justification});
   const row=(await c.query('INSERT INTO bansir.employee_advances(tenant_id,establishment_id,request_key,request_hash,employee_id,entry_id,amount_cents,justification,notes,vehicle_id,vehicle_km,issued_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',[i.tenantId,i.establishmentId,d.requestKey,hash,e.id,entry.id,Math.round(d.amount*100),d.justification,d.notes,d.vehicleId||null,d.vehicleKm??null,i.userId])).rows[0];return {status:201,data:row};
  }));
  for(const method of ['post','put'])app[method]('/api/v1/employees'+(method==='put'?'/:id':''),scoped('employees',false,async(c,req,m)=>{

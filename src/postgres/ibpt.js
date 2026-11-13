@@ -1,6 +1,27 @@
 import { httpError } from './database.js';
+import { unseal, secretContext } from './secrets.js';
 
 const IBPT_API_URL = 'https://apidoni.ibpt.org.br/api/v1/produtos';
+
+function resolveIbptToken(cfg, identity, overrideToken) {
+  const explicit = String(overrideToken || '').trim();
+  if (explicit) return explicit;
+  if (!cfg?.encrypted_ibpt_token) return null;
+  return String(unseal(cfg.encrypted_ibpt_token, secretContext(identity, 'ibpt')) || '').trim() || null;
+}
+
+function mergeIbptInfCpl(currentInfCpl, ibptNotice) {
+  const cleaned = String(currentInfCpl || '')
+    .replace(/\s*\|\s*Trib\. aprox\.:[\s\S]*?Lei da Transparência 12\.741\/2012\s*\|\s*Fonte:[^|]*/i, '')
+    .replace(/^Trib\. aprox\.:[\s\S]*?Lei da Transparência 12\.741\/2012\s*\|\s*Fonte:[^|]*(?:\s*\|\s*)?/i, '')
+    .trim();
+
+  if (!cleaned) return ibptNotice;
+  if (cleaned.includes('Lei da Transparência') || cleaned.includes('Trib. aprox.:')) {
+    return cleaned;
+  }
+  return `${cleaned} | ${ibptNotice}`;
+}
 
 // Conforme Manual De Olho no Imposto 0.13: origens 0, 3, 4 e 5 usam nacionalfederal; 1, 2, 6, 7 e 8 usam importadosfederal.
 const IMPORTED_ORIGINS = new Set([1, 2, 6, 7, 8]);
@@ -219,7 +240,7 @@ export async function applyIbptToDraft(c, identity, draft, { model = '55', cfg, 
   if (model !== '55' || !draft || !Array.isArray(draft.det)) return draft;
 
   const s = cfg?.data || {};
-  const token = s.ibptToken || null;
+  const token = resolveIbptToken(cfg, identity);
   const cnpj = normalizeCnpj(s.cnpj);
   const uf = String(s.address?.uf || '').trim().toUpperCase();
   if (!uf || !cnpj) return draft;
@@ -303,13 +324,7 @@ export async function applyIbptToDraft(c, identity, draft, { model = '55', cfg, 
   const ibptNotice = `Trib. aprox.: R$ ${formatBrl(totalFedCents)} Federal, R$ ${formatBrl(totalEstCents)} Estadual e R$ ${formatBrl(totalMunCents)} Municipal (Total R$ ${formatBrl(totalTaxCents)} - ${pct}%) | Lei da Transparência 12.741/2012 | Fonte: ${fonteLabel}${chaveLabel ? ` Chave ${chaveLabel}` : ''}`;
 
   draft.infAdic = draft.infAdic || {};
-  const currentInfCpl = draft.infAdic.infCpl ? String(draft.infAdic.infCpl).trim() : '';
-
-  if (!currentInfCpl) {
-    draft.infAdic.infCpl = ibptNotice;
-  } else if (!currentInfCpl.includes('Lei da Transparência') && !currentInfCpl.includes('Trib. aprox.:')) {
-    draft.infAdic.infCpl = `${currentInfCpl} | ${ibptNotice}`;
-  }
+  draft.infAdic.infCpl = mergeIbptInfCpl(draft.infAdic.infCpl, ibptNotice);
 
   return draft;
 }
@@ -321,7 +336,7 @@ export async function syncEstablishmentIbpt(c, identity, { cfg, token, fetcher =
   const s = cfg?.data || {};
   const cnpj = normalizeCnpj(s.cnpj);
   const uf = String(s.address?.uf || '').trim().toUpperCase();
-  const cleanToken = String(token || s.ibptToken || '').trim();
+  const cleanToken = resolveIbptToken(cfg, identity, token) || '';
 
   if (!cnpj || !uf) {
     throw httpError(409, 'Salve CNPJ e UF do emitente antes de sincronizar o IBPT.', 'FISCAL_SETTINGS_REQUIRED');

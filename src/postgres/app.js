@@ -41,7 +41,7 @@ import {cashSchedule} from './business-hours.js';
 import {storeTimeZones} from './product-pricing.js';
 import {mountWhatsapp} from './whatsapp.js';
 import {mountVouchersFleet} from './vouchers-fleet.js';
-import { categoryInput, settingsInput, requirePermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
+import { categoryInput, settingsInput, requirePermission, requireAnyPermission, resourceId, presentProduct,catalogView, createProduct, updateProduct, moveStock } from './catalog.js';
 
 export const migratedModules = ['auth', 'tenants', 'products', 'settings', 'notifications', 'fiscal-settings', 'fiscal-queue','sales','cash','customers','deliverers','storefront','suppliers','fiscal-monitor','whatsapp','vouchers','fleet','financial','employees','reports','bridge'];
 export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEnv = 'development', expiresIn = '10m',clock=()=>new Date(),onError,metaConnect,imageStorage,deliveryRouter,geocoder,supplierWizard }) {
@@ -98,7 +98,9 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   app.post('/api/v1/auth/return-to-selection', route(async req => {browserSessions.checkRefreshMutation(req);const data=await auth.returnToSelection(req.identity);if(browserSessions.isBrowser(req))browserSessions.clearRefresh(req,req.identity.sessionId);return {data};}));
   app.post('/api/v1/auth/switch-tenant', (req,res)=>res.status(410).json({success:false,code:'SELECTION_REQUIRED',message:'Volte à seleção de estabelecimento.'}));
   const scoped = (module, read, fn) => route(async req => database.transaction(req.identity, async (client, member) => {
-    requirePermission(member, module==='settings'?(settingsModule(req.path)||module):module, read);
+    const target = Array.isArray(module) ? module : (module==='settings'?(settingsModule(req.path)||module):module);
+    if (Array.isArray(target)) requireAnyPermission(member, target, read);
+    else requirePermission(member, target, read);
     req.identity.pdvTerminalToken=req.get('X-Pdv-Terminal');
     return fn(client, req,member);
   }));

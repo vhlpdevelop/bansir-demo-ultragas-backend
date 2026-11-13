@@ -19,7 +19,7 @@ export const fiscalSettingsInput=z.object({
  nfeSeries:z.coerce.number().int().min(1).max(889).optional(),nfeNextNumber:z.coerce.number().int().min(1).max(999999999).optional(),
  timeZone:z.enum(['America/Sao_Paulo','America/Cuiaba','America/Manaus','America/Rio_Branco','America/Noronha']).default('America/Cuiaba'),
  technicalResponsible:z.object({CNPJ:z.string().regex(/^\d{14}$/),xContato:z.string().trim().min(2).max(60),email:z.email().max(60),fone:z.string().regex(/^\d{6,14}$/)}).strict().optional(),
- cscId:z.string().regex(/^\d{1,6}$/),cscToken:z.string().trim().min(16).max(100).optional(),ibptToken:z.string().trim().max(120).optional(),
+ cscId:z.string().regex(/^\d{1,6}$/),cscToken:z.string().trim().min(16).max(100).optional(),ibptToken:z.string().trim().min(1).max(120).optional(),
  address:z.object({street:text,number:z.string().trim().min(1).max(20),district:text,city:text,cityCode:z.string().regex(/^\d{7}$/),uf:z.enum(Object.keys(ufCodes)),cep:z.string().regex(/^\d{8}$/),phone:z.string().regex(/^\d{10,14}$/)}).strict()
 }).strict().refine(d=>d.address.cityCode.startsWith(String(ufCodes[d.address.uf])),{message:'Código IBGE incompatível com a UF.'});
 const certificateInput=z.object({base64:z.string().max(1400000),password:z.string().min(1).max(256),name:z.string().trim().min(2).max(100).default('Certificado A1')}).strict();
@@ -40,18 +40,23 @@ export function issuedTimestamp(timeZone,date=new Date()) {
 }
 export function mountFiscal(app,{scoped}) {
  mountFiscalCancellation(app,{scoped});
- app.get('/api/v1/fiscal/settings',scoped('settings',false,async c=>{
+ app.get('/api/v1/fiscal/settings',scoped('settings',true,async c=>{
   const cert=(await c.query('SELECT subject,cnpj,valid_from,valid_until,fingerprint,active,name FROM bansir.fiscal_certificates')).rows[0];
-  const cfg=(await c.query('SELECT data FROM bansir.fiscal_settings')).rows[0];
-  if(cfg){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=65',[cfg.data.environment,cfg.data.series])).rows[0];if(counter)cfg.data.nextNumber=counter.last_number+1;}
-  if(cfg?.data.nfeSeries){const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=55',[cfg.data.environment,cfg.data.nfeSeries])).rows[0];if(counter)cfg.data.nfeNextNumber=counter.last_number+1;}
+  const cfg=(await c.query('SELECT data,encrypted_ibpt_token FROM bansir.fiscal_settings')).rows[0];
+  const settingsData=cfg?.data?{...cfg.data}:null;
+  if(settingsData){
+   delete settingsData.ibptToken;
+   const counter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=65',[settingsData.environment,settingsData.series])).rows[0];
+   if(counter)settingsData.nextNumber=counter.last_number+1;
+   if(settingsData.nfeSeries){const nfeCounter=(await c.query('SELECT last_number FROM bansir.fiscal_numbering WHERE environment=$1 AND series=$2 AND model=55',[settingsData.environment,settingsData.nfeSeries])).rows[0];if(nfeCounter)settingsData.nfeNextNumber=nfeCounter.last_number+1;}
+  }
   const store=(await c.query('SELECT e.legal_name,e.name,e.document_id FROM bansir.establishments e WHERE id=bansir.establishment_id()')).rows[0];
-  const ibptSummary=cfg?.data?.cnpj?(await c.query(
+  const ibptSummary=settingsData?.cnpj?(await c.query(
    `SELECT count(*)::int AS count,max(versao) AS versao,max(chave) AS chave,to_char(max(vigencia_fim),'YYYY-MM-DD') AS vigencia_fim,max(updated_at) AS updated_at
     FROM bansir.ibpt_taxes WHERE cnpj=$1 AND uf=$2`,
-   [cfg.data.cnpj,cfg.data.address?.uf||'']
+   [settingsData.cnpj,settingsData.address?.uf||'']
   )).rows[0]:null;
-  return {data:{certificate:publicCertificate(cert),settings:cfg?.data||null,store,ibpt:{configured:Boolean(cfg?.data?.ibptToken),cachedCount:Number(ibptSummary?.count||0),versao:ibptSummary?.versao||'',chave:ibptSummary?.chave||'',vigenciaFim:ibptSummary?.vigencia_fim||null,updatedAt:ibptSummary?.updated_at||null},readiness:{encryption:!!process.env.FISCAL_ENCRYPTION_KEY,xmlStorage:!!process.env.FISCAL_S3_BUCKET,productionEnabled:process.env.FISCAL_PRODUCTION_ENABLED==='true'}}};
+  return {data:{certificate:publicCertificate(cert),settings:settingsData,store,ibpt:{configured:Boolean(cfg?.encrypted_ibpt_token),cachedCount:Number(ibptSummary?.count||0),versao:ibptSummary?.versao||'',chave:ibptSummary?.chave||'',vigenciaFim:ibptSummary?.vigencia_fim||null,updatedAt:ibptSummary?.updated_at||null},readiness:{encryption:!!process.env.FISCAL_ENCRYPTION_KEY,xmlStorage:!!process.env.FISCAL_S3_BUCKET,productionEnabled:process.env.FISCAL_PRODUCTION_ENABLED==='true'}}};
  }));
  app.post('/api/v1/fiscal/ibpt/sync',scoped('settings',false,async(c,req)=>{
   const body=z.object({ibptToken:z.string().trim().min(1).max(120).optional()}).strict().parse(req.body||{});
@@ -84,9 +89,11 @@ export function mountFiscal(app,{scoped}) {
   const current=(await c.query('SELECT * FROM bansir.fiscal_settings')).rows[0];
   if(!data.cscToken && (!current || current.data.environment!==data.environment || current.data.cscId!==data.cscId))throw httpError(400,'Informe o CSC deste ambiente.','CSC_REQUIRED');
   const encrypted=data.cscToken?seal(data.cscToken,secretContext(i,'csc')):current.encrypted_csc;
+  const encryptedIbpt=data.ibptToken?seal(data.ibptToken,secretContext(i,'ibpt')):(current?.encrypted_ibpt_token||null);
   delete data.cscToken;
-  await c.query(`INSERT INTO bansir.fiscal_settings(tenant_id,establishment_id,data,encrypted_csc) VALUES($1,$2,$3,$4)
-   ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET data=EXCLUDED.data,encrypted_csc=EXCLUDED.encrypted_csc,updated_at=now()`,[i.tenantId,i.establishmentId,data,encrypted]);
+  delete data.ibptToken;
+  await c.query(`INSERT INTO bansir.fiscal_settings(tenant_id,establishment_id,data,encrypted_csc,encrypted_ibpt_token) VALUES($1,$2,$3,$4,$5)
+   ON CONFLICT(tenant_id,establishment_id) DO UPDATE SET data=EXCLUDED.data,encrypted_csc=EXCLUDED.encrypted_csc,encrypted_ibpt_token=EXCLUDED.encrypted_ibpt_token,updated_at=now()`,[i.tenantId,i.establishmentId,data,encrypted,encryptedIbpt]);
   // Configuration is locked above; counters are separate for each model.
   if((data.nfeSeries===undefined)!==(data.nfeNextNumber===undefined))throw httpError(400,'Informe série e próximo número da NF-e.','NFE_NUMBERING_REQUIRED');
   for(const [model,series,next] of [[65,data.series,data.nextNumber],...(data.nfeSeries?[[55,data.nfeSeries,data.nfeNextNumber]]:[])]){
@@ -131,7 +138,7 @@ export function mountFiscal(app,{scoped}) {
   return {status:202,data:await createFiscalDocument(c,req.identity,req.body)};
  }));
 }
-export async function createFiscalDocument(c,identity,body,{allowReferences=false}={}) {
+export async function createFiscalDocument(c,identity,body,{allowReferences=false,fiscalOverrides}={}) {
   const input=z.object({requestKey:z.uuid(),model:fiscalModel,operation:fiscalOperation,draft:z.object({references:z.array(z.string().regex(/^\d{44}$/)).min(1).max(100).optional(),det:z.array(z.object({prod:z.object({cProd:text,xProd:text,NCM:z.string().regex(/^\d{8}$/),CFOP:z.string().regex(/^\d{4}$/),qCom:z.number().positive(),vUnCom:z.number().nonnegative(),vProd:z.number().nonnegative()}).passthrough(),imposto:z.object({ICMS:z.record(z.string(),z.unknown()),PIS:z.record(z.string(),z.unknown()),COFINS:z.record(z.string(),z.unknown())}).passthrough()}).passthrough()).min(1).max(200),total:z.object({ICMSTot:z.object({vNF:z.number().positive(),vProd:z.number().positive()}).passthrough()}).strict(),pag:z.object({detPag:z.array(z.object({tPag:z.string().regex(/^\d{2}$/),vPag:z.number().nonnegative()}).passthrough()).min(1)}).passthrough(),dest:z.record(z.string(),z.unknown()).optional(),transp:z.record(z.string(),z.unknown()).optional(),infAdic:z.record(z.string(),z.unknown()).optional()}).strict()}).strict().parse(body);
   if(input.draft.det.some(d=>['ICMS','PIS','COFINS'].some(k=>!Object.keys(d.imposto[k]).length)))throw httpError(400,'Preencha a tributação de todos os itens com orientação contábil.','FISCAL_TAX_REQUIRED');
   for(const item of input.draft.det){if(item.prod.comb)fuelInput.parse(item.prod.comb);else if(item.prod.NCM==='27111910')throw httpError(400,'Informe o grupo de combustível (ANP/GLP) deste produto.','FUEL_REQUIRED');}
@@ -161,7 +168,7 @@ export async function createFiscalDocument(c,identity,body,{allowReferences=fals
   delete infNFe.references;if(draft.references)infNFe.ide.NFref=draft.references.map(refNFe=>({refNFe}));
   if(model==='55'){infNFe.dest=destination.recipient;if([2,3,9].includes(input.operation.presence))infNFe.ide.indIntermed=0;}
   if(s.environment===2){infNFe.det[0].prod.xProd='NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';if(infNFe.dest)infNFe.dest.xNome='NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';}
-  const payload={draftHash:rawDraftHash,operation:input.operation,request:{idLote:counter.last_number,indSinc:1,NFe:{infNFe}}};
+  const payload={draftHash:rawDraftHash,operation:input.operation,...(fiscalOverrides?.length?{fiscalOverrides}:{}),request:{idLote:counter.last_number,indSinc:1,NFe:{infNFe}}};
   const {rows:[doc]}=await c.query(`INSERT INTO bansir.fiscal_documents(tenant_id,establishment_id,request_key,environment,access_key,payload,configuration_version,certificate_fingerprint)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,status`,[i.tenantId,i.establishmentId,input.requestKey,s.environment,key,payload,configurationVersion(cfg),cert.fingerprint]);
   await enqueue(c,i,{kind:'fiscal',key:doc.id,payload:{documentId:doc.id,userId:i.userId}});

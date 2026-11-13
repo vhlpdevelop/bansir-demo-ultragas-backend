@@ -90,7 +90,7 @@ export async function customerSalesList(c, customerId, { limit = 50, offset = 0 
 }
 
 export function mountCustomerProfile(app,{scoped}){
- app.get('/api/v1/customers/:id/profile',scoped('settings',true,async(c,req)=>{
+ app.get('/api/v1/customers/:id/profile',scoped('customers',true,async(c,req)=>{
   const id=z.uuid().parse(req.params.id),q=z.object({salePage:z.coerce.number().int().min(0).max(100000).default(0),orderPage:z.coerce.number().int().min(0).max(100000).default(0)}).parse(req.query),size=20;
   const customer=(await c.query('SELECT id,name,document,phone,address,active,source_code,import_metadata,email,birth_date,notes,created_at FROM bansir.customers WHERE id=$1',[id])).rows[0];
   if(!customer)throw httpError(404,'Cliente não encontrado neste estabelecimento.','NOT_FOUND');
@@ -111,7 +111,7 @@ export function mountCustomerProfile(app,{scoped}){
   return {data:{customer,summary,sales,orders:orders.map(r=>({...r,total_cents:Number(r.total_cents),shipping_cents:Number(r.shipping_cents)})),salePage:q.salePage,orderPage:q.orderPage,pageSize:size,orderCount}};
  }));
 
- app.get('/api/v1/customers/:id/statement-pdf',scoped('settings',true,async(c,req)=>{
+ app.get('/api/v1/customers/:id/statement-pdf',scoped('customers',true,async(c,req)=>{
   const id=z.uuid().parse(req.params.id);
   const customer=(await c.query('SELECT id,name,document,phone,address,active,source_code,import_metadata,email,birth_date,notes,created_at FROM bansir.customers WHERE id=$1',[id])).rows[0];
   if(!customer)throw httpError(404,'Cliente não encontrado neste estabelecimento.','NOT_FOUND');
@@ -130,9 +130,10 @@ export function mountCustomerProfile(app,{scoped}){
   const store=(await c.query(`
    SELECT coalesce(s.store_name, e.name) AS store_name, coalesce(s.document_id, e.document_id) AS document_id, s.address, s.merchant_city
    FROM bansir.establishments e
-   LEFT JOIN bansir.store_settings s ON s.tenant_id = e.tenant_id
+   LEFT JOIN bansir.store_settings s ON s.tenant_id = e.tenant_id AND s.establishment_id = e.id
+   WHERE e.id = $1
    LIMIT 1
-  `)).rows[0]||{};
+  `,[req.identity.establishmentId])).rows[0]||{};
 
   const timeZone=(await c.query("SELECT coalesce(config->>'timeZone','America/Cuiaba') AS tz FROM bansir.storefronts LIMIT 1")).rows[0]?.tz||'America/Cuiaba';
 

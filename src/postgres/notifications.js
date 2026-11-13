@@ -71,7 +71,7 @@ export function mountNotifications(app,{scoped,route,database}) {
  app.delete('/api/v1/notifications/:id',own(async(c,req)=>{await c.query('DELETE FROM bansir.notifications WHERE id=$1',[z.uuid().parse(req.params.id)]);return {data:true};}));
  app.patch('/api/v1/notifications/read-all',own(async c=>{await c.query('UPDATE bansir.notifications SET read_at=now() WHERE read_at IS NULL');return {data:true};}));
  app.patch('/api/v1/notifications/:id/read',own(async(c,req)=>{await c.query('UPDATE bansir.notifications SET read_at=now() WHERE id=$1',[z.uuid().parse(req.params.id)]);return {data:true};}));
- app.get('/api/v1/workers/jobs',scoped('settings',false,async c=>({data:(await c.query('SELECT id,kind,state,attempts,max_attempts,last_error,created_at,completed_at FROM bansir.jobs ORDER BY created_at DESC LIMIT 100')).rows})));
+ app.get('/api/v1/workers/jobs',scoped('settings',true,async c=>({data:(await c.query('SELECT id,kind,state,attempts,max_attempts,last_error,created_at,completed_at FROM bansir.jobs ORDER BY created_at DESC LIMIT 100')).rows})));
 }
 
 export async function deliverNotification(queue,job,{send=webpush.sendNotification.bind(webpush),pushEnabled=true}={}) {

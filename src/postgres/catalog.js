@@ -29,11 +29,22 @@ export function catalogView(row,member) {
   if (!manages) delete result.costPrice;
   return result;
 }
-export function requirePermission(member, module, read = false) {
+export function hasPermission(member, module, read = false) {
   const routes = member.allowed_routes || [];
-  if (['admin', 'superadmin'].includes(member.role) || routes.some(r => r === module || (!module.startsWith('settings')&&module!=='fiscal'&&r.startsWith(`${module}-`))) || (module.startsWith('settings-')&&routes.includes('settings')) || (read&&['settings-store','settings-terminals'].includes(module)&&routes.includes('sales')) ||
-      (read && module === 'products' && routes.includes('sales')) || (read && module==='agreements' && routes.some(r=>['financial','financial-receivables'].includes(r)))) return;
-  throw httpError(403, 'Você não tem permissão para esta ação nesta empresa.', 'FORBIDDEN');
+  return (
+    ['admin', 'superadmin'].includes(member.role) ||
+    routes.some(r => r === module || ((read || module === 'sales') && !module.startsWith('settings') && module !== 'fiscal' && r.startsWith(`${module}-`))) ||
+    (module.startsWith('settings-') && !['settings-terminals', 'settings-whatsapp'].includes(module) && routes.includes('settings')) ||
+    (read && ['settings-store', 'settings-terminals'].includes(module) && routes.includes('sales')) ||
+    (read && module === 'products' && routes.includes('sales')) ||
+    (read && module === 'agreements' && routes.some(r => ['financial', 'financial-receivables'].includes(r)))
+  );
+}
+export function requirePermission(member, module, read = false) {
+  if (!hasPermission(member, module, read)) throw httpError(403, 'Você não tem permissão para esta ação nesta empresa.', 'FORBIDDEN');
+}
+export function requireAnyPermission(member, modules, read = false) {
+  if (!modules.some(module => hasPermission(member, module, read))) throw httpError(403, 'Você não tem permissão para esta ação nesta empresa.', 'FORBIDDEN');
 }
 export function resourceId(id) {
   if (!validId(id)) throw httpError(400, 'Identificador inválido.', 'INVALID_ID');

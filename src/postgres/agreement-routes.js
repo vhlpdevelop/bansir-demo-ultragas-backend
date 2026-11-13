@@ -1,7 +1,7 @@
 import {agreementReportPdf} from './agreement-report-pdf.js';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
-import {httpError} from './database.js';
+import {escapeLike, httpError} from './database.js';
 import {requireFeature,tenantFeatures} from './features.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {assertNoFiscalReservation,fiscalSaleLock} from './fiscal-issuance.js';
@@ -39,7 +39,7 @@ export function mountAgreements(app,{scoped}){
   const individualBalanceCents=a.individual_balance?Number((await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1 AND l.customer_id=$2)b`,[a.id,a.customer_id])).rows[0].cents):null;
   return {data:{id:a.id,name:a.name,active:a.active,individualBalanceCents,...await nextAgreementTerms(c,a,await agreementToday(c))}};
  }));
- app.get('/api/v1/agreements/customers',route('view',async(c,r)=>{const q=z.string().trim().min(2).max(100).parse(r.query.q);return {data:(await c.query("SELECT id,name,document,phone FROM bansir.customers WHERE active AND(name ILIKE '%'||$1||'%' OR document ILIKE '%'||$1||'%' OR phone ILIKE '%'||$1||'%') ORDER BY name LIMIT 30",[q])).rows};}));
+ app.get('/api/v1/agreements/customers',route('view',async(c,r)=>{const q=escapeLike(z.string().trim().min(2).max(100).parse(r.query.q));return {data:(await c.query("SELECT id,name,document,phone FROM bansir.customers WHERE active AND(name ILIKE '%'||$1||'%' ESCAPE '\\' OR document ILIKE '%'||$1||'%' ESCAPE '\\' OR phone ILIKE '%'||$1||'%' ESCAPE '\\') ORDER BY name LIMIT 30",[q])).rows};}));
  app.put('/api/v1/agreements/customer/:id/membership',route('manage',async(c,r)=>{
   await requireFeature(c,'agreements');const b=z.object({requestKey:uuid,agreementId:uuid.nullable(),expectedAgreementId:uuid.nullable()}).strict().parse(r.body),i=r.identity,id=uuid.parse(r.params.id);
   await agreementLock(c,i);const payload={...b,customerId:id,action:'pdv-membership'};if(await prior(c,i,payload))return {data:true};

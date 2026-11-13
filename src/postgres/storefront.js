@@ -9,7 +9,7 @@ import {requireFeature} from './features.js';
 import {z} from 'zod';
 import rateLimit from 'express-rate-limit';
 import {randomBytes,createHash} from 'node:crypto';
-import {httpError} from './database.js';
+import {escapeLike, httpError} from './database.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {normalizePhone,customersForPhone} from './phone.js';
 import {createCustomer} from './customers.js';
@@ -177,8 +177,8 @@ export function mountStorefrontAdmin(app,{scoped}){
    LEFT JOIN LATERAL(SELECT customer_name,created_at FROM bansir.storefront_orders WHERE phone=p.phone ORDER BY created_at DESC LIMIT 1) ord ON true
    LEFT JOIN LATERAL(SELECT body,direction,received_at FROM bansir.meta_messages WHERE phone=p.phone AND message_id NOT LIKE 'attempt:%' AND received_at>=now()-interval '24 hours' ORDER BY received_at DESC LIMIT 1) last_msg ON true
    LEFT JOIN LATERAL(SELECT max(received_at) AS last_inbound FROM bansir.meta_messages WHERE phone=p.phone AND direction='in') inbound ON true
-   WHERE ($1='' OR p.phone ILIKE '%'||$1||'%' OR customer.name ILIKE '%'||$1||'%' OR ord.customer_name ILIKE '%'||$1||'%')
-   ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[search,page*30]);
+   WHERE ($1='' OR p.phone ILIKE '%'||$1||'%' ESCAPE '\\' OR customer.name ILIKE '%'||$1||'%' ESCAPE '\\' OR ord.customer_name ILIKE '%'||$1||'%' ESCAPE '\\')
+   ORDER BY greatest(last_msg.received_at,ord.created_at) DESC LIMIT 30 OFFSET $2`,[escapeLike(search),page*30]);
   return {data:result.rows.map(({total,...r})=>r),meta:{total:Number(result.rows[0]?.total||0),serverNow:new Date().toISOString()}};
  }));
  app.get('/api/v1/storefront/orders/map',scoped('sales',true,async(c,req)=>{

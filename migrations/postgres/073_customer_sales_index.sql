@@ -4,4 +4,3 @@ ON bansir.sales(tenant_id, establishment_id, customer_id, created_at DESC);
 
 ALTER TABLE bansir.jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
 ALTER TABLE bansir.jobs ADD CONSTRAINT jobs_kind_check CHECK(kind IN ('notification','fiscal','whatsapp','report'));
-

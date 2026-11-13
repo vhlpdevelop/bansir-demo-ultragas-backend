@@ -6,4 +6,3 @@ ALTER TABLE bansir.agreements
 UPDATE bansir.agreements SET
  show_receipt_individual_balance=individual_balance AND show_receipt_balance,
  show_receipt_group_balance=NOT individual_balance AND show_receipt_balance;
-

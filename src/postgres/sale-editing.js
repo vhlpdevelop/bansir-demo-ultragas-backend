@@ -31,7 +31,13 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
   if(sale.cancelled_at||sale.document_id)throw httpError(409,'Venda cancelada ou com documento fiscal vinculado. Utilize o fluxo fiscal de correção/cancelamento.','SALE_EDIT_LOCKED');
   await assertNoFiscalReservation(c,id,true);await assertNoSmartpos(c,{saleId:id});
   const targetDeliveryMode=b.deliveryMode||sale.delivery_mode;
-  if(targetDeliveryMode==='delivery'&&b.deliveryAddress!==sale.delivery_address&&(await c.query("SELECT 1 FROM bansir.delivery_tasks WHERE sale_id=$1 AND status IN('en_route','delivered') UNION ALL SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1",[id])).rowCount)throw httpError(409,'A entrega já está em rota ou concluída. Revise a entrega antes de alterar o endereço operacional. O endereço fiscal pode ser corrigido separadamente.','SALE_DELIVERY_LOCKED');
+  const existingTask=(await c.query('SELECT * FROM bansir.delivery_tasks WHERE sale_id=$1 FOR UPDATE',[id])).rows[0];
+  const modeChanged=targetDeliveryMode!==sale.delivery_mode;
+  const addressChanged=b.deliveryAddress!==(sale.delivery_address??'');
+  const driverChanged=b.deliveryEmployeeId!==undefined&&(b.deliveryEmployeeId||null)!==(sale.delivery_employee_id||null);
+  const deliveryLocked=existingTask&&['en_route','delivered'].includes(existingTask.status)&&(modeChanged||addressChanged||driverChanged);
+  const storefrontLocked=targetDeliveryMode==='delivery'&&addressChanged&&(await c.query('SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[id])).rowCount>0;
+  if(deliveryLocked||storefrontLocked)throw httpError(409,'A entrega já está em rota ou concluída. Revise a entrega antes de alterar o endereço operacional. O endereço fiscal pode ser corrigido separadamente.','SALE_DELIVERY_LOCKED');
   const before=projection(sale);
   if(b.financial)await applyFinancialEdit(c,i,sale,b.financial,b.reason,b.requestKey,b.customer,m,targetDeliveryMode);
   if(b.itemProfiles){requirePermission(m,'fiscal');if(b.itemProfiles.length!==sale.items.length||new Set(b.itemProfiles.map(p=>p.position)).size!==sale.items.length||b.itemProfiles.some(p=>!sale.items.some(i=>i.position===p.position)))throw httpError(400,'Informe os mesmos itens da venda para revisar a tributação.','SALE_ITEMS_MISMATCH');
@@ -42,7 +48,9 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
   let newDriverId=sale.delivery_employee_id,newDriverName=sale.delivery_employee_name||'',newDriverPhone=sale.delivery_employee_phone||'';
   if(targetDeliveryMode==='pickup'){
    newDriverId=null;newDriverName='';newDriverPhone='';
-   await c.query("UPDATE bansir.delivery_tasks SET status='cancelled',version=version+1,updated_at=now() WHERE sale_id=$1 AND status<>'cancelled' AND status<>'delivered'",[id]);
+   if(existingTask&&!['cancelled','delivered'].includes(existingTask.status)){
+    await c.query("UPDATE bansir.delivery_tasks SET status='cancelled',version=version+1,updated_at=now() WHERE sale_id=$1",[id]);
+   }
   }else if(targetDeliveryMode==='delivery'){
    if(b.deliveryEmployeeId!==undefined){
     if(b.deliveryEmployeeId){
@@ -54,9 +62,8 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
     }
    }
    const taskAddress=b.deliveryAddress||sale.delivery_address,taskStatus=newDriverId?'assigned':'pending';
-   const existingTask=(await c.query('SELECT * FROM bansir.delivery_tasks WHERE sale_id=$1',[id])).rows[0];
    if(existingTask){
-    if(existingTask.status!=='delivered'){
+    if(!['en_route','delivered'].includes(existingTask.status)&&(modeChanged||addressChanged||driverChanged||existingTask.status==='cancelled')){
      await c.query("UPDATE bansir.delivery_tasks SET driver_id=$2,status=$3,address=$4,departed_at=NULL,delivered_at=NULL,version=version+1,updated_at=now() WHERE sale_id=$1",[id,newDriverId,taskStatus,taskAddress]);
     }
    }else{

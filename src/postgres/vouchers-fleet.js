@@ -1,6 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {httpError} from './database.js';
+import {requirePermission} from './catalog.js';
 import {createCustomer} from './customers.js';
 import {registerSale,saleView} from './sales.js';
 import {fiscalDraftHash} from './fiscal.js';
@@ -65,17 +66,17 @@ export function mountVouchersFleet(app,{database}){
   return {data:presentVoucher(row,m,false)};
  }));
  app.get('/api/v1/fleet/vehicles',endpoint(database,async(c,req,m)=>{
-  if(!admin(m))forbidden();const rows=(await c.query('SELECT * FROM bansir.vehicles WHERE tenant_id=$1 AND establishment_id=$2 ORDER BY created_at DESC',[req.identity.tenantId,req.identity.establishmentId])).rows;return {data:rows.map(vehicleView)};
+  requirePermission(m,'fleet',true);const rows=(await c.query('SELECT * FROM bansir.vehicles WHERE tenant_id=$1 AND establishment_id=$2 ORDER BY created_at DESC',[req.identity.tenantId,req.identity.establishmentId])).rows;return {data:rows.map(vehicleView)};
  }));
  app.post('/api/v1/fleet/vehicles',endpoint(database,async(c,req,m)=>{
-  if(!admin(m))forbidden();const d=vehicleInput.parse(req.body),i=req.identity;const row=(await c.query(`INSERT INTO bansir.vehicles(tenant_id,establishment_id,code,name,plate,brand,year,type,status,purchase_cents,notes,current_km,last_km_update,maintenance_rules)
+  requirePermission(m,'fleet',false);const d=vehicleInput.parse(req.body),i=req.identity;const row=(await c.query(`INSERT INTO bansir.vehicles(tenant_id,establishment_id,code,name,plate,brand,year,type,status,purchase_cents,notes,current_km,last_km_update,maintenance_rules)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,[i.tenantId,i.establishmentId,d.code,d.name,d.plate.toUpperCase(),d.brand,d.year??null,d.type,d.status,Math.round(d.purchaseValue*100),d.notes,d.currentKm,d.lastKmUpdate||null,JSON.stringify(d.maintenanceRules)])).rows[0];return {status:201,data:vehicleView(row)};
  }));
  app.put('/api/v1/fleet/vehicles/:id',endpoint(database,async(c,req,m)=>{
-  if(!admin(m))forbidden();const d=vehicleInput.parse(req.body),i=req.identity,id=uuid.parse(req.params.id);const row=(await c.query(`UPDATE bansir.vehicles SET code=$3,name=$4,plate=$5,brand=$6,year=$7,type=$8,status=$9,purchase_cents=$10,notes=$11,current_km=$12,last_km_update=$13,maintenance_rules=$14,updated_at=now()
+  requirePermission(m,'fleet',false);const d=vehicleInput.parse(req.body),i=req.identity,id=uuid.parse(req.params.id);const row=(await c.query(`UPDATE bansir.vehicles SET code=$3,name=$4,plate=$5,brand=$6,year=$7,type=$8,status=$9,purchase_cents=$10,notes=$11,current_km=$12,last_km_update=$13,maintenance_rules=$14,updated_at=now()
    WHERE tenant_id=$1 AND establishment_id=$2 AND id=$15 RETURNING *`,[i.tenantId,i.establishmentId,d.code,d.name,d.plate.toUpperCase(),d.brand,d.year??null,d.type,d.status,Math.round(d.purchaseValue*100),d.notes,d.currentKm,d.lastKmUpdate||null,JSON.stringify(d.maintenanceRules),id])).rows[0];if(!row)throw httpError(404,'Veículo não encontrado.','NOT_FOUND');return {data:vehicleView(row)};
  }));
  app.delete('/api/v1/fleet/vehicles/:id',endpoint(database,async(c,req,m)=>{
-  if(!admin(m))forbidden();const result=await c.query('DELETE FROM bansir.vehicles WHERE tenant_id=$1 AND establishment_id=$2 AND id=$3 RETURNING id',[req.identity.tenantId,req.identity.establishmentId,uuid.parse(req.params.id)]);if(!result.rowCount)throw httpError(404,'Veículo não encontrado.','NOT_FOUND');return {data:true};
+  requirePermission(m,'fleet',false);const result=await c.query('DELETE FROM bansir.vehicles WHERE tenant_id=$1 AND establishment_id=$2 AND id=$3 RETURNING id',[req.identity.tenantId,req.identity.establishmentId,uuid.parse(req.params.id)]);if(!result.rowCount)throw httpError(404,'Veículo não encontrado.','NOT_FOUND');return {data:true};
  }));
 }

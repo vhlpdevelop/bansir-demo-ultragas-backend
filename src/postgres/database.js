@@ -6,6 +6,9 @@ export function httpError(status, message, code) {
 export function validId(value) {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
+export function escapeLike(value) {
+  return String(value ?? '').replace(/[\\%_]/g, '\\$&');
+}
 export function createDatabase({ connectionString, max = 10 }) {
   if (!connectionString) throw new Error('DATABASE_URL é obrigatória para PostgreSQL.');
   const pool = new pg.Pool({ connectionString, max, connectionTimeoutMillis: 10000, idleTimeoutMillis: 30000,

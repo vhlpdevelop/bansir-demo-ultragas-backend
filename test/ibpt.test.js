@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { seal, secretContext } from '../src/postgres/secrets.js';
 import {
   applyIbptToDraft,
   getIbptRate,
@@ -246,8 +248,9 @@ test('applyIbptToDraft applies origin rules (0/3/4/5 vs 1/2/6/7/8), sphere split
     total: { ICMSTot: { vProd: 200, vNF: 200 } }
   };
 
-  const cfg = { data: { cnpj: '40740307000143', ibptToken: 'tok-ms', address: { uf: 'MS' } } };
-  await applyIbptToDraft(db, { tenantId: 't1' }, draft, {
+  const cfg = { data: { cnpj: '40740307000143', address: { uf: 'MS' } } };
+  const identity = { tenantId: 't1', establishmentId: 'e1' };
+  await applyIbptToDraft(db, identity, draft, {
     model: '55',
     cfg,
     now: new Date('2026-11-12T12:00:00Z')
@@ -265,55 +268,90 @@ test('applyIbptToDraft applies origin rules (0/3/4/5 vs 1/2/6/7/8), sphere split
   assert.match(draft.infAdic.infCpl, /Chave AA45DF/);
 
   const infCplOnce = draft.infAdic.infCpl;
-  await applyIbptToDraft(db, { tenantId: 't1' }, draft, {
+  await applyIbptToDraft(db, identity, draft, {
     model: '55',
     cfg,
     now: new Date('2026-11-12T12:00:00Z')
   });
   assert.equal(draft.infAdic.infCpl, infCplOnce);
+
+  // Changing origin recalculates totals and replaces previous IBPT notice without losing custom notes
+  draft.det[1].imposto.ICMS.ICMSSN102.orig = 0;
+  draft.infAdic.infCpl = 'Obs do cliente. | ' + draft.infAdic.infCpl;
+  await applyIbptToDraft(db, identity, draft, {
+    model: '55',
+    cfg,
+    now: new Date('2026-11-12T12:00:00Z')
+  });
+  assert.equal(draft.det[1].imposto.vTotTrib, 44.82);
+  assert.equal(draft.total.ICMSTot.vTotTrib, 66.92);
+  assert.match(draft.infAdic.infCpl, /^Obs do cliente\. \| /);
+  assert.match(draft.infAdic.infCpl, /14,82 Federal/);
+  assert.doesNotMatch(draft.infAdic.infCpl, /25,09 Federal/);
 });
 
-test('syncEstablishmentIbpt populates cache for active product NCMs and reports token errors', async () => {
-  const db = createMockDb();
-  const cfg = { data: { cnpj: '40740307000143', ibptToken: 'tok-ms', address: { uf: 'MS' } } };
+test('syncEstablishmentIbpt populates cache for active product NCMs, requires sealed token and reports token errors', async () => {
+  const prevKey = process.env.FISCAL_ENCRYPTION_KEY;
+  process.env.FISCAL_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+  try {
+    const db = createMockDb();
+    const identity = { tenantId: 't1', establishmentId: 'e1' };
 
-  const res = await syncEstablishmentIbpt(db, { tenantId: 't1' }, {
-    cfg,
-    fetcher: async url => {
-      const u = new URL(url);
-      return {
-        ok: true,
-        async json() {
-          return {
-            Codigo: u.searchParams.get('codigo'),
-            Nacional: 0,
-            Estadual: 22.1,
-            Importado: 0,
-            Municipal: 0,
-            Chave: 'AA45DF',
-            Versao: '26.2.C',
-            Fonte: 'IBPT/empresometro.com.br',
-            VigenciaInicio: '20/10/2026',
-            VigenciaFim: '30/11/2026'
-          };
-        }
-      };
-    }
-  });
+    await assert.rejects(
+      syncEstablishmentIbpt(db, identity, {
+        cfg: { data: { cnpj: '40740307000143', ibptToken: 'tok-ms', address: { uf: 'MS' } } },
+        fetcher: async () => { throw new Error('should not fetch'); }
+      }),
+      err => err.code === 'IBPT_TOKEN_REQUIRED'
+    );
 
-  assert.equal(res.syncedCount, 2);
-  assert.equal(res.chave, 'AA45DF');
-  assert.equal(res.versao, '26.2.C');
-  assert.equal(res.vigenciaFim, '2026-11-30');
-  assert.equal(db.rows.size, 2);
+    const cfg = {
+      data: { cnpj: '40740307000143', address: { uf: 'MS' } },
+      encrypted_ibpt_token: seal('tok-ms', secretContext(identity, 'ibpt'))
+    };
 
-  await assert.rejects(
-    syncEstablishmentIbpt(db, { tenantId: 't1' }, {
+    const res = await syncEstablishmentIbpt(db, identity, {
       cfg,
-      fetcher: async () => ({ ok: false, status: 403, async json() { return {}; } })
-    }),
-    err => err.code === 'IBPT_UNAUTHORIZED'
-  );
+      fetcher: async url => {
+        const u = new URL(url);
+        assert.equal(u.searchParams.get('token'), 'tok-ms');
+        return {
+          ok: true,
+          async json() {
+            return {
+              Codigo: u.searchParams.get('codigo'),
+              Nacional: 0,
+              Estadual: 22.1,
+              Importado: 0,
+              Municipal: 0,
+              Chave: 'AA45DF',
+              Versao: '26.2.C',
+              Fonte: 'IBPT/empresometro.com.br',
+              VigenciaInicio: '20/10/2026',
+              VigenciaFim: '30/11/2026'
+            };
+          }
+        };
+      }
+    });
+
+    assert.equal(res.syncedCount, 2);
+    assert.equal(res.chave, 'AA45DF');
+    assert.equal(res.versao, '26.2.C');
+    assert.equal(res.vigenciaFim, '2026-11-30');
+    assert.equal(db.rows.size, 2);
+
+    await assert.rejects(
+      syncEstablishmentIbpt(db, identity, {
+        cfg,
+        fetcher: async () => ({ ok: false, status: 403, async json() { return {}; } })
+      }),
+      err => err.code === 'IBPT_UNAUTHORIZED'
+    );
+  } finally {
+    if (prevKey === undefined) delete process.env.FISCAL_ENCRYPTION_KEY;
+    else process.env.FISCAL_ENCRYPTION_KEY = prevKey;
+  }
 });
 
 test('migration 079 enforces RLS, removes stale IBPT-BASE rows and grants bansir_runtime access', () => {

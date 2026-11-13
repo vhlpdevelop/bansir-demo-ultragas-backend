@@ -19,7 +19,6 @@ import { requirePermission, stockMovement } from './catalog.js';
 import { enqueueNotification } from './notifications.js';
 import { createFiscalDocument, fiscalDraftHash } from './fiscal.js';
 import { pixCode } from './pix.js';
-import { createCustomer } from './customers.js';
 import { queueWhatsapp } from './whatsapp.js';
 import { currentTerminal, requireTerminal, assertCashTerminal } from './pdv-terminals.js';
 
@@ -332,7 +331,6 @@ export function mountSales(app, { scoped, secret }) {
    WHERE active AND strpos(lower(concat_ws(' ',name,phone,additional_phone,document,address)),lower($1))>0 ORDER BY name LIMIT 20`, [q])).rows
     };
   }));
-  app.post('/api/v1/customers', scoped('sales', false, async (c, req) => ({ status: 201, data: await createCustomer(c, req.identity, req.body) })));
   mountSaleFiscal(app, { scoped });
 }
 
@@ -363,10 +361,22 @@ function mountSaleFiscal(app, { scoped }) {
     const expected = saleFiscalDraft(sale, body.model), draft = body.draft;
     if (body.model === '55') { nfeRecipient.parse(draft.dest); expected.dest = draft.dest; }
     if (!Array.isArray(draft.det) || draft.det.length !== expected.det.length) fail('Itens fiscais diferentes da venda.', 'FISCAL_SALE_MISMATCH', 400);
-    for (let n = 0; n < expected.det.length; n++) { const p = draft.det[n]?.prod, e = expected.det[n].prod; if (!p || p.cProd !== e.cProd || p.xProd !== e.xProd || p.qCom !== e.qCom || p.vUnCom !== e.vUnCom || p.vProd !== e.vProd || Number(p.vDesc || 0) !== Number(e.vDesc || 0) || Number(p.vFrete || 0) !== Number(e.vFrete || 0) || p.uCom !== e.uCom) fail('Valores ou produtos fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400); }
+    const fiscalOverrides = [];
+    for (let n = 0; n < expected.det.length; n++) {
+      const det = draft.det[n], exp = expected.det[n], p = det?.prod, e = exp.prod;
+      if (!p || p.cProd !== e.cProd || p.xProd !== e.xProd || p.qCom !== e.qCom || p.vUnCom !== e.vUnCom || p.vProd !== e.vProd || Number(p.vDesc || 0) !== Number(e.vDesc || 0) || Number(p.vFrete || 0) !== Number(e.vFrete || 0) || p.uCom !== e.uCom) fail('Valores ou produtos fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
+      if ((p.qTrib !== undefined && Number(p.qTrib) !== Number(e.qTrib)) || (p.vUnTrib !== undefined && Number(p.vUnTrib) !== Number(e.vUnTrib)) || (p.indTot !== undefined && Number(p.indTot) !== Number(e.indTot))) fail('Unidades ou quantidades tributárias fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
+      const changed = [];
+      if (String(p.NCM || '') !== String(e.NCM || '')) changed.push({ field: 'NCM', expected: e.NCM || null, actual: p.NCM || null });
+      if (String(p.CFOP || '') !== String(e.CFOP || '')) changed.push({ field: 'CFOP', expected: e.CFOP || null, actual: p.CFOP || null });
+      if (hash(p.comb || null) !== hash(e.comb || null)) changed.push({ field: 'comb', expected: e.comb || null, actual: p.comb || null });
+      if (hash(det.imposto || {}) !== hash(exp.imposto || {})) changed.push({ field: 'imposto', expected: exp.imposto || {}, actual: det.imposto || {} });
+      if (changed.length) fiscalOverrides.push({ nItem: n + 1, cProd: e.cProd, changed });
+    }
     for (const key of ['vProd', 'vDesc', 'vFrete', 'vNF']) if (Number(draft.total?.ICMSTot?.[key] || 0) !== Number(expected.total.ICMSTot[key])) fail('Totais fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
     if (hash(draft.pag) !== hash(expected.pag) || hash(draft.dest || null) !== hash(expected.dest || null)) fail('Pagamento ou destinatário fiscal diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
-    const { rejectedDocumentId: _old, rejectionReviewed: _reviewed, ...command } = body; const doc = await createFiscalDocument(c, i, command);
+    if (fiscalOverrides.length) console.info(JSON.stringify({ event: 'fiscal_draft_override', tenantId: i.tenantId, establishmentId: i.establishmentId, userId: i.userId, saleId: sale.id, model: body.model, overridesCount: fiscalOverrides.length }));
+    const { rejectedDocumentId: _old, rejectionReviewed: _reviewed, ...command } = body; const doc = await createFiscalDocument(c, i, command, { fiscalOverrides });
     if (rejectedDocumentId) { await c.query('INSERT INTO bansir.rejected_fiscal_attempts(tenant_id,establishment_id,sale_id,document_id,replacement_document_id,user_id) VALUES($1,$2,$3,$4,$5,$6)', [i.tenantId, i.establishmentId, sale.id, rejectedDocumentId, doc.id, i.userId]); await c.query('UPDATE bansir.sale_fiscal_links SET document_id=$2 WHERE sale_id=$1', [sale.id, doc.id]); }
     else await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)', [i.tenantId, i.establishmentId, sale.id, doc.id]); return { status: 202, data: doc };
   }));
