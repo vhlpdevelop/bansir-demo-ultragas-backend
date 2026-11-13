@@ -118,6 +118,8 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),i
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`order:${session.id}:${data.requestKey}`]);
    const previous=(await c.query('SELECT id,status,total_cents,request_hash FROM bansir.storefront_orders WHERE checkout_session_id=$1 AND request_key=$2',[session.id,data.requestKey])).rows[0];
    if(previous){if(previous.request_hash!==fingerprint)throw httpError(409,'Esta tentativa já foi usada com outros produtos.','IDEMPOTENCY_CONFLICT');return {id:previous.id,status:previous.status,totalCents:Number(previous.total_cents)};}
+   const allowedPhone=(await c.query('SELECT bansir.storefront_phone_allowed($1,$2,$3) AS allowed',[store.tenant_id,store.establishment_id,session.phone])).rows[0]?.allowed;
+   if(!allowedPhone)throw httpError(429,'Você já enviou vários pedidos recentemente. Aguarde alguns minutos ou fale com a loja.','TOO_MANY_ORDERS');
    if(!businessStatus(store.config,clock()).open)throw httpError(409,'A loja não está recebendo pedidos.','STORE_CLOSED');
    if(data.fulfillment==='pickup'&&!store.config.allowPickup)throw httpError(400,'Esta loja trabalha apenas com entrega.','PICKUP_UNAVAILABLE');
    const fixed=store.config.shippingMode==='fixed',zone=data.fulfillment==='delivery'&&!fixed?store.config.zones.find(z=>z.id===data.zoneId):null;

@@ -118,3 +118,10 @@ test('getMetaWebhookSecrets reads from AWS Secrets Manager when META_SECRET_ID i
  assert.deepEqual(direct,{appSecret:'env_sec',verifyToken:'env_ver'});
 });
 
+test('migration 085 defines per-phone storefront rate limit helper',async()=>{
+ const sql=await fs.readFile(new URL('../migrations/postgres/085_storefront_phone_rate_limit.sql',import.meta.url),'utf8');
+ assert.match(sql,/storefront_phone_allowed/i);
+ assert.match(sql,/SECURITY DEFINER/i);
+ assert.match(sql,/GRANT EXECUTE[\s\S]*TO bansir_storefront/i);
+});
+

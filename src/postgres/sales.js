@@ -41,9 +41,9 @@ export async function ownedSale(c, i, member, id) { const row = (await c.query('
 export async function cashBalance(c, cash) { const { rows: [totals] } = await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`, [cash.id]); return Number(cash.opening_cents) + Number(totals.delta); }
 export async function cashView(c, cash) {
   if (!cash) return null; const cutoff = cash.closed_at || new Date();
-  const totals = (await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND p.created_at<=$2 GROUP BY p.method`, [cash.id, cutoff])).rows;
+  const totals = (await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND coalesce(p.cash_effective_at,p.created_at)<=$2 GROUP BY p.method`, [cash.id, cutoff])).rows;
   const historicalTotal = `coalesce((SELECT (r.before_data#>>'{financial,totalCents}')::bigint FROM bansir.sale_revisions r WHERE r.sale_id=s.id AND r.created_at>$2 AND r.before_data?'financial' ORDER BY r.revision LIMIT 1),s.total_cents)`;
-  const pending = (await c.query(`SELECT coalesce(sum(${historicalTotal}),0) AS sales_cents,coalesce(sum(${historicalTotal}-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>$2)),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`, [cash.id, cutoff])).rows[0];
+  const pending = (await c.query(`SELECT coalesce(sum(${historicalTotal}),0) AS sales_cents,coalesce(sum(${historicalTotal}-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND coalesce(CASE WHEN p.cash_session_id=$1 THEN p.cash_effective_at END,p.created_at)<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>$2)),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`, [cash.id, cutoff])).rows[0];
   const refunds = (await c.query(`SELECT method,sum(cents)::bigint AS cents FROM(
  SELECT 'cash'::text AS method,m.amount_cents AS cents FROM bansir.cash_movements m WHERE m.cash_session_id=$1 AND m.kind='refund' AND m.created_at<=$2
  UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payments p JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE coalesce(x.cash_session_id,p.cash_session_id)=$1 AND p.method<>'cash' AND x.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>x.created_at)
@@ -81,7 +81,7 @@ export async function saleView(c, id) {
    FROM bansir.delivery_tasks t WHERE t.sale_id=$1`, [id])).rows[0] || null;
   for (const key of ['subtotal_cents', 'discount_cents', 'delivery_fee_cents', 'total_cents']) s[key] = Number(s[key]);
   s.items = (await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,gas_do_povo,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position', [id])).rows.map(row => ({ ...row, unit_price_cents: Number(row.unit_price_cents), gross_cents: Number(row.gross_cents), discount_cents: Number(row.discount_cents) }));
-  s.payments = (await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
+  s.payments = (await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.cash_effective_at,p.paid_by,cash.terminal_id,cash.terminal_name
   FROM bansir.active_sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`, [id])).rows.map(row => ({ ...row, amount_cents: Number(row.amount_cents), received_cents: Number(row.received_cents) }));
   s.paymentRevisions = (await c.query('SELECT r.created_at,r.reason,r.cash_session_id,p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.sale_id=$1 ORDER BY r.created_at', [id])).rows.map(r => ({ ...r, amount_cents: Number(r.amount_cents) }));
   s.smartpos = (await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1', [id])).rows[0] || null;
@@ -95,7 +95,7 @@ function checkPayment(p, amount) {
   if (p.method !== 'cash' && p.receivedCents !== undefined && p.receivedCents !== amount) fail('Troco é permitido somente em dinheiro.', 'INVALID_CHANGE', 400);
   return received;
 }
-export async function recordPayment(c, i, sale, cash, input, { smartposChargeId, acquirerData } = {}) {
+export async function recordPayment(c, i, sale, cash, input, { smartposChargeId, acquirerData, cashEffectiveAt } = {}) {
   const paymentHash = hash({ ...input, userId: i.userId });
   const previous = (await c.query('SELECT id,sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1', [input.requestKey])).rows[0];
   if (previous) { if (previous.request_hash !== paymentHash || previous.sale_id !== sale.id) fail('Identificador de pagamento já utilizado.', 'IDEMPOTENCY_CONFLICT'); return previous.id; }
@@ -103,8 +103,8 @@ export async function recordPayment(c, i, sale, cash, input, { smartposChargeId,
   const view = await saleView(c, sale.id); if (view.cancelled_at) fail('Venda cancelada.', 'SALE_CANCELLED');
   if (input.amountCents > view.outstanding_cents) fail('Pagamento supera o saldo pendente.', 'PAYMENT_EXCEEDS_BALANCE');
   const received = checkPayment(input, input.amountCents);
-  const { rows: [payment] } = await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data,created_at)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,clock_timestamp()) RETURNING id`, [i.tenantId, i.establishmentId, sale.id, cash.id, input.requestKey, paymentHash, i.userId, input.method, input.amountCents, received, input.reference, input.installments || 1, smartposChargeId || null, acquirerData || null]);
+  const { rows: [payment] } = await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data,created_at,cash_effective_at)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,clock_timestamp(),$15) RETURNING id`, [i.tenantId, i.establishmentId, sale.id, cash.id, input.requestKey, paymentHash, i.userId, input.method, input.amountCents, received, input.reference, input.installments || 1, smartposChargeId || null, acquirerData || null, cashEffectiveAt || null]);
   if (input.method === 'cash') await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
  VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`, [i.tenantId, i.establishmentId, cash.id, randomUUID(), paymentHash, payment.id, input.amountCents]);
   return payment.id;
@@ -287,14 +287,45 @@ export function mountSales(app, { scoped, secret }) {
     return { status: 202, data: { queued } };
   }));
   app.get('/api/v1/sales/:id', scoped('sales', true, async (c, req, member) => { await ownedSale(c, req.identity, member, req.params.id); return { data: await saleView(c, req.params.id) }; }));
+  const historicalCashDate = z.iso.date();
+  const historicalCashAdmin = member => ['admin', 'superadmin'].includes(member.role);
+  const historicalCashFilter = `closed_at IS NOT NULL
+    AND opened_at < (($1::date + 1)::timestamp AT TIME ZONE 'America/Cuiaba')
+    AND closed_at >= ($1::date::timestamp AT TIME ZONE 'America/Cuiaba')`;
+  app.get('/api/v1/sales/receipt-cash-sessions', scoped('sales', true, async (c, req, member) => {
+    if (!historicalCashAdmin(member)) fail('Somente administradores podem atribuir recebimentos a caixas fechados.', 'FORBIDDEN', 403);
+    const date = historicalCashDate.parse(req.query.date);
+    return { data: (await c.query(`SELECT s.id,s.terminal_name,s.opened_at,s.closed_at,u.name AS operator_name
+      FROM bansir.cash_sessions s JOIN bansir.users u ON u.id=s.user_id
+      WHERE ${historicalCashFilter} ORDER BY s.opened_at,s.id`, [date])).rows };
+  }));
   app.post('/api/v1/sales/:id/payments', scoped('sales', false, async (c, req, member) => {
-    const input = externalPayment.extend({ requestKey: uuid, amountCents: cents.refine(n => n > 0), confirmDelivery: z.boolean().optional() }).parse(req.body), i = req.identity;
+    const input = externalPayment.extend({ requestKey: uuid, amountCents: cents.refine(n => n > 0), confirmDelivery: z.boolean().optional(),
+      historicalCash: z.object({ id: uuid, date: historicalCashDate }).strict().optional() }).parse(req.body), i = req.identity;
+    if (input.historicalCash && !historicalCashAdmin(member)) fail('Somente administradores podem atribuir recebimentos a caixas fechados.', 'FORBIDDEN', 403);
+    if (input.historicalCash && input.confirmDelivery) fail('Confirme a entrega separadamente.', 'INVALID_SALE', 400);
+    if (input.historicalCash) await financialCashLock(c, i);
     if (input.confirmDelivery) await routeUnitLock(c, i);
     // Idempotent retries still return their receipt after the original cash was closed.
     await lock(c, `${unitKey(i)}:payment:${input.requestKey}`); await lockCash(c, i); await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
     const sale = await ownedSale(c, i, member, req.params.id), previous = (await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1', [input.requestKey])).rows[0];
     if (previous) { if (previous.sale_id !== sale.id || previous.request_hash !== hash({ ...input, userId: i.userId })) fail('Identificador já utilizado.', 'IDEMPOTENCY_CONFLICT'); return { data: await saleView(c, sale.id) }; }
-    const cash = await openCash(c, i); await recordPayment(c, i, sale, cash, input);
+    if (input.historicalCash) {
+      const { id, date } = input.historicalCash;
+      const cash = (await c.query(`SELECT *, least(closed_at,
+        (($1::date + 1)::timestamp AT TIME ZONE 'America/Cuiaba') - interval '1 millisecond') AS effective_at
+        FROM bansir.cash_sessions WHERE ${historicalCashFilter} AND id=$2 FOR UPDATE`, [date, id])).rows[0];
+      if (!cash) fail('O caixa selecionado não está fechado ou não corresponde à data escolhida.', 'HISTORICAL_CASH_UNAVAILABLE');
+      if (cash.effective_at < sale.created_at) fail('A data do recebimento é anterior à venda.', 'RECEIPT_BEFORE_SALE');
+      await recordPayment(c, i, sale, cash, input, { cashEffectiveAt: cash.effective_at });
+      if (input.method === 'cash') {
+        const expected = await cashBalance(c, cash);
+        await c.query('UPDATE bansir.cash_sessions SET expected_cents=$2,difference_cents=counted_cents-$2 WHERE id=$1', [cash.id, expected]);
+      }
+    } else {
+      const cash = await openCash(c, i);
+      await recordPayment(c, i, sale, cash, input);
+    }
     if (input.confirmDelivery) await confirmManualDelivery(c, i, member, await saleView(c, sale.id), input.requestKey);
     return { status: 201, data: await saleView(c, sale.id) };
   }));
@@ -315,7 +346,11 @@ export function mountSales(app, { scoped, secret }) {
     if (sale.payments.some(p => p.method !== 'cash') && input.refundReference.length < 3) fail('Informe a referência do estorno externo já realizado.', 'REFUND_REFERENCE_REQUIRED', 400);
     const cashRefund = sale.payments.filter(p => p.method === 'cash').reduce((sum, p) => sum + p.amount_cents, 0); if (cashRefund > await cashBalance(c, cash)) fail('Saldo de caixa insuficiente para devolver o dinheiro.', 'INSUFFICIENT_CASH');
     await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference,cash_session_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())', [i.tenantId, i.establishmentId, sale.id, i.userId, input.reason, input.refundReference, cash.id]);
-    await c.query("UPDATE bansir.storefront_orders SET status='cancelled',updated_at=now() WHERE sale_id=$1 AND status='accepted'", [sale.id]);
+    const cancelledOrder = (await c.query("UPDATE bansir.storefront_orders SET status='cancelled',updated_at=now() WHERE sale_id=$1 AND status='accepted' RETURNING id,phone", [sale.id])).rows[0];
+    if (cancelledOrder?.phone) {
+      const code = String(cancelledOrder.id).slice(0, 8).toUpperCase();
+      await queueWhatsapp(c, i, { key: `storefront:cancelled:${cancelledOrder.id}`, payload: { action: 'storefront-status', permission: 'sales', phone: cancelledOrder.phone, message: `Seu pedido #${code} foi cancelado: ${input.reason}` } });
+    }
     const items = [...sale.items].sort((a, b) => a.product_id.localeCompare(b.product_id));
     for (const item of items) { const p = (await c.query('UPDATE bansir.products SET stock=stock+$2,updated_at=now() WHERE id=$1 RETURNING *', [item.product_id, item.quantity])).rows[0]; await stockMovement(c, i, p, item.quantity, 'in', `Cancelamento ${sale.id}: ${input.reason}`); }
     for (const p of sale.payments.filter(p => p.method === 'cash')) await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,'refund',$7,$8)`, [i.tenantId, i.establishmentId, cash.id, randomUUID(), hash(input), p.id, p.amount_cents, input.reason]);
