@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import {seal,secretContext} from '../src/postgres/secrets.js';
 import {processMetaJob} from '../src/postgres/meta-delivery.js';
+import {getMetaWebhookSecrets} from '../src/postgres/meta-secrets.js';
 
 const TENANT_ID='11111111-1111-4111-8111-111111111111';
 const ESTABLISHMENT_ID='22222222-2222-4222-8222-222222222222';
@@ -91,5 +92,29 @@ test('migration 084 defines storefront whatsapp helper and deliveries sender per
  assert.match(sql,/SECURITY DEFINER/i);
  assert.match(sql,/GRANT EXECUTE[\s\S]*TO bansir_storefront/i);
  assert.match(sql,/'deliveries'/);
+});
+
+test('getMetaWebhookSecrets reads from AWS Secrets Manager when META_SECRET_ID is set',async()=>{
+ const fromCamel=await getMetaWebhookSecrets({
+  env:{META_SECRET_ID:'bansir/meta',AWS_REGION:'sa-east-1'},
+  fetchSecret:async(secretId,region)=>{
+   assert.equal(secretId,'bansir/meta');
+   assert.equal(region,'sa-east-1');
+   return JSON.stringify({appSecret:'sec_123',verifyToken:'ver_456'});
+  }
+ });
+ assert.deepEqual(fromCamel,{appSecret:'sec_123',verifyToken:'ver_456'});
+
+ const fromEnvKeys=await getMetaWebhookSecrets({
+  env:{META_SECRET_ID:'bansir/meta'},
+  fetchSecret:async()=>JSON.stringify({META_APP_SECRET:'sec_abc',META_VERIFY_TOKEN:'ver_xyz'})
+ });
+ assert.deepEqual(fromEnvKeys,{appSecret:'sec_abc',verifyToken:'ver_xyz'});
+
+ const direct=await getMetaWebhookSecrets({
+  env:{META_APP_SECRET:'env_sec',META_VERIFY_TOKEN:'env_ver',META_SECRET_ID:'bansir/meta'},
+  fetchSecret:async()=>{throw new Error('should not be called');}
+ });
+ assert.deepEqual(direct,{appSecret:'env_sec',verifyToken:'env_ver'});
 });
 
