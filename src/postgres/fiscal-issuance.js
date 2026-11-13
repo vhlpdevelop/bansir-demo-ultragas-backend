@@ -1,3 +1,4 @@
+import {applyIbptToDraft} from './ibpt.js';
 import {z} from 'zod';
 import {httpError} from './database.js';
 import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
@@ -20,7 +21,7 @@ export function mountFiscalIssuance(app,{scoped}){
  app.post('/api/v1/fiscal/issuance/draft',scoped('fiscal',false,async(c,r)=>{
  const {items}=z.object({items:z.array(z.object({productId:z.uuid(),quantity:z.number().positive().max(100000),unitPriceCents:z.number().int().positive().max(1000000000)}).strict()).min(1).max(200)}).strict().parse(r.body);let subtotal=0;const rows=[];
  for(const x of items){const p=(await c.query('SELECT p.id,p.name,p.ncm,p.unit,f.data FROM bansir.products p LEFT JOIN bansir.product_fiscal_profiles f ON f.product_id=p.id WHERE p.id=$1 AND p.active',[x.productId])).rows[0];if(!p?.data?.['55'])fail('Configure o perfil fiscal NF-e 55 de todos os produtos.');const gross=Math.round(x.quantity*x.unitPriceCents);subtotal+=gross;rows.push({product_id:p.id,product_name:p.name,ncm:p.ncm,unit:p.unit,quantity:x.quantity,unit_price_cents:x.unitPriceCents,gross_cents:gross,discount_cents:0,fiscal_profile:p.data});}
- return {data:saleFiscalDraft({items:rows,subtotal_cents:subtotal,total_cents:subtotal,delivery_fee_cents:0,discount_cents:0,payments:[{method:'cash',amount_cents:subtotal,received_cents:subtotal}]},'55')};
+ const draft=saleFiscalDraft({items:rows,subtotal_cents:subtotal,total_cents:subtotal,delivery_fee_cents:0,discount_cents:0,payments:[{method:'cash',amount_cents:subtotal,received_cents:subtotal}]},'55');const cfg=(await c.query('SELECT * FROM bansir.fiscal_settings')).rows[0];return {data:await applyIbptToDraft(c,r.identity,draft,{model:'55',cfg})};
  }));
  app.get('/api/v1/fiscal/issuance/sources',scoped('fiscal',true,async(c,r)=>{
  const {from,to}=z.object({from:z.iso.datetime({offset:true}),to:z.iso.datetime({offset:true})}).parse(r.query);if(new Date(to)<=new Date(from)||new Date(to)-new Date(from)>366*86400000)fail('Informe período de até um ano.');

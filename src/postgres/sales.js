@@ -1,374 +1,392 @@
-import {financialCashLock} from './sale-financial-editing.js';
-import {mountSaleEditing} from './sale-editing.js';
-import {prepareAgreement,checkAgreementCredit,attachAgreement} from './agreements.js';
-import {assertNoFiscalReservation} from './fiscal-issuance.js';
-import {customerSnapshot,saleCustomerRecipient,receiptCustomerAddress} from './customer-fiscal.js';
-import {cashSchedule} from './business-hours.js';
-import {confirmManualDelivery} from './manual-delivery.js';
-import {routeUnitLock} from './delivery-route-state.js';
-import {createSmartposCharge} from './smartpos.js';
-import {expireSmartpos,assertNoSmartpos} from './smartpos-state.js';
-import {applyTributaryUnits} from './product-fiscal-profile.js';
-import {mountSaleCustomization} from './sale-customization.js';
-import {fiscalModel,fiscalOperation,nfeRecipient} from './fiscal-models.js';
-import {z} from 'zod';
-import {randomUUID,randomInt,createHmac,timingSafeEqual} from 'node:crypto';
-import {httpError} from './database.js';
-import {requirePermission,stockMovement} from './catalog.js';
-import {enqueueNotification} from './notifications.js';
-import {createFiscalDocument,fiscalDraftHash} from './fiscal.js';
-import {pixCode} from './pix.js';
-import {createCustomer} from './customers.js';
-import {queueWhatsapp} from './whatsapp.js';
-import {currentTerminal,requireTerminal,assertCashTerminal} from './pdv-terminals.js';
+import { applyIbptToDraft } from './ibpt.js';
+import { financialCashLock } from './sale-financial-editing.js';
+import { mountSaleEditing } from './sale-editing.js';
+import { prepareAgreement, checkAgreementCredit, attachAgreement } from './agreements.js';
+import { assertNoFiscalReservation } from './fiscal-issuance.js';
+import { customerSnapshot, saleCustomerRecipient, receiptCustomerAddress } from './customer-fiscal.js';
+import { cashSchedule } from './business-hours.js';
+import { confirmManualDelivery } from './manual-delivery.js';
+import { routeUnitLock } from './delivery-route-state.js';
+import { createSmartposCharge } from './smartpos.js';
+import { expireSmartpos, assertNoSmartpos } from './smartpos-state.js';
+import { applyTributaryUnits } from './product-fiscal-profile.js';
+import { mountSaleCustomization } from './sale-customization.js';
+import { fiscalModel, fiscalOperation, nfeRecipient } from './fiscal-models.js';
+import { z } from 'zod';
+import { randomUUID, randomInt, createHmac, timingSafeEqual } from 'node:crypto';
+import { httpError } from './database.js';
+import { requirePermission, stockMovement } from './catalog.js';
+import { enqueueNotification } from './notifications.js';
+import { createFiscalDocument, fiscalDraftHash } from './fiscal.js';
+import { pixCode } from './pix.js';
+import { createCustomer } from './customers.js';
+import { queueWhatsapp } from './whatsapp.js';
+import { currentTerminal, requireTerminal, assertCashTerminal } from './pdv-terminals.js';
 
-const cents=z.number().int().min(0).max(1000000000),text=z.string().trim().max(200),uuid=z.uuid();
-const hash=fiscalDraftHash;
-const fail=(message,code='INVALID_SALE',status=409)=>{throw httpError(status,message,code);};
-const manages=member=>['admin','superadmin'].includes(member.role)||member.allowed_routes?.includes('sales-manage');
-const viewsAll=member=>manages(member)||member.allowed_routes?.includes('sales-collect');
-const discounts=member=>manages(member)||member.allowed_routes?.includes('sales-discount');
-const externalPayment=z.object({method:z.enum(['cash','pix','credit_card','debit_card','online']),confirmed:z.literal(true),reference:text.default(''),receivedCents:cents.optional(),installments:z.number().int().min(1).max(24).optional()}).strict();
-const paymentSchema=z.union([z.object({method:z.literal('split'),parts:z.array(externalPayment.extend({amountCents:cents.refine(n=>n>0)})).min(2).max(10)}).strict(),externalPayment,z.object({method:z.literal('pending'),term:z.enum(['delivery','pickup','credit']),dueDate:z.iso.date().optional()}).strict()]);
-const saleInput=z.object({requestKey:uuid,smartposProvider:z.enum(['pagbank','mercadopago','caixa']).optional(),issueInvoice:z.boolean().optional(),items:z.array(z.object({productId:uuid,gasDoPovo:z.boolean().optional(),quantity:z.number().int().min(1).max(1000000),expectedUnitPriceCents:cents.refine(n=>n>0),unitPriceCents:cents.refine(n=>n>0).optional()}).strict()).min(1).max(100),discountCents:cents.default(0),deliveryFeeCents:cents.default(0),customerId:uuid.optional(),customerName:text.default(''),customerNotes:z.string().trim().max(3000).optional(),customerAdditionalPhone:z.string().regex(/^\d{0,14}$/).optional(),customerAdditionalInfo:z.string().trim().max(500).optional(),customerDocument:z.string().regex(/^(\d{11}|\d{14})?$/).default(''),customerPhone:z.string().regex(/^\d{0,14}$/).default(''),deliveryEmployeeId:uuid.optional(),deliveryMode:z.enum(['pickup','delivery']).default('pickup'),deliveryAddress:z.string().trim().max(1000).default(''),payment:paymentSchema}).strict();
-const lock=(c,key)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`bansir-pdv:${key}`]);
-const unitKey=i=>`${i.tenantId}:${i.establishmentId}`;
-async function lockCash(c,i){await lock(c,`${unitKey(i)}:cash:${i.userId}`);return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL',[i.userId])).rows[0];}
-export async function openCash(c,i){const row=await lockCash(c,i);if(!row)fail('Abra seu caixa neste estabelecimento antes de continuar.','CASH_CLOSED');assertCashTerminal(row,await requireTerminal(c,i));return row;}
+const cents = z.number().int().min(0).max(1000000000), text = z.string().trim().max(200), uuid = z.uuid();
+const hash = fiscalDraftHash;
+const fail = (message, code = 'INVALID_SALE', status = 409) => { throw httpError(status, message, code); };
+const manages = member => ['admin', 'superadmin'].includes(member.role) || member.allowed_routes?.includes('sales-manage');
+const viewsAll = member => manages(member) || member.allowed_routes?.includes('sales-collect');
+const discounts = member => manages(member) || member.allowed_routes?.includes('sales-discount');
+const externalPayment = z.object({ method: z.enum(['cash', 'pix', 'credit_card', 'debit_card', 'online']), confirmed: z.literal(true), reference: text.default(''), receivedCents: cents.optional(), installments: z.number().int().min(1).max(24).optional() }).strict();
+const paymentSchema = z.union([z.object({ method: z.literal('split'), parts: z.array(externalPayment.extend({ amountCents: cents.refine(n => n > 0) })).min(2).max(10) }).strict(), externalPayment, z.object({ method: z.literal('pending'), term: z.enum(['delivery', 'pickup', 'credit']), dueDate: z.iso.date().optional() }).strict()]);
+const saleInput = z.object({ requestKey: uuid, smartposProvider: z.enum(['pagbank', 'mercadopago', 'caixa']).optional(), issueInvoice: z.boolean().optional(), items: z.array(z.object({ productId: uuid, gasDoPovo: z.boolean().optional(), quantity: z.number().int().min(1).max(1000000), expectedUnitPriceCents: cents.refine(n => n > 0), unitPriceCents: cents.refine(n => n > 0).optional() }).strict()).min(1).max(100), discountCents: cents.default(0), deliveryFeeCents: cents.default(0), customerId: uuid.optional(), customerName: text.default(''), customerNotes: z.string().trim().max(3000).optional(), customerAdditionalPhone: z.string().regex(/^\d{0,14}$/).optional(), customerAdditionalInfo: z.string().trim().max(500).optional(), customerDocument: z.string().regex(/^(\d{11}|\d{14})?$/).default(''), customerPhone: z.string().regex(/^\d{0,14}$/).default(''), deliveryEmployeeId: uuid.optional(), deliveryMode: z.enum(['pickup', 'delivery']).default('pickup'), deliveryAddress: z.string().trim().max(1000).default(''), payment: paymentSchema }).strict();
+const lock = (c, key) => c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`bansir-pdv:${key}`]);
+const unitKey = i => `${i.tenantId}:${i.establishmentId}`;
+async function lockCash(c, i) { await lock(c, `${unitKey(i)}:cash:${i.userId}`); return (await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL', [i.userId])).rows[0]; }
+export async function openCash(c, i) { const row = await lockCash(c, i); if (!row) fail('Abra seu caixa neste estabelecimento antes de continuar.', 'CASH_CLOSED'); assertCashTerminal(row, await requireTerminal(c, i)); return row; }
 // Shared by sale details and printable receipts: unit RLS alone does not
 // authorize an operator to read another operator's sale in the same unit.
-export async function ownedSale(c,i,member,id){const row=(await c.query('SELECT * FROM bansir.sales WHERE id=$1',[uuid.parse(id)])).rows[0];if(!row || (row.created_by!==i.userId&&!viewsAll(member)))fail('Venda não encontrada.','NOT_FOUND',404);return row;}
-export async function cashBalance(c,cash){const {rows:[totals]}=await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`,[cash.id]);return Number(cash.opening_cents)+Number(totals.delta);}
-export async function cashView(c,cash){
- if(!cash)return null;const cutoff=cash.closed_at||new Date();
- const totals=(await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND p.created_at<=$2 GROUP BY p.method`,[cash.id,cutoff])).rows;
- const historicalTotal=`coalesce((SELECT (r.before_data#>>'{financial,totalCents}')::bigint FROM bansir.sale_revisions r WHERE r.sale_id=s.id AND r.created_at>$2 AND r.before_data?'financial' ORDER BY r.revision LIMIT 1),s.total_cents)`;
- const pending=(await c.query(`SELECT coalesce(sum(${historicalTotal}),0) AS sales_cents,coalesce(sum(${historicalTotal}-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>$2)),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`,[cash.id,cutoff])).rows[0];
- const refunds=(await c.query(`SELECT method,sum(cents)::bigint AS cents FROM(
+export async function ownedSale(c, i, member, id) { const row = (await c.query('SELECT * FROM bansir.sales WHERE id=$1', [uuid.parse(id)])).rows[0]; if (!row || (row.created_by !== i.userId && !viewsAll(member))) fail('Venda não encontrada.', 'NOT_FOUND', 404); return row; }
+export async function cashBalance(c, cash) { const { rows: [totals] } = await c.query(`SELECT coalesce(sum(CASE WHEN kind IN('refund','withdrawal') THEN -amount_cents ELSE amount_cents END),0) AS delta FROM bansir.cash_movements WHERE cash_session_id=$1`, [cash.id]); return Number(cash.opening_cents) + Number(totals.delta); }
+export async function cashView(c, cash) {
+  if (!cash) return null; const cutoff = cash.closed_at || new Date();
+  const totals = (await c.query(`SELECT p.method,sum(p.amount_cents)::bigint AS cents FROM bansir.sale_payments p WHERE p.cash_session_id=$1 AND p.created_at<=$2 GROUP BY p.method`, [cash.id, cutoff])).rows;
+  const historicalTotal = `coalesce((SELECT (r.before_data#>>'{financial,totalCents}')::bigint FROM bansir.sale_revisions r WHERE r.sale_id=s.id AND r.created_at>$2 AND r.before_data?'financial' ORDER BY r.revision LIMIT 1),s.total_cents)`;
+  const pending = (await c.query(`SELECT coalesce(sum(${historicalTotal}),0) AS sales_cents,coalesce(sum(${historicalTotal}-coalesce((SELECT sum(p.amount_cents) FROM bansir.sale_payments p WHERE p.sale_id=s.id AND p.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>$2)),0)),0) AS cents FROM bansir.sales s WHERE s.cash_session_id=$1 AND s.created_at<=$2 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id AND x.created_at<=$2)`, [cash.id, cutoff])).rows[0];
+  const refunds = (await c.query(`SELECT method,sum(cents)::bigint AS cents FROM(
  SELECT 'cash'::text AS method,m.amount_cents AS cents FROM bansir.cash_movements m WHERE m.cash_session_id=$1 AND m.kind='refund' AND m.created_at<=$2
  UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payments p JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE coalesce(x.cash_session_id,p.cash_session_id)=$1 AND p.method<>'cash' AND x.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>x.created_at)
- UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.cash_session_id=$1 AND p.method<>'cash' AND r.created_at<=$2) r GROUP BY method`,[cash.id,cutoff])).rows;
- return {...cash,sales_cents:Number(pending.sales_cents),receivable_cents:Number(pending.cents),refundTotals:Object.fromEntries(refunds.map(t=>[t.method,Number(t.cents)])),opening_cents:Number(cash.opening_cents),expected_cents:cash.closed_at?Number(cash.expected_cents):await cashBalance(c,cash),counted_cents:cash.counted_cents===null?null:Number(cash.counted_cents),difference_cents:cash.difference_cents===null?null:Number(cash.difference_cents),paymentTotals:Object.fromEntries(totals.map(t=>[t.method,Number(t.cents)]))};
+ UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.cash_session_id=$1 AND p.method<>'cash' AND r.created_at<=$2) r GROUP BY method`, [cash.id, cutoff])).rows;
+  return { ...cash, sales_cents: Number(pending.sales_cents), receivable_cents: Number(pending.cents), refundTotals: Object.fromEntries(refunds.map(t => [t.method, Number(t.cents)])), opening_cents: Number(cash.opening_cents), expected_cents: cash.closed_at ? Number(cash.expected_cents) : await cashBalance(c, cash), counted_cents: cash.counted_cents === null ? null : Number(cash.counted_cents), difference_cents: cash.difference_cents === null ? null : Number(cash.difference_cents), paymentTotals: Object.fromEntries(totals.map(t => [t.method, Number(t.cents)])) };
 }
-export async function saleView(c,id){
- const s=(await c.query(`SELECT s.*,cash.terminal_id,cash.terminal_name,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
+export async function saleView(c, id) {
+  const s = (await c.query(`SELECT s.*,s.due_date::text AS due_date,cash.terminal_id,cash.terminal_name,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
  FROM bansir.sales s JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(s.tenant_id,s.establishment_id,s.cash_session_id)
  LEFT JOIN bansir.sale_cancellations x ON (x.tenant_id,x.establishment_id,x.sale_id)=(s.tenant_id,s.establishment_id,s.id)
  LEFT JOIN bansir.sale_fiscal_links f ON (f.tenant_id,f.establishment_id,f.sale_id)=(s.tenant_id,s.establishment_id,s.id)
- LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`,[id])).rows[0];
- if(!s)return null;
- s.printableFiscalDocuments=(await c.query(`SELECT DISTINCT ON (model) d.id, d.payload#>>'{request,NFe,infNFe,ide,mod}' AS model
+ LEFT JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id) WHERE s.id=$1`, [id])).rows[0];
+  if (!s) return null;
+  s.printableFiscalDocuments = (await c.query(`SELECT DISTINCT ON (model) d.id, d.payload#>>'{request,NFe,infNFe,ide,mod}' AS model
   FROM bansir.sale_fiscal_links f JOIN bansir.fiscal_documents d ON (d.tenant_id,d.establishment_id,d.id)=(f.tenant_id,f.establishment_id,f.document_id)
-  WHERE f.sale_id=$1 AND d.status='authorized' ORDER BY model,d.id`,[id])).rows;
- s.customer_details=Object.keys(s.customer_snapshot||{}).length?s.customer_snapshot:
-  s.customer_id?customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data,additional_phone,additional_info FROM bansir.customers WHERE id=$1',[s.customer_id])).rows[0]||{}):customerSnapshot({name:s.customer_name,document:s.customer_document,phone:s.customer_phone,address:s.delivery_address});
- s.agreement=(await c.query('SELECT agreement_id,customer_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1',[id])).rows[0]||null;
- s.link_order=(await c.query('SELECT preferred_payment FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[id])).rows[0]||null;
- s.receipt_address=receiptCustomerAddress(s);
- s.delivery=(await c.query(`SELECT t.status,t.delivered_at,
-   (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at)
+  WHERE f.sale_id=$1 AND d.status='authorized' ORDER BY model,d.id`, [id])).rows;
+  const snap = s.customer_snapshot || {};
+  let details = Object.keys(snap).length ? snap :
+    s.customer_id ? customerSnapshot((await c.query('SELECT name,document,phone,address,email,notes,fiscal_data,additional_phone,additional_info FROM bansir.customers WHERE id=$1', [s.customer_id])).rows[0] || {}) : customerSnapshot({ name: s.customer_name, document: s.customer_document, phone: s.customer_phone, address: s.delivery_address });
+  if (s.customer_id && (!details.fiscal || !Object.keys(details.fiscal).length || !details.fiscal.enderDest?.cMun)) {
+    const live = (await c.query('SELECT document,fiscal_data FROM bansir.customers WHERE id=$1', [s.customer_id])).rows[0];
+    if (live?.fiscal_data && Object.keys(live.fiscal_data).length && (!live.document || !details.document || live.document === details.document)) {
+      details = { ...details, fiscal: { ...live.fiscal_data, ...(details.fiscal || {}) } };
+      if (live.fiscal_data.enderDest) details.fiscal.enderDest = { ...live.fiscal_data.enderDest, ...(details.fiscal?.enderDest || {}) };
+    }
+  }
+  s.customer_details = details;
+  s.agreement = (await c.query('SELECT agreement_id,customer_id,period_end::text,due_date::text,snapshot FROM bansir.sale_agreements WHERE sale_id=$1', [id])).rows[0] || null;
+  s.link_order = (await c.query('SELECT preferred_payment, requested_payment FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1', [id])).rows[0] || null;
+  s.receipt_address = receiptCustomerAddress(s);
+  s.delivery = (await c.query(`SELECT t.status,t.delivered_at,
+   (SELECT jsonb_build_object('userId',e.user_id,'name',u.name,'source',e.action,'confirmedAt',e.created_at,'reportedPayment',e.reported_payment)
     FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id
     WHERE e.sale_id=t.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS confirmation
-   FROM bansir.delivery_tasks t WHERE t.sale_id=$1`,[id])).rows[0]||null;
- for(const key of ['subtotal_cents','discount_cents','delivery_fee_cents','total_cents'])s[key]=Number(s[key]);
- s.items=(await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,gas_do_povo,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position',[id])).rows.map(row=>({...row,unit_price_cents:Number(row.unit_price_cents),gross_cents:Number(row.gross_cents),discount_cents:Number(row.discount_cents)}));
- s.payments=(await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
-  FROM bansir.active_sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`,[id])).rows.map(row=>({...row,amount_cents:Number(row.amount_cents),received_cents:Number(row.received_cents)}));
- s.paymentRevisions=(await c.query('SELECT r.created_at,r.reason,r.cash_session_id,p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.sale_id=$1 ORDER BY r.created_at',[id])).rows.map(r=>({...r,amount_cents:Number(r.amount_cents)}));
- s.smartpos=(await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]||null;
- s.paid_cents=s.payments.reduce((sum,p)=>sum+p.amount_cents,0);s.outstanding_cents=s.cancelled_at?0:s.total_cents-s.paid_cents;
- s.status=s.cancelled_at?'cancelled':s.outstanding_cents?'pending':'paid';s.invoiceIssued=s.fiscal_status==='authorized';s.saleNumber=String(s.coupon_number);return s;
+   FROM bansir.delivery_tasks t WHERE t.sale_id=$1`, [id])).rows[0] || null;
+  for (const key of ['subtotal_cents', 'discount_cents', 'delivery_fee_cents', 'total_cents']) s[key] = Number(s[key]);
+  s.items = (await c.query('SELECT tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,fiscal_profile,gas_do_povo,quantity,unit_price_cents,gross_cents,discount_cents FROM bansir.sale_items WHERE sale_id=$1 ORDER BY position', [id])).rows.map(row => ({ ...row, unit_price_cents: Number(row.unit_price_cents), gross_cents: Number(row.gross_cents), discount_cents: Number(row.discount_cents) }));
+  s.payments = (await c.query(`SELECT p.id,p.smartpos_charge_id,p.acquirer_data,p.method,p.amount_cents,p.received_cents,p.reference,p.installments,p.created_at,p.paid_by,cash.terminal_id,cash.terminal_name
+  FROM bansir.active_sale_payments p JOIN bansir.cash_sessions cash ON (cash.tenant_id,cash.establishment_id,cash.id)=(p.tenant_id,p.establishment_id,p.cash_session_id) WHERE p.sale_id=$1 ORDER BY p.created_at`, [id])).rows.map(row => ({ ...row, amount_cents: Number(row.amount_cents), received_cents: Number(row.received_cents) }));
+  s.paymentRevisions = (await c.query('SELECT r.created_at,r.reason,r.cash_session_id,p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.sale_id=$1 ORDER BY r.created_at', [id])).rows.map(r => ({ ...r, amount_cents: Number(r.amount_cents) }));
+  s.smartpos = (await c.query('SELECT id,status,provider FROM bansir.smartpos_charges WHERE sale_id=$1 ORDER BY created_at DESC LIMIT 1', [id])).rows[0] || null;
+  s.paid_cents = s.payments.reduce((sum, p) => sum + p.amount_cents, 0); s.outstanding_cents = s.cancelled_at ? 0 : s.total_cents - s.paid_cents;
+  s.status = s.cancelled_at ? 'cancelled' : s.outstanding_cents ? 'pending' : 'paid'; s.invoiceIssued = s.fiscal_status === 'authorized'; s.saleNumber = String(s.coupon_number); return s;
 }
-function checkPayment(p,amount){
- if(p.method!=='credit_card'&&p.installments>1)fail('Parcelas permitidas somente no crédito.','INVALID_INSTALLMENTS',400);
- const received=p.method==='cash'?(p.receivedCents??0):amount;
- if(received<amount)fail('Valor recebido em dinheiro é menor que o valor a pagar.','INSUFFICIENT_CASH',400);
- if(p.method!=='cash' && p.receivedCents!==undefined && p.receivedCents!==amount)fail('Troco é permitido somente em dinheiro.','INVALID_CHANGE',400);
- return received;
+function checkPayment(p, amount) {
+  if (p.method !== 'credit_card' && p.installments > 1) fail('Parcelas permitidas somente no crédito.', 'INVALID_INSTALLMENTS', 400);
+  const received = p.method === 'cash' ? (p.receivedCents ?? 0) : amount;
+  if (received < amount) fail('Valor recebido em dinheiro é menor que o valor a pagar.', 'INSUFFICIENT_CASH', 400);
+  if (p.method !== 'cash' && p.receivedCents !== undefined && p.receivedCents !== amount) fail('Troco é permitido somente em dinheiro.', 'INVALID_CHANGE', 400);
+  return received;
 }
-export async function recordPayment(c,i,sale,cash,input,{smartposChargeId,acquirerData}={}){
- const paymentHash=hash({...input,userId:i.userId});
- const previous=(await c.query('SELECT id,sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
- if(previous){if(previous.request_hash!==paymentHash||previous.sale_id!==sale.id)fail('Identificador de pagamento já utilizado.','IDEMPOTENCY_CONFLICT');return previous.id;}
- await assertNoSmartpos(c,{saleId:sale.id,exceptId:smartposChargeId});
- const view=await saleView(c,sale.id);if(view.cancelled_at)fail('Venda cancelada.','SALE_CANCELLED');
- if(input.amountCents>view.outstanding_cents)fail('Pagamento supera o saldo pendente.','PAYMENT_EXCEEDS_BALANCE');
- const received=checkPayment(input,input.amountCents);
- const {rows:[payment]}=await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data,created_at)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,clock_timestamp()) RETURNING id`,[i.tenantId,i.establishmentId,sale.id,cash.id,input.requestKey,paymentHash,i.userId,input.method,input.amountCents,received,input.reference,input.installments||1,smartposChargeId||null,acquirerData||null]);
- if(input.method==='cash')await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
- VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),paymentHash,payment.id,input.amountCents]);
- return payment.id;
+export async function recordPayment(c, i, sale, cash, input, { smartposChargeId, acquirerData } = {}) {
+  const paymentHash = hash({ ...input, userId: i.userId });
+  const previous = (await c.query('SELECT id,sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1', [input.requestKey])).rows[0];
+  if (previous) { if (previous.request_hash !== paymentHash || previous.sale_id !== sale.id) fail('Identificador de pagamento já utilizado.', 'IDEMPOTENCY_CONFLICT'); return previous.id; }
+  await assertNoSmartpos(c, { saleId: sale.id, exceptId: smartposChargeId });
+  const view = await saleView(c, sale.id); if (view.cancelled_at) fail('Venda cancelada.', 'SALE_CANCELLED');
+  if (input.amountCents > view.outstanding_cents) fail('Pagamento supera o saldo pendente.', 'PAYMENT_EXCEEDS_BALANCE');
+  const received = checkPayment(input, input.amountCents);
+  const { rows: [payment] } = await c.query(`INSERT INTO bansir.sale_payments(tenant_id,establishment_id,sale_id,cash_session_id,request_key,request_hash,paid_by,method,amount_cents,received_cents,reference,installments,smartpos_charge_id,acquirer_data,created_at)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,clock_timestamp()) RETURNING id`, [i.tenantId, i.establishmentId, sale.id, cash.id, input.requestKey, paymentHash, i.userId, input.method, input.amountCents, received, input.reference, input.installments || 1, smartposChargeId || null, acquirerData || null]);
+  if (input.method === 'cash') await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason)
+ VALUES($1,$2,$3,$4,$5,$6,'sale',$7,'Recebimento de venda')`, [i.tenantId, i.establishmentId, cash.id, randomUUID(), paymentHash, payment.id, input.amountCents]);
+  return payment.id;
 }
-export async function registerSale(c,i,member,body,{quotedItems,voucherReservation=false}={}){
- const input=saleInput.parse(body),requestHash=hash({input,userId:i.userId});
- await lock(c,`${unitKey(i)}:request:${input.requestKey}`);
- const previous=(await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1',[input.requestKey])).rows[0];
- if(previous){if(previous.request_hash!==requestHash)fail('Identificador de venda já utilizado com outro conteúdo.','IDEMPOTENCY_CONFLICT');return saleView(c,previous.id);}
- const agreement=await prepareAgreement(c,i,member,input);
- const cash=await openCash(c,i);
- if(input.smartposProvider&&!['credit_card','debit_card','pix'].includes(input.payment.method))fail('SmartPOS exige crédito ou débito individual.','SMARTPOS_METHOD_REQUIRED',400);
- if(new Set(input.items.map(item=>item.productId)).size!==input.items.length)fail('Agrupe quantidades do mesmo produto.','DUPLICATE_PRODUCT',400);
- if((input.discountCents>0||input.items.some(item=>item.unitPriceCents!==undefined&&item.unitPriceCents!==item.expectedUnitPriceCents))&&!discounts(member))fail('Seu perfil não pode aplicar descontos ou alterar preços.','DISCOUNT_FORBIDDEN',403);
- if(input.issueInvoice){requirePermission(member,'fiscal');if(input.payment.method==='pending')fail('Receba o pagamento antes de emitir o documento fiscal.','SALE_NOT_PAID');}
- let customer={name:input.customerName,document:input.customerDocument,phone:input.customerPhone,address:input.deliveryAddress};
- if(input.customerId){customer=(await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active',[input.customerId])).rows[0];if(!customer)fail('Cliente não encontrado neste estabelecimento.','CUSTOMER_NOT_FOUND',404);
-  const document=input.customerDocument||customer.document;
-  customer={...customer,name:input.customerName||customer.name,document,phone:input.customerPhone||customer.phone,address:input.deliveryAddress||customer.address,
-   fiscal_data:customer.document&&document!==customer.document?{}:customer.fiscal_data};
- }
- const deliverer=input.deliveryEmployeeId?(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active',[input.deliveryEmployeeId])).rows[0]:null;
- if(input.deliveryEmployeeId&&!deliverer)fail('Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND',404);
- // The recipient is checked when the user chooses and submits the fiscal document.
- const address=input.deliveryAddress||customer.address;
- if(input.deliveryMode==='delivery'&&!address)fail('Informe o endereço da entrega.','DELIVERY_CUSTOMER_REQUIRED',400);
- if(input.deliveryMode==='pickup'&&input.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.','INVALID_DELIVERY_FEE',400);
- if(input.payment.method==='pending'){
-  if(input.payment.term!=='delivery'&&(!customer.name||!customer.phone))fail('Venda a receber exige cliente identificado e telefone.','CUSTOMER_REQUIRED',400);
-  if(input.payment.term==='delivery'&&input.deliveryMode!=='delivery')fail('Cobrança na entrega exige entrega.','INVALID_PAYMENT_TERM',400);
-  if(input.payment.term==='pickup'&&input.deliveryMode!=='pickup')fail('Cobrança na retirada exige retirada no balcão.','INVALID_PAYMENT_TERM',400);
-  if(input.payment.term==='credit'&&!input.payment.dueDate)fail('Informe vencimento da venda a prazo.','DUE_DATE_REQUIRED',400);
- }
- const products=(await c.query('SELECT * FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[input.items.map(item=>item.productId)])).rows;
- const items=input.items.map((item,index)=>{const p=products.find(p=>p.id===item.productId);if(!p||!p.active||p.stock<item.quantity)fail('Produto indisponível ou estoque insuficiente.','STOCK_UNAVAILABLE');if(item.gasDoPovo&&!p.gas_do_povo)fail('Este produto não está habilitado para Gás do Povo.','PROGRAM_PRODUCT_DISABLED');if(input.deliveryMode==='delivery'&&(item.gasDoPovo===true||(item.gasDoPovo===undefined&&p.gas_do_povo))&&!p.gas_do_povo_delivery)fail('Gás do Povo disponível somente para retirada.','PROGRAM_PICKUP_ONLY');const quoted=quotedItems?.find(q=>q.productId===item.productId),expected=quoted?quoted.priceCents:Number(p.price_cents);if(expected!==item.expectedUnitPriceCents)fail('O preço mudou. Atualize o produto antes de vender.','PRICE_CHANGED');const unitPrice=item.unitPriceCents??expected;return {...item,product:p,position:index+1,unitPrice,gross:unitPrice*item.quantity};});
- const subtotal=items.reduce((sum,item)=>sum+item.gross,0),total=subtotal-input.discountCents+input.deliveryFeeCents;
- if(!Number.isSafeInteger(subtotal)||subtotal>1000000000||total>1000000000||input.discountCents>=subtotal)fail('Total ou desconto inválido.','INVALID_TOTAL',400);
- let remaining=input.discountCents;for(const item of items){item.discount=Number(BigInt(input.discountCents)*BigInt(item.gross)/BigInt(subtotal));remaining-=item.discount;}
- for(const item of items){if(!remaining)break;item.discount++;remaining--;}
- const parts=input.smartposProvider?[]:input.payment.method==='split'?input.payment.parts:input.payment.method==='pending'?[]:[{...input.payment,amountCents:total}];
- if(parts.length&&parts.reduce((n,p)=>n+p.amountCents,0)!==total)fail('A soma dos pagamentos deve ser igual ao total da venda.','PAYMENT_TOTAL_MISMATCH',400);
- for(const part of parts)checkPayment(part,part.amountCents);
- await checkAgreementCredit(c,agreement,total);
- const {rows:[actor]}=await c.query('SELECT name FROM bansir.users WHERE id=$1',[i.userId]);
- const {rows:[sale]}=await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone,customer_snapshot)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,[i.tenantId,i.establishmentId,input.requestKey,requestHash,cash.id,i.userId,actor.name,input.customerId||null,customer.name,customer.document,customer.phone,subtotal,input.discountCents,input.deliveryFeeCents,total,input.deliveryMode,address,input.payment.method==='pending'?input.payment.term:'immediate',input.payment.dueDate||null,deliverer?.id||null,deliverer?.name||'',deliverer?.phone||'',customerSnapshot({...customer,address,notes:input.customerNotes??customer.notes,additional_phone:input.customerAdditionalPhone??customer.additional_phone,additional_info:input.customerAdditionalInfo??customer.additional_info})]);
- await attachAgreement(c,i,sale,agreement);
- for(const item of items){
-  await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents,gas_do_povo)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[i.tenantId,i.establishmentId,sale.id,item.productId,item.position,item.product.name,item.product.barcode,item.product.unit,item.product.ncm,item.quantity,item.unitPrice,item.gross,item.discount,item.product.cost_cents,item.gasDoPovo===true]);
-  await c.query('UPDATE bansir.products SET stock=stock-$2,updated_at=now() WHERE id=$1',[item.productId,item.quantity]);
-  await stockMovement(c,i,item.product,item.quantity,'out',voucherReservation?`Reserva vale ${sale.id}`:`Venda ${sale.id}`);
-  if(item.product.stock-item.quantity<=5)await enqueueNotification(c,i,{key:`stock-sale:${sale.id}:${item.productId}`,title:'Estoque baixo',body:`${item.product.name}: ${item.product.stock-item.quantity} unidades.`});
- }
- for(const part of parts)await recordPayment(c,i,sale,cash,{...part,requestKey:parts.length===1?input.requestKey:randomUUID()});
- if(input.deliveryMode==='delivery'&&deliverer?.phone){
-  const message=`🛵 *Nova entrega Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total/100).toFixed(2)}\n*Produtos:* ${items.map(item=>`${item.quantity}x ${item.product.name}`).join(', ')}`;
-  await queueWhatsapp(c,i,{key:`delivery-route:${sale.id}`,payload:{permission:'sales',action:'send-text',phone:deliverer.phone,message}});
- }
- if(input.smartposProvider)await createSmartposCharge(c,i,member,sale.id,{requestKey:input.requestKey,provider:input.smartposProvider,method:input.payment.method,amountCents:total,installments:input.payment.installments||1});
- await enqueueNotification(c,i,{key:`sale:${sale.id}`,title:'Venda registrada',body:`Venda ${sale.coupon_number} registrada com estoque e recebíveis.`});
- return saleView(c,sale.id);
+export async function registerSale(c, i, member, body, { quotedItems, voucherReservation = false } = {}) {
+  const input = saleInput.parse(body), requestHash = hash({ input, userId: i.userId });
+  await lock(c, `${unitKey(i)}:request:${input.requestKey}`);
+  const previous = (await c.query('SELECT id,request_hash FROM bansir.sales WHERE request_key=$1', [input.requestKey])).rows[0];
+  if (previous) { if (previous.request_hash !== requestHash) fail('Identificador de venda já utilizado com outro conteúdo.', 'IDEMPOTENCY_CONFLICT'); return saleView(c, previous.id); }
+  const agreement = await prepareAgreement(c, i, member, input);
+  const cash = await openCash(c, i);
+  if (input.smartposProvider && !['credit_card', 'debit_card', 'pix'].includes(input.payment.method)) fail('SmartPOS exige crédito ou débito individual.', 'SMARTPOS_METHOD_REQUIRED', 400);
+  if (new Set(input.items.map(item => item.productId)).size !== input.items.length) fail('Agrupe quantidades do mesmo produto.', 'DUPLICATE_PRODUCT', 400);
+  if ((input.discountCents > 0 || input.items.some(item => item.unitPriceCents !== undefined && item.unitPriceCents !== item.expectedUnitPriceCents)) && !discounts(member)) fail('Seu perfil não pode aplicar descontos ou alterar preços.', 'DISCOUNT_FORBIDDEN', 403);
+  if (input.issueInvoice) { requirePermission(member, 'fiscal'); if (input.payment.method === 'pending') fail('Receba o pagamento antes de emitir o documento fiscal.', 'SALE_NOT_PAID'); }
+  let customer = { name: input.customerName, document: input.customerDocument, phone: input.customerPhone, address: input.deliveryAddress };
+  if (input.customerId) {
+    customer = (await c.query('SELECT * FROM bansir.customers WHERE id=$1 AND active', [input.customerId])).rows[0]; if (!customer) fail('Cliente não encontrado neste estabelecimento.', 'CUSTOMER_NOT_FOUND', 404);
+    const document = input.customerDocument || customer.document;
+    customer = {
+      ...customer, name: input.customerName || customer.name, document, phone: input.customerPhone || customer.phone, address: input.deliveryAddress || customer.address,
+      fiscal_data: customer.document && document !== customer.document ? {} : customer.fiscal_data
+    };
+  }
+  const deliverer = input.deliveryEmployeeId ? (await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active', [input.deliveryEmployeeId])).rows[0] : null;
+  if (input.deliveryEmployeeId && !deliverer) fail('Entregador não encontrado neste estabelecimento.', 'DELIVERER_NOT_FOUND', 404);
+  // The recipient is checked when the user chooses and submits the fiscal document.
+  const address = input.deliveryAddress || customer.address;
+  if (input.deliveryMode === 'delivery' && !address) fail('Informe o endereço da entrega.', 'DELIVERY_CUSTOMER_REQUIRED', 400);
+  if (input.deliveryMode === 'pickup' && input.deliveryFeeCents) fail('Taxa de entrega exige modalidade entrega.', 'INVALID_DELIVERY_FEE', 400);
+  if (input.payment.method === 'pending') {
+    if (input.payment.term !== 'delivery' && (!customer.name || !customer.phone)) fail('Venda a receber exige cliente identificado e telefone.', 'CUSTOMER_REQUIRED', 400);
+    if (input.payment.term === 'delivery' && input.deliveryMode !== 'delivery') fail('Cobrança na entrega exige entrega.', 'INVALID_PAYMENT_TERM', 400);
+    if (input.payment.term === 'pickup' && input.deliveryMode !== 'pickup') fail('Cobrança na retirada exige retirada no balcão.', 'INVALID_PAYMENT_TERM', 400);
+    if (input.payment.term === 'credit' && !input.payment.dueDate) fail('Informe vencimento da venda a prazo.', 'DUE_DATE_REQUIRED', 400);
+  }
+  const products = (await c.query('SELECT * FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE', [input.items.map(item => item.productId)])).rows;
+  const items = input.items.map((item, index) => { const p = products.find(p => p.id === item.productId); if (!p || !p.active || p.stock < item.quantity) fail('Produto indisponível ou estoque insuficiente.', 'STOCK_UNAVAILABLE'); if (item.gasDoPovo && !p.gas_do_povo) fail('Este produto não está habilitado para Gás do Povo.', 'PROGRAM_PRODUCT_DISABLED'); if (input.deliveryMode === 'delivery' && (item.gasDoPovo === true || (item.gasDoPovo === undefined && p.gas_do_povo)) && !p.gas_do_povo_delivery) fail('Gás do Povo disponível somente para retirada.', 'PROGRAM_PICKUP_ONLY'); const quoted = quotedItems?.find(q => q.productId === item.productId), expected = quoted ? quoted.priceCents : Number(p.price_cents); if (expected !== item.expectedUnitPriceCents) fail('O preço mudou. Atualize o produto antes de vender.', 'PRICE_CHANGED'); const unitPrice = item.unitPriceCents ?? expected; return { ...item, product: p, position: index + 1, unitPrice, gross: unitPrice * item.quantity }; });
+  const subtotal = items.reduce((sum, item) => sum + item.gross, 0), total = subtotal - input.discountCents + input.deliveryFeeCents;
+  if (!Number.isSafeInteger(subtotal) || subtotal > 1000000000 || total > 1000000000 || input.discountCents >= subtotal) fail('Total ou desconto inválido.', 'INVALID_TOTAL', 400);
+  let remaining = input.discountCents; for (const item of items) { item.discount = Number(BigInt(input.discountCents) * BigInt(item.gross) / BigInt(subtotal)); remaining -= item.discount; }
+  for (const item of items) { if (!remaining) break; item.discount++; remaining--; }
+  const parts = input.smartposProvider ? [] : input.payment.method === 'split' ? input.payment.parts : input.payment.method === 'pending' ? [] : [{ ...input.payment, amountCents: total }];
+  if (parts.length && parts.reduce((n, p) => n + p.amountCents, 0) !== total) fail('A soma dos pagamentos deve ser igual ao total da venda.', 'PAYMENT_TOTAL_MISMATCH', 400);
+  for (const part of parts) checkPayment(part, part.amountCents);
+  await checkAgreementCredit(c, agreement, total);
+  const { rows: [actor] } = await c.query('SELECT name FROM bansir.users WHERE id=$1', [i.userId]);
+  const { rows: [sale] } = await c.query(`INSERT INTO bansir.sales(tenant_id,establishment_id,request_key,request_hash,cash_session_id,created_by,seller_name,customer_id,customer_name,customer_document,customer_phone,subtotal_cents,discount_cents,delivery_fee_cents,total_cents,delivery_mode,delivery_address,payment_term,due_date,delivery_employee_id,delivery_employee_name,delivery_employee_phone,customer_snapshot)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`, [i.tenantId, i.establishmentId, input.requestKey, requestHash, cash.id, i.userId, actor.name, input.customerId || null, customer.name, customer.document, customer.phone, subtotal, input.discountCents, input.deliveryFeeCents, total, input.deliveryMode, address, input.payment.method === 'pending' ? input.payment.term : 'immediate', input.payment.dueDate || null, deliverer?.id || null, deliverer?.name || '', deliverer?.phone || '', customerSnapshot({ ...customer, address, notes: input.customerNotes ?? customer.notes, additional_phone: input.customerAdditionalPhone ?? customer.additional_phone, additional_info: input.customerAdditionalInfo ?? customer.additional_info })]);
+  await attachAgreement(c, i, sale, agreement);
+  for (const item of items) {
+    await c.query(`INSERT INTO bansir.sale_items(tenant_id,establishment_id,sale_id,product_id,position,product_name,barcode,unit,ncm,quantity,unit_price_cents,gross_cents,discount_cents,unit_cost_cents,gas_do_povo)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [i.tenantId, i.establishmentId, sale.id, item.productId, item.position, item.product.name, item.product.barcode, item.product.unit, item.product.ncm, item.quantity, item.unitPrice, item.gross, item.discount, item.product.cost_cents, item.gasDoPovo === true]);
+    await c.query('UPDATE bansir.products SET stock=stock-$2,updated_at=now() WHERE id=$1', [item.productId, item.quantity]);
+    await stockMovement(c, i, item.product, item.quantity, 'out', voucherReservation ? `Reserva vale ${sale.id}` : `Venda ${sale.id}`);
+    if (item.product.stock - item.quantity <= 5) await enqueueNotification(c, i, { key: `stock-sale:${sale.id}:${item.productId}`, title: 'Estoque baixo', body: `${item.product.name}: ${item.product.stock - item.quantity} unidades.` });
+  }
+  for (const part of parts) await recordPayment(c, i, sale, cash, { ...part, requestKey: parts.length === 1 ? input.requestKey : randomUUID() });
+  if (input.deliveryMode === 'delivery' && deliverer?.phone) {
+    const message = `🛵 *Nova entrega Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${customer.name}\n*Endereço:* ${address}\n*Valor:* R$ ${(total / 100).toFixed(2)}\n*Produtos:* ${items.map(item => `${item.quantity}x ${item.product.name}`).join(', ')}`;
+    await queueWhatsapp(c, i, { key: `delivery-route:${sale.id}`, payload: { permission: 'sales', action: 'send-text', phone: deliverer.phone, message } });
+  }
+  if (input.smartposProvider) await createSmartposCharge(c, i, member, sale.id, { requestKey: input.requestKey, provider: input.smartposProvider, method: input.payment.method, amountCents: total, installments: input.payment.installments || 1 });
+  await enqueueNotification(c, i, { key: `sale:${sale.id}`, metadata: {saleId:sale.id}, title: 'Venda registrada', body: `Venda ${sale.coupon_number} registrada com estoque e recebíveis.` });
+  return saleView(c, sale.id);
 }
 
-export function mountSales(app,{scoped,secret}){
- mountSaleEditing(app,{scoped,saleView,ownedSale});
- mountSaleCustomization(app,{scoped});
- app.get('/api/v1/pdv/terminal-notice',scoped('sales',true,async(c,req)=>{
-  const terminal=await currentTerminal(c,req.identity);if(!terminal)return {data:null};
-  const cash=(await c.query('SELECT c.id,c.user_id,c.opened_at,u.name AS operator_name FROM bansir.cash_sessions c JOIN bansir.users u ON u.id=c.user_id WHERE c.terminal_id=$1 AND c.closed_at IS NULL',[terminal.id])).rows[0];
-  const other=(await c.query('SELECT EXISTS(SELECT 1 FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL AND terminal_id IS DISTINCT FROM $2) AS open',[req.identity.userId,terminal.id])).rows[0].open;
-  return {data:{terminal,cash:cash?{id:cash.id,openedAt:cash.opened_at,operatorName:cash.operator_name,own:cash.user_id===req.identity.userId}:null,operatorHasOtherCash:other,...await cashSchedule(c)}};
- }));
- app.get('/api/v1/pdv/business-hours',scoped('sales',true,async c=>({data:await cashSchedule(c)})));
- app.get('/api/v1/pdv/cash',scoped('sales',true,async(c,req)=>({data:await cashView(c,await lockCash(c,req.identity))})));
- app.post('/api/v1/pdv/cash/open',scoped('sales',false,async(c,req)=>{
-  const {openingCents}=z.object({openingCents:cents}).strict().parse(req.body),i=req.identity;
-  const current=await lockCash(c,i),terminal=await requireTerminal(c,i);if(current){assertCashTerminal(current,terminal);if(Number(current.opening_cents)!==openingCents)fail('Já existe caixa aberto com outro valor inicial.','CASH_ALREADY_OPEN');return {data:await cashView(c,current)};}
-  if(terminal){await lock(c,`${unitKey(i)}:terminal:${terminal.id}`);if((await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL',[terminal.id])).rowCount)fail('Este terminal já possui um caixa aberto por outro operador.','TERMINAL_BUSY');}
-  const {rows:[cash]}=await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents,terminal_id,terminal_name) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[i.tenantId,i.establishmentId,i.userId,openingCents,terminal?.id||null,terminal?.name||null]);return {status:201,data:await cashView(c,cash)};
- }));
- app.get('/api/v1/pdv/cash/history',scoped('sales',true,async(c,req)=>({data:await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30',[req.identity.userId])).rows.map(cash=>cashView(c,cash)))})));
- const cashAdmin=member=>['admin','superadmin'].includes(member.role);
- const reopenDigest=(i,terminalId,code)=>createHmac('sha256',secret)
-  .update(JSON.stringify(['cash-reopen',i.tenantId,i.establishmentId,terminalId,code])).digest('hex');
- app.post('/api/v1/pdv/terminals/:id/cash-reopen-code',scoped('settings-terminals',false,async(c,req,member)=>{
-  if(!cashAdmin(member))fail('Somente administradores podem gerar este código.','FORBIDDEN',403);
-  const i=req.identity,id=uuid.parse(req.params.id);
-  if(!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1 AND active',[id])).rowCount)fail('Terminal indisponível.','NOT_FOUND',404);
-  const code=String(randomInt(10000)).padStart(4,'0');
-  const {rows:[row]}=await c.query(`INSERT INTO bansir.cash_reopen_codes(tenant_id,establishment_id,terminal_id,issuer_id,digest,expires_at)
+export function mountSales(app, { scoped, secret }) {
+  mountSaleEditing(app, { scoped, saleView, ownedSale });
+  mountSaleCustomization(app, { scoped });
+  app.get('/api/v1/pdv/terminal-notice', scoped('sales', true, async (c, req) => {
+    const terminal = await currentTerminal(c, req.identity); if (!terminal) return { data: null };
+    const cash = (await c.query('SELECT c.id,c.user_id,c.opened_at,u.name AS operator_name FROM bansir.cash_sessions c JOIN bansir.users u ON u.id=c.user_id WHERE c.terminal_id=$1 AND c.closed_at IS NULL', [terminal.id])).rows[0];
+    const other = (await c.query('SELECT EXISTS(SELECT 1 FROM bansir.cash_sessions WHERE user_id=$1 AND closed_at IS NULL AND terminal_id IS DISTINCT FROM $2) AS open', [req.identity.userId, terminal.id])).rows[0].open;
+    return { data: { terminal, cash: cash ? { id: cash.id, openedAt: cash.opened_at, operatorName: cash.operator_name, own: cash.user_id === req.identity.userId } : null, operatorHasOtherCash: other, ...await cashSchedule(c) } };
+  }));
+  app.get('/api/v1/pdv/business-hours', scoped('sales', true, async c => ({ data: await cashSchedule(c) })));
+  app.get('/api/v1/pdv/cash', scoped('sales', true, async (c, req) => ({ data: await cashView(c, await lockCash(c, req.identity)) })));
+  app.post('/api/v1/pdv/cash/open', scoped('sales', false, async (c, req) => {
+    const { openingCents } = z.object({ openingCents: cents }).strict().parse(req.body), i = req.identity;
+    const current = await lockCash(c, i), terminal = await requireTerminal(c, i); if (current) { assertCashTerminal(current, terminal); if (Number(current.opening_cents) !== openingCents) fail('Já existe caixa aberto com outro valor inicial.', 'CASH_ALREADY_OPEN'); return { data: await cashView(c, current) }; }
+    if (terminal) { await lock(c, `${unitKey(i)}:terminal:${terminal.id}`); if ((await c.query('SELECT 1 FROM bansir.cash_sessions WHERE terminal_id=$1 AND closed_at IS NULL', [terminal.id])).rowCount) fail('Este terminal já possui um caixa aberto por outro operador.', 'TERMINAL_BUSY'); }
+    const { rows: [cash] } = await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents,terminal_id,terminal_name) VALUES($1,$2,$3,$4,$5,$6) RETURNING *', [i.tenantId, i.establishmentId, i.userId, openingCents, terminal?.id || null, terminal?.name || null]); return { status: 201, data: await cashView(c, cash) };
+  }));
+  app.get('/api/v1/pdv/cash/history', scoped('sales', true, async (c, req) => ({ data: await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30', [req.identity.userId])).rows.map(cash => cashView(c, cash))) })));
+  const cashAdmin = member => ['admin', 'superadmin'].includes(member.role);
+  const reopenDigest = (i, terminalId, code) => createHmac('sha256', secret)
+    .update(JSON.stringify(['cash-reopen', i.tenantId, i.establishmentId, terminalId, code])).digest('hex');
+  app.post('/api/v1/pdv/terminals/:id/cash-reopen-code', scoped('settings-terminals', false, async (c, req, member) => {
+    if (!cashAdmin(member)) fail('Somente administradores podem gerar este código.', 'FORBIDDEN', 403);
+    const i = req.identity, id = uuid.parse(req.params.id);
+    if (!(await c.query('SELECT 1 FROM bansir.pdv_terminals WHERE id=$1 AND active', [id])).rowCount) fail('Terminal indisponível.', 'NOT_FOUND', 404);
+    const code = String(randomInt(10000)).padStart(4, '0');
+    const { rows: [row] } = await c.query(`INSERT INTO bansir.cash_reopen_codes(tenant_id,establishment_id,terminal_id,issuer_id,digest,expires_at)
    VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '5 minutes')
    ON CONFLICT(tenant_id,establishment_id,terminal_id) DO UPDATE
    SET issuer_id=excluded.issuer_id,digest=excluded.digest,expires_at=excluded.expires_at,attempts=0
-   RETURNING expires_at`,[i.tenantId,i.establishmentId,id,i.userId,reopenDigest(i,id,code)]);
-  return {data:{code,expiresAt:row.expires_at}};
- }));
- app.post('/api/v1/pdv/cash/:id/reopen',scoped('sales',false,async(c,req,member)=>{
-  const input=z.object({requestKey:uuid,code:z.string().regex(/^\d{4}$/).optional()}).strict().parse(req.body);
-  const i=req.identity,id=uuid.parse(req.params.id);
-  await financialCashLock(c,i);
-  const current=await lockCash(c,i),terminal=await requireTerminal(c,i);
-  if(!terminal||terminal.client_type!=='browser')fail('Use o navegador vinculado ao terminal deste caixa.','TERMINAL_REQUIRED');
-  await lock(c,`${unitKey(i)}:terminal:${terminal.id}`);
-  const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[id,i.userId])).rows[0];
-  if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
-  assertCashTerminal(cash,terminal);
-  const prior=(await c.query('SELECT cash_id,operator_id FROM bansir.cash_reopenings WHERE request_key=$1',[input.requestKey])).rows[0];
-  if(prior){
-   if(prior.cash_id!==id||prior.operator_id!==i.userId)fail('Identificador já utilizado.','IDEMPOTENCY_CONFLICT');
-   return {data:await cashView(c,cash)};
-  }
-  if(!cash.closed_at||current)fail('Feche o caixa atual antes de reabrir outro.','CASH_ALREADY_OPEN');
-  const newest=(await c.query('SELECT id FROM bansir.cash_sessions WHERE terminal_id=$1 ORDER BY opened_at DESC,id DESC LIMIT 1',[terminal.id])).rows[0];
-  if(newest?.id!==id)fail('Somente o último caixa deste terminal pode ser reaberto.','CASH_REOPEN_NOT_LATEST');
-  await assertNoSmartpos(c,{cashId:id});
-  let approver=i.userId;
-  if(!cashAdmin(member)){
-   const row=(await c.query(`SELECT *,expires_at>clock_timestamp() AS valid FROM bansir.cash_reopen_codes WHERE terminal_id=$1 FOR UPDATE`,[terminal.id])).rows[0];
-   if(!row?.valid||row.attempts>=5)fail('Solicite um novo código ao administrador.','CASH_REOPEN_CODE_UNAVAILABLE',429);
-   const supplied=Buffer.from(reopenDigest(i,terminal.id,input.code||''),'hex');
-   if(!timingSafeEqual(supplied,Buffer.from(row.digest,'hex'))){
-    await c.query('UPDATE bansir.cash_reopen_codes SET attempts=attempts+1 WHERE terminal_id=$1',[terminal.id]);
-    // Return normally so the failed attempt is committed.
-    return {status:403,meta:{success:false,code:'CASH_REOPEN_CODE_INVALID',message:`Código incorreto. Tentativas restantes: ${4-row.attempts}.`}};
-   }
-   approver=row.issuer_id;
-   await c.query('DELETE FROM bansir.cash_reopen_codes WHERE terminal_id=$1',[terminal.id]);
-  }
-  await c.query(`INSERT INTO bansir.cash_reopenings(tenant_id,establishment_id,cash_id,request_key,operator_id,approver_id,previous_close)
-   VALUES($1,$2,$3,$4,$5,$6,$7)`,[i.tenantId,i.establishmentId,id,input.requestKey,i.userId,approver,await cashView(c,cash)]);
-  const {rows:[opened]}=await c.query(`UPDATE bansir.cash_sessions SET closed_at=NULL,counted_cents=NULL,expected_cents=NULL,
-   difference_cents=NULL,closing_note=NULL,reopen_version=reopen_version+1 WHERE id=$1 RETURNING *`,[id]);
-  return {data:await cashView(c,opened)};
- }));
- app.get('/api/v1/pdv/cash/:id/previous-closures',scoped('sales',true,async(c,req)=>{
-  const {rows}=await c.query(`SELECT r.previous_close,r.created_at FROM bansir.cash_reopenings r
+   RETURNING expires_at`, [i.tenantId, i.establishmentId, id, i.userId, reopenDigest(i, id, code)]);
+    return { data: { code, expiresAt: row.expires_at } };
+  }));
+  app.post('/api/v1/pdv/cash/:id/reopen', scoped('sales', false, async (c, req, member) => {
+    const input = z.object({ requestKey: uuid, code: z.string().regex(/^\d{4}$/).optional() }).strict().parse(req.body);
+    const i = req.identity, id = uuid.parse(req.params.id);
+    await financialCashLock(c, i);
+    const current = await lockCash(c, i), terminal = await requireTerminal(c, i);
+    if (!terminal || terminal.client_type !== 'browser') fail('Use o navegador vinculado ao terminal deste caixa.', 'TERMINAL_REQUIRED');
+    await lock(c, `${unitKey(i)}:terminal:${terminal.id}`);
+    const cash = (await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2', [id, i.userId])).rows[0];
+    if (!cash) fail('Caixa não encontrado.', 'NOT_FOUND', 404);
+    assertCashTerminal(cash, terminal);
+    const prior = (await c.query('SELECT cash_id,operator_id FROM bansir.cash_reopenings WHERE request_key=$1', [input.requestKey])).rows[0];
+    if (prior) {
+      if (prior.cash_id !== id || prior.operator_id !== i.userId) fail('Identificador já utilizado.', 'IDEMPOTENCY_CONFLICT');
+      return { data: await cashView(c, cash) };
+    }
+    if (!cash.closed_at || current) fail('Feche o caixa atual antes de reabrir outro.', 'CASH_ALREADY_OPEN');
+    const newest = (await c.query('SELECT id FROM bansir.cash_sessions WHERE terminal_id=$1 ORDER BY opened_at DESC,id DESC LIMIT 1', [terminal.id])).rows[0];
+    if (newest?.id !== id) fail('Somente o último caixa deste terminal pode ser reaberto.', 'CASH_REOPEN_NOT_LATEST');
+    await assertNoSmartpos(c, { cashId: id });
+    let approver = i.userId;
+    if (!cashAdmin(member)) {
+      const row = (await c.query(`SELECT *,expires_at>clock_timestamp() AS valid FROM bansir.cash_reopen_codes WHERE terminal_id=$1 FOR UPDATE`, [terminal.id])).rows[0];
+      if (!row?.valid || row.attempts >= 5) fail('Solicite um novo código ao administrador.', 'CASH_REOPEN_CODE_UNAVAILABLE', 429);
+      const supplied = Buffer.from(reopenDigest(i, terminal.id, input.code || ''), 'hex');
+      if (!timingSafeEqual(supplied, Buffer.from(row.digest, 'hex'))) {
+        await c.query('UPDATE bansir.cash_reopen_codes SET attempts=attempts+1 WHERE terminal_id=$1', [terminal.id]);
+        // Return normally so the failed attempt is committed.
+        return { status: 403, meta: { success: false, code: 'CASH_REOPEN_CODE_INVALID', message: `Código incorreto. Tentativas restantes: ${4 - row.attempts}.` } };
+      }
+      approver = row.issuer_id;
+      await c.query('DELETE FROM bansir.cash_reopen_codes WHERE terminal_id=$1', [terminal.id]);
+    }
+    await c.query(`INSERT INTO bansir.cash_reopenings(tenant_id,establishment_id,cash_id,request_key,operator_id,approver_id,previous_close)
+   VALUES($1,$2,$3,$4,$5,$6,$7)`, [i.tenantId, i.establishmentId, id, input.requestKey, i.userId, approver, await cashView(c, cash)]);
+    const { rows: [opened] } = await c.query(`UPDATE bansir.cash_sessions SET closed_at=NULL,counted_cents=NULL,expected_cents=NULL,
+   difference_cents=NULL,closing_note=NULL,reopen_version=reopen_version+1 WHERE id=$1 RETURNING *`, [id]);
+    return { data: await cashView(c, opened) };
+  }));
+  app.get('/api/v1/pdv/cash/:id/previous-closures', scoped('sales', true, async (c, req) => {
+    const { rows } = await c.query(`SELECT r.previous_close,r.created_at FROM bansir.cash_reopenings r
    JOIN bansir.cash_sessions s ON (s.tenant_id,s.establishment_id,s.id)=(r.tenant_id,r.establishment_id,r.cash_id)
-   WHERE s.id=$1 AND s.user_id=$2 ORDER BY r.created_at DESC`,[uuid.parse(req.params.id),req.identity.userId]);
-  return {data:rows};
- }));
- app.post('/api/v1/pdv/cash/:id/close',scoped('sales',false,async(c,req)=>{
-  const input=z.object({countedCents:cents,reopenVersion:z.number().int().nonnegative().default(0),note:z.string().trim().max(1000).default('')}).strict().parse(req.body),i=req.identity;
-  await financialCashLock(c,i);await lockCash(c,i);const cash=(await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2',[uuid.parse(req.params.id),i.userId])).rows[0];if(!cash)fail('Caixa não encontrado.','NOT_FOUND',404);
-  if(cash.reopen_version!==input.reopenVersion)fail('Atualize a conferência deste caixa antes de fechar.','STALE_CASH');
-  if(cash.closed_at){if(Number(cash.counted_cents)!==input.countedCents||cash.closing_note!==input.note)fail('Caixa já fechado com outra conferência.','CASH_ALREADY_CLOSED');return {data:await cashView(c,cash)};}
-  // Legacy shifts can always be closed; never invent or reassign their origin.
-  if(cash.terminal_id)assertCashTerminal(cash,await requireTerminal(c,i));
-  await expireSmartpos(c);await assertNoSmartpos(c,{cashId:cash.id});
-  const expected=await cashBalance(c,cash),difference=input.countedCents-expected;
-  if(difference&&!input.note)fail('Informe o motivo da diferença de caixa.','CASH_DIFFERENCE_NOTE',400);
-  const closed=(await c.query('UPDATE bansir.cash_sessions SET closed_at=clock_timestamp(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *',[cash.id,input.countedCents,expected,difference,input.note])).rows[0];return {data:await cashView(c,closed)};
- }));
- app.post('/api/v1/pdv/cash/movements',scoped('sales',false,async(c,req,member)=>{
-  if(!manages(member)&&!member.allowed_routes?.includes('cash-adjust'))fail('Seu perfil não pode fazer sangria ou suprimento.','FORBIDDEN',403);
-  const input=z.object({requestKey:uuid,kind:z.enum(['deposit','withdrawal']),amountCents:cents.refine(n=>n>0),reason:z.string().trim().min(3).max(1000)}).strict().parse(req.body),i=req.identity,cash=await openCash(c,i),fingerprint=hash({...input,userId:i.userId});
-  const previous=(await c.query('SELECT request_hash FROM bansir.cash_movements WHERE request_key=$1',[input.requestKey])).rows[0];if(previous){if(previous.request_hash!==fingerprint)fail('Identificador já utilizado.','IDEMPOTENCY_CONFLICT');return {data:await cashView(c,cash)};}
-  if(input.kind==='withdrawal'&&input.amountCents>await cashBalance(c,cash))fail('Saldo físico insuficiente para sangria.','INSUFFICIENT_CASH');
-  await c.query('INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,cash.id,input.requestKey,fingerprint,input.kind,input.amountCents,input.reason]);return {status:201,data:await cashView(c,cash)};
- }));
- app.get('/api/v1/sales',scoped('sales',true,async(c,req,member)=>{
-  const q=z.object({page:z.coerce.number().int().min(0).max(10000).default(0),pageSize:z.coerce.number().int().min(1).max(100).default(30),status:z.enum(['all','pending']).default('all'),search:z.string().trim().max(200).default(''),deliveryMode:z.enum(['all','delivery','pickup']).default('all')}).parse(req.query);
-  const coupon=/^#?\d+$/.test(q.search)?q.search.replace(/^#?0*(?=\d)/,''):'';
-  const ids=(await c.query(`SELECT s.id FROM bansir.sales s WHERE ($1::boolean OR s.created_by=$2) AND ($5='all' OR
+   WHERE s.id=$1 AND s.user_id=$2 ORDER BY r.created_at DESC`, [uuid.parse(req.params.id), req.identity.userId]);
+    return { data: rows };
+  }));
+  app.post('/api/v1/pdv/cash/:id/close', scoped('sales', false, async (c, req) => {
+    const input = z.object({ countedCents: cents, reopenVersion: z.number().int().nonnegative().default(0), note: z.string().trim().max(1000).default('') }).strict().parse(req.body), i = req.identity;
+    await financialCashLock(c, i); await lockCash(c, i); const cash = (await c.query('SELECT * FROM bansir.cash_sessions WHERE id=$1 AND user_id=$2', [uuid.parse(req.params.id), i.userId])).rows[0]; if (!cash) fail('Caixa não encontrado.', 'NOT_FOUND', 404);
+    if (cash.reopen_version !== input.reopenVersion) fail('Atualize a conferência deste caixa antes de fechar.', 'STALE_CASH');
+    if (cash.closed_at) { if (Number(cash.counted_cents) !== input.countedCents || cash.closing_note !== input.note) fail('Caixa já fechado com outra conferência.', 'CASH_ALREADY_CLOSED'); return { data: await cashView(c, cash) }; }
+    // Legacy shifts can always be closed; never invent or reassign their origin.
+    if (cash.terminal_id) assertCashTerminal(cash, await requireTerminal(c, i));
+    await expireSmartpos(c); await assertNoSmartpos(c, { cashId: cash.id });
+    const expected = await cashBalance(c, cash), difference = input.countedCents - expected;
+    if (difference && !input.note) fail('Informe o motivo da diferença de caixa.', 'CASH_DIFFERENCE_NOTE', 400);
+    const closed = (await c.query('UPDATE bansir.cash_sessions SET closed_at=clock_timestamp(),counted_cents=$2,expected_cents=$3,difference_cents=$4,closing_note=$5 WHERE id=$1 RETURNING *', [cash.id, input.countedCents, expected, difference, input.note])).rows[0]; return { data: await cashView(c, closed) };
+  }));
+  app.post('/api/v1/pdv/cash/movements', scoped('sales', false, async (c, req, member) => {
+    if (!manages(member) && !member.allowed_routes?.includes('cash-adjust')) fail('Seu perfil não pode fazer sangria ou suprimento.', 'FORBIDDEN', 403);
+    const input = z.object({ requestKey: uuid, kind: z.enum(['deposit', 'withdrawal']), amountCents: cents.refine(n => n > 0), reason: z.string().trim().min(3).max(1000) }).strict().parse(req.body), i = req.identity, cash = await openCash(c, i), fingerprint = hash({ ...input, userId: i.userId });
+    const previous = (await c.query('SELECT request_hash FROM bansir.cash_movements WHERE request_key=$1', [input.requestKey])).rows[0]; if (previous) { if (previous.request_hash !== fingerprint) fail('Identificador já utilizado.', 'IDEMPOTENCY_CONFLICT'); return { data: await cashView(c, cash) }; }
+    if (input.kind === 'withdrawal' && input.amountCents > await cashBalance(c, cash)) fail('Saldo físico insuficiente para sangria.', 'INSUFFICIENT_CASH');
+    await c.query('INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [i.tenantId, i.establishmentId, cash.id, input.requestKey, fingerprint, input.kind, input.amountCents, input.reason]); return { status: 201, data: await cashView(c, cash) };
+  }));
+  app.get('/api/v1/sales', scoped('sales', true, async (c, req, member) => {
+    const q = z.object({ page: z.coerce.number().int().min(0).max(10000).default(0), pageSize: z.coerce.number().int().min(1).max(100).default(30), status: z.enum(['all', 'pending']).default('all'), search: z.string().trim().max(200).default(''), deliveryMode: z.enum(['all', 'delivery', 'pickup']).default('all') }).parse(req.query);
+    const coupon = /^#?\d+$/.test(q.search) ? q.search.replace(/^#?0*(?=\d)/, '') : '';
+    const ids = (await c.query(`SELECT s.id FROM bansir.sales s WHERE ($1::boolean OR s.created_by=$2) AND ($5='all' OR
    (NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id)))
    AND ($6='all' OR s.delivery_mode=$6)
    AND ($7='' OR strpos(lower(s.customer_name),lower($7))>0 OR ($8<>'' AND s.coupon_number::text=$8))
-   ORDER BY s.created_at DESC,s.id LIMIT $3 OFFSET $4`,[viewsAll(member),req.identity.userId,q.pageSize+1,q.page*q.pageSize,q.status,q.deliveryMode,q.search,coupon])).rows;
-  return {data:await Promise.all(ids.slice(0,q.pageSize).map(row=>saleView(c,row.id))),meta:{hasNext:ids.length>q.pageSize}};
- }));
- app.post('/api/v1/sales',scoped('sales',false,async(c,req,member)=>({status:201,data:await registerSale(c,req.identity,member,req.body)})));
- app.post('/api/v1/sales/:id/resend-whatsapp',scoped('sales',false,async(c,req,member)=>{
-  const sale=await ownedSale(c,req.identity,member,req.params.id);
-  if(sale.delivery_mode!=='delivery'||!sale.delivery_employee_phone)fail('Esta venda não possui entregador com telefone cadastrado.','DELIVERY_PHONE_MISSING',409);
-  const message=`🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents)/100).toFixed(2)}`;
-  const queued=await queueWhatsapp(c,req.identity,{key:`delivery-route-resend:${sale.id}:${randomUUID()}`,payload:{permission:'sales',action:'send-text',phone:sale.delivery_employee_phone,message}});
-  return {status:202,data:{queued}};
- }));
- app.get('/api/v1/sales/:id',scoped('sales',true,async(c,req,member)=>{await ownedSale(c,req.identity,member,req.params.id);return {data:await saleView(c,req.params.id)};}));
- app.post('/api/v1/sales/:id/payments',scoped('sales',false,async(c,req,member)=>{
-  const input=externalPayment.extend({requestKey:uuid,amountCents:cents.refine(n=>n>0),confirmDelivery:z.boolean().optional()}).parse(req.body),i=req.identity;
-  if(input.confirmDelivery)await routeUnitLock(c,i);
-  // Idempotent retries still return their receipt after the original cash was closed.
-  await lock(c,`${unitKey(i)}:payment:${input.requestKey}`);await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
-  const sale=await ownedSale(c,i,member,req.params.id),previous=(await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1',[input.requestKey])).rows[0];
-  if(previous){if(previous.sale_id!==sale.id||previous.request_hash!==hash({...input,userId:i.userId}))fail('Identificador já utilizado.','IDEMPOTENCY_CONFLICT');return {data:await saleView(c,sale.id)};}
-  const cash=await openCash(c,i);await recordPayment(c,i,sale,cash,input);
-  if(input.confirmDelivery)await confirmManualDelivery(c,i,member,await saleView(c,sale.id),input.requestKey);
-  return {status:201,data:await saleView(c,sale.id)};
- }));
- app.post('/api/v1/sales/:id/confirm-delivery',scoped('sales',false,async(c,req,member)=>{
-  const input=z.object({requestKey:uuid,confirmed:z.literal(true)}).strict().parse(req.body),i=req.identity;
-  await routeUnitLock(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
-  await ownedSale(c,i,member,req.params.id);
-  await confirmManualDelivery(c,i,member,await saleView(c,req.params.id),input.requestKey);
-  return {data:await saleView(c,req.params.id)};
- }));
- app.post('/api/v1/sales/:id/cancel',scoped('sales',false,async(c,req,member)=>{
-  if(!manages(member))fail('Cancelamento exige permissão de gestão de vendas.','FORBIDDEN',403);
-  const input=z.object({reason:z.string().trim().min(5).max(1000),refundConfirmed:z.literal(true),refundReference:text.default('')}).strict().parse(req.body),i=req.identity;
-  await financialCashLock(c,i);const cash=await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.cancelled_at)return {data:sale};await assertNoFiscalReservation(c,sale.id,true);await expireSmartpos(c);await assertNoSmartpos(c,{saleId:sale.id});if(sale.document_id&&sale.fiscal_status!=='cancelled')fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.','FISCAL_CANCELLATION_REQUIRED');
-  if(!cash)fail('Abra seu caixa para registrar o cancelamento.','CASH_CLOSED');
-  assertCashTerminal(cash,await requireTerminal(c,i));
-  if(sale.payments.some(p=>p.method!=='cash')&&input.refundReference.length<3)fail('Informe a referência do estorno externo já realizado.','REFUND_REFERENCE_REQUIRED',400);
-  const cashRefund=sale.payments.filter(p=>p.method==='cash').reduce((sum,p)=>sum+p.amount_cents,0);if(cashRefund>await cashBalance(c,cash))fail('Saldo de caixa insuficiente para devolver o dinheiro.','INSUFFICIENT_CASH');
-  await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference,cash_session_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())',[i.tenantId,i.establishmentId,sale.id,i.userId,input.reason,input.refundReference,cash.id]);
-  await c.query("UPDATE bansir.storefront_orders SET status='cancelled',updated_at=now() WHERE sale_id=$1 AND status='accepted'",[sale.id]);
-  const items=[...sale.items].sort((a,b)=>a.product_id.localeCompare(b.product_id));
-  for(const item of items){const p=(await c.query('UPDATE bansir.products SET stock=stock+$2,updated_at=now() WHERE id=$1 RETURNING *',[item.product_id,item.quantity])).rows[0];await stockMovement(c,i,p,item.quantity,'in',`Cancelamento ${sale.id}: ${input.reason}`);}
-  for(const p of sale.payments.filter(p=>p.method==='cash'))await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,'refund',$7,$8)`,[i.tenantId,i.establishmentId,cash.id,randomUUID(),hash(input),p.id,p.amount_cents,input.reason]);
-  return {data:await saleView(c,sale.id)};
- }));
- app.post('/api/v1/sales/:id/pix',scoped('sales',true,async(c,req,member)=>{
-  await ownedSale(c,req.identity,member,req.params.id);const sale=await saleView(c,req.params.id);if(sale.status!=='pending')fail('Esta venda não tem saldo a receber.','NO_OUTSTANDING_BALANCE');
-  const settings=(await c.query('SELECT * FROM bansir.store_settings')).rows[0];const brCode=pixCode({key:settings?.pix_key||'',name:settings?.store_name||'',city:settings?.merchant_city||'',amountCents:sale.outstanding_cents,txid:sale.id});return {data:{brCode,amountCents:sale.outstanding_cents,manualConfirmationRequired:true}};
- }));
- app.get('/api/v1/customers/search',scoped('sales',true,async(c,req)=>{
-  const q=z.string().trim().min(2).max(200).parse(req.query.q);return {data:(await c.query(`SELECT id,name,document,phone,address,notes,additional_phone,additional_info FROM bansir.customers
-   WHERE active AND strpos(lower(concat_ws(' ',name,phone,additional_phone,document,address)),lower($1))>0 ORDER BY name LIMIT 20`,[q])).rows};
- }));
- app.post('/api/v1/customers',scoped('sales',false,async(c,req)=>({status:201,data:await createCustomer(c,req.identity,req.body)})));
- mountSaleFiscal(app,{scoped});
+   ORDER BY s.created_at DESC,s.id LIMIT $3 OFFSET $4`, [viewsAll(member), req.identity.userId, q.pageSize + 1, q.page * q.pageSize, q.status, q.deliveryMode, q.search, coupon])).rows;
+    return { data: await Promise.all(ids.slice(0, q.pageSize).map(row => saleView(c, row.id))), meta: { hasNext: ids.length > q.pageSize } };
+  }));
+  app.post('/api/v1/sales', scoped('sales', false, async (c, req, member) => ({ status: 201, data: await registerSale(c, req.identity, member, req.body) })));
+  app.post('/api/v1/sales/:id/resend-whatsapp', scoped('sales', false, async (c, req, member) => {
+    const sale = await ownedSale(c, req.identity, member, req.params.id);
+    if (sale.delivery_mode !== 'delivery' || !sale.delivery_employee_phone) fail('Esta venda não possui entregador com telefone cadastrado.', 'DELIVERY_PHONE_MISSING', 409);
+    const message = `🛵 *Reenvio de rota Bansir PDV*\n*Pedido:* ${sale.coupon_number}\n*Cliente:* ${sale.customer_name}\n*Endereço:* ${sale.delivery_address}\n*Total:* R$ ${(Number(sale.total_cents) / 100).toFixed(2)}`;
+    const queued = await queueWhatsapp(c, req.identity, { key: `delivery-route-resend:${sale.id}:${randomUUID()}`, payload: { permission: 'sales', action: 'send-text', phone: sale.delivery_employee_phone, message } });
+    return { status: 202, data: { queued } };
+  }));
+  app.get('/api/v1/sales/:id', scoped('sales', true, async (c, req, member) => { await ownedSale(c, req.identity, member, req.params.id); return { data: await saleView(c, req.params.id) }; }));
+  app.post('/api/v1/sales/:id/payments', scoped('sales', false, async (c, req, member) => {
+    const input = externalPayment.extend({ requestKey: uuid, amountCents: cents.refine(n => n > 0), confirmDelivery: z.boolean().optional() }).parse(req.body), i = req.identity;
+    if (input.confirmDelivery) await routeUnitLock(c, i);
+    // Idempotent retries still return their receipt after the original cash was closed.
+    await lock(c, `${unitKey(i)}:payment:${input.requestKey}`); await lockCash(c, i); await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
+    const sale = await ownedSale(c, i, member, req.params.id), previous = (await c.query('SELECT sale_id,request_hash FROM bansir.sale_payments WHERE request_key=$1', [input.requestKey])).rows[0];
+    if (previous) { if (previous.sale_id !== sale.id || previous.request_hash !== hash({ ...input, userId: i.userId })) fail('Identificador já utilizado.', 'IDEMPOTENCY_CONFLICT'); return { data: await saleView(c, sale.id) }; }
+    const cash = await openCash(c, i); await recordPayment(c, i, sale, cash, input);
+    if (input.confirmDelivery) await confirmManualDelivery(c, i, member, await saleView(c, sale.id), input.requestKey);
+    return { status: 201, data: await saleView(c, sale.id) };
+  }));
+  app.post('/api/v1/sales/:id/confirm-delivery', scoped('sales', false, async (c, req, member) => {
+    const input = z.object({ requestKey: uuid, confirmed: z.literal(true) }).strict().parse(req.body), i = req.identity;
+    await routeUnitLock(c, i); await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);
+    await ownedSale(c, i, member, req.params.id);
+    await confirmManualDelivery(c, i, member, await saleView(c, req.params.id), input.requestKey);
+    return { data: await saleView(c, req.params.id) };
+  }));
+  app.post('/api/v1/sales/:id/cancel', scoped('sales', false, async (c, req, member) => {
+    if (!manages(member)) fail('Cancelamento exige permissão de gestão de vendas.', 'FORBIDDEN', 403);
+    const input = z.object({ reason: z.string().trim().min(5).max(1000), refundConfirmed: z.literal(true), refundReference: text.default('') }).strict().parse(req.body), i = req.identity;
+    await financialCashLock(c, i); const cash = await lockCash(c, i); await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`); await ownedSale(c, i, member, req.params.id); const sale = await saleView(c, req.params.id);
+    if (sale.cancelled_at) return { data: sale }; await assertNoFiscalReservation(c, sale.id, true); await expireSmartpos(c); await assertNoSmartpos(c, { saleId: sale.id }); if (sale.document_id && sale.fiscal_status !== 'cancelled') fail('Venda com documento fiscal exige o fluxo fiscal de cancelamento.', 'FISCAL_CANCELLATION_REQUIRED');
+    if (!cash) fail('Abra seu caixa para registrar o cancelamento.', 'CASH_CLOSED');
+    assertCashTerminal(cash, await requireTerminal(c, i));
+    if (sale.payments.some(p => p.method !== 'cash') && input.refundReference.length < 3) fail('Informe a referência do estorno externo já realizado.', 'REFUND_REFERENCE_REQUIRED', 400);
+    const cashRefund = sale.payments.filter(p => p.method === 'cash').reduce((sum, p) => sum + p.amount_cents, 0); if (cashRefund > await cashBalance(c, cash)) fail('Saldo de caixa insuficiente para devolver o dinheiro.', 'INSUFFICIENT_CASH');
+    await c.query('INSERT INTO bansir.sale_cancellations(tenant_id,establishment_id,sale_id,user_id,reason,refund_reference,cash_session_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp())', [i.tenantId, i.establishmentId, sale.id, i.userId, input.reason, input.refundReference, cash.id]);
+    await c.query("UPDATE bansir.storefront_orders SET status='cancelled',updated_at=now() WHERE sale_id=$1 AND status='accepted'", [sale.id]);
+    const items = [...sale.items].sort((a, b) => a.product_id.localeCompare(b.product_id));
+    for (const item of items) { const p = (await c.query('UPDATE bansir.products SET stock=stock+$2,updated_at=now() WHERE id=$1 RETURNING *', [item.product_id, item.quantity])).rows[0]; await stockMovement(c, i, p, item.quantity, 'in', `Cancelamento ${sale.id}: ${input.reason}`); }
+    for (const p of sale.payments.filter(p => p.method === 'cash')) await c.query(`INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,'refund',$7,$8)`, [i.tenantId, i.establishmentId, cash.id, randomUUID(), hash(input), p.id, p.amount_cents, input.reason]);
+    return { data: await saleView(c, sale.id) };
+  }));
+  app.post('/api/v1/sales/:id/pix', scoped('sales', true, async (c, req, member) => {
+    await ownedSale(c, req.identity, member, req.params.id); const sale = await saleView(c, req.params.id); if (sale.status !== 'pending') fail('Esta venda não tem saldo a receber.', 'NO_OUTSTANDING_BALANCE');
+    const settings = (await c.query('SELECT * FROM bansir.store_settings')).rows[0]; const brCode = pixCode({ key: settings?.pix_key || '', name: settings?.store_name || '', city: settings?.merchant_city || '', amountCents: sale.outstanding_cents, txid: sale.id }); return { data: { brCode, amountCents: sale.outstanding_cents, manualConfirmationRequired: true } };
+  }));
+  app.get('/api/v1/customers/search', scoped('sales', true, async (c, req) => {
+    const q = z.string().trim().min(2).max(200).parse(req.query.q); return {
+      data: (await c.query(`SELECT id,name,document,phone,address,notes,additional_phone,additional_info FROM bansir.customers
+   WHERE active AND strpos(lower(concat_ws(' ',name,phone,additional_phone,document,address)),lower($1))>0 ORDER BY name LIMIT 20`, [q])).rows
+    };
+  }));
+  app.post('/api/v1/customers', scoped('sales', false, async (c, req) => ({ status: 201, data: await createCustomer(c, req.identity, req.body) })));
+  mountSaleFiscal(app, { scoped });
 }
 
-function mountSaleFiscal(app,{scoped}){
- app.patch('/api/v1/sales/:id/customer-document',scoped('sales',false,async(c,req,member)=>{
-  requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  const {document}=z.object({document:z.string().regex(/^\d{11}$/)}).strict().parse(req.body);
-  if(sale.document_id||sale.status!=='paid')fail('Somente venda paga e sem nota pode ter o CPF fiscal atualizado.','FISCAL_CUSTOMER_LOCKED');
-  await c.query('UPDATE bansir.sales SET customer_document=$2 WHERE id=$1',[sale.id,document]);return {data:await saleView(c,sale.id)};
- }));
- app.get('/api/v1/sales/:id/fiscal-draft',scoped('sales',true,async(c,req,member)=>{
-  requirePermission(member,'fiscal');await ownedSale(c,req.identity,member,req.params.id);const sale=await saleView(c,req.params.id);
-  if(sale.status!=='paid')fail('A venda precisa estar paga antes da emissão fiscal.','SALE_NOT_PAID');
-  return {data:saleFiscalDraft(sale,fiscalModel.parse(req.query.model))};
- }));
- app.post('/api/v1/sales/:id/fiscal',scoped('sales',false,async(c,req,member)=>{
-  requirePermission(member,'fiscal');const i=req.identity;await lock(c,`${unitKey(i)}:sale:${uuid.parse(req.params.id)}`);await ownedSale(c,i,member,req.params.id);const sale=await saleView(c,req.params.id);
-  await assertNoFiscalReservation(c,sale.id);
-  if(sale.status!=='paid')fail('Somente venda paga e ativa pode emitir documento fiscal.','SALE_NOT_PAID');
-  const body=z.object({requestKey:uuid,model:fiscalModel,operation:fiscalOperation,draft:z.record(z.string(),z.unknown()),rejectedDocumentId:uuid.optional(),rejectionReviewed:z.literal(true).optional()}).strict().parse(req.body);
-  let rejectedDocumentId;
-  if(sale.document_id){const doc=(await c.query('SELECT request_key,payload,status FROM bansir.fiscal_documents WHERE id=$1',[sale.document_id])).rows[0];
-   if(doc.request_key===body.requestKey){if(hash(body.draft)!==doc.payload.draftHash||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model||hash(doc.payload.operation||{finalConsumer:true,presence:1})!==hash(body.operation))fail('Identificador fiscal reutilizado com outros dados.','IDEMPOTENCY_CONFLICT');return {data:{id:sale.document_id,status:sale.fiscal_status}};}
-   if(doc.status!=='rejected'||body.rejectedDocumentId!==sale.document_id||body.rejectionReviewed!==true||String(doc.payload.request.NFe.infNFe.ide.mod)!==body.model)fail('Esta venda já possui documento fiscal. Nova tentativa exige rejeição definitiva e conferência explícita.','SALE_ALREADY_INVOICED');
-   rejectedDocumentId=sale.document_id;
-  }
-  const expected=saleFiscalDraft(sale,body.model),draft=body.draft;
-  if(body.model==='55'){nfeRecipient.parse(draft.dest);expected.dest=draft.dest;}
-  if(!Array.isArray(draft.det)||draft.det.length!==expected.det.length)fail('Itens fiscais diferentes da venda.','FISCAL_SALE_MISMATCH',400);
-  for(let n=0;n<expected.det.length;n++){const p=draft.det[n]?.prod,e=expected.det[n].prod;if(!p||p.cProd!==e.cProd||p.xProd!==e.xProd||p.qCom!==e.qCom||p.vUnCom!==e.vUnCom||p.vProd!==e.vProd||Number(p.vDesc||0)!==Number(e.vDesc||0)||Number(p.vFrete||0)!==Number(e.vFrete||0)||p.uCom!==e.uCom)fail('Valores ou produtos fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);}
-  for(const key of ['vProd','vDesc','vFrete','vNF'])if(Number(draft.total?.ICMSTot?.[key]||0)!==Number(expected.total.ICMSTot[key]))fail('Totais fiscais diferem da venda.','FISCAL_SALE_MISMATCH',400);
-  if(hash(draft.pag)!==hash(expected.pag)||hash(draft.dest||null)!==hash(expected.dest||null))fail('Pagamento ou destinatário fiscal diferem da venda.','FISCAL_SALE_MISMATCH',400);
-  const {rejectedDocumentId:_old,rejectionReviewed:_reviewed,...command}=body;const doc=await createFiscalDocument(c,i,command);
-  if(rejectedDocumentId){await c.query('INSERT INTO bansir.rejected_fiscal_attempts(tenant_id,establishment_id,sale_id,document_id,replacement_document_id,user_id) VALUES($1,$2,$3,$4,$5,$6)',[i.tenantId,i.establishmentId,sale.id,rejectedDocumentId,doc.id,i.userId]);await c.query('UPDATE bansir.sale_fiscal_links SET document_id=$2 WHERE sale_id=$1',[sale.id,doc.id]);}
-  else await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)',[i.tenantId,i.establishmentId,sale.id,doc.id]);return {status:202,data:doc};
- }));
+function mountSaleFiscal(app, { scoped }) {
+  app.patch('/api/v1/sales/:id/customer-document', scoped('sales', false, async (c, req, member) => {
+    requirePermission(member, 'fiscal'); const i = req.identity; await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`); await ownedSale(c, i, member, req.params.id); const sale = await saleView(c, req.params.id);
+    const { document } = z.object({ document: z.string().regex(/^\d{11}$/) }).strict().parse(req.body);
+    if (sale.document_id || sale.status !== 'paid') fail('Somente venda paga e sem nota pode ter o CPF fiscal atualizado.', 'FISCAL_CUSTOMER_LOCKED');
+    await c.query('UPDATE bansir.sales SET customer_document=$2 WHERE id=$1', [sale.id, document]); return { data: await saleView(c, sale.id) };
+  }));
+  app.get('/api/v1/sales/:id/fiscal-draft', scoped('sales', true, async (c, req, member) => {
+    requirePermission(member, 'fiscal'); await ownedSale(c, req.identity, member, req.params.id); const sale = await saleView(c, req.params.id);
+    if (sale.status !== 'paid') fail('A venda precisa estar paga antes da emissão fiscal.', 'SALE_NOT_PAID');
+    const model = fiscalModel.parse(req.query.model), draft = saleFiscalDraft(sale, model); if (model === '55') { const cfg = (await c.query('SELECT * FROM bansir.fiscal_settings')).rows[0]; await applyIbptToDraft(c, req.identity, draft, { model, cfg }); } return { data: draft };
+  }));
+  app.post('/api/v1/sales/:id/fiscal', scoped('sales', false, async (c, req, member) => {
+    requirePermission(member, 'fiscal'); const i = req.identity; await lock(c, `${unitKey(i)}:sale:${uuid.parse(req.params.id)}`); await ownedSale(c, i, member, req.params.id); const sale = await saleView(c, req.params.id);
+    await assertNoFiscalReservation(c, sale.id);
+    if (sale.status !== 'paid') fail('Somente venda paga e ativa pode emitir documento fiscal.', 'SALE_NOT_PAID');
+    const body = z.object({ requestKey: uuid, model: fiscalModel, operation: fiscalOperation, draft: z.record(z.string(), z.unknown()), rejectedDocumentId: uuid.optional(), rejectionReviewed: z.literal(true).optional() }).strict().parse(req.body);
+    let rejectedDocumentId;
+    if (sale.document_id) {
+      const doc = (await c.query('SELECT request_key,payload,status FROM bansir.fiscal_documents WHERE id=$1', [sale.document_id])).rows[0];
+      if (doc.request_key === body.requestKey) { if (hash(body.draft) !== doc.payload.draftHash || String(doc.payload.request.NFe.infNFe.ide.mod) !== body.model || hash(doc.payload.operation || { finalConsumer: true, presence: 1 }) !== hash(body.operation)) fail('Identificador fiscal reutilizado com outros dados.', 'IDEMPOTENCY_CONFLICT'); return { data: { id: sale.document_id, status: sale.fiscal_status } }; }
+      if (doc.status !== 'rejected' || body.rejectedDocumentId !== sale.document_id || body.rejectionReviewed !== true || String(doc.payload.request.NFe.infNFe.ide.mod) !== body.model) fail('Esta venda já possui documento fiscal. Nova tentativa exige rejeição definitiva e conferência explícita.', 'SALE_ALREADY_INVOICED');
+      rejectedDocumentId = sale.document_id;
+    }
+    const expected = saleFiscalDraft(sale, body.model), draft = body.draft;
+    if (body.model === '55') { nfeRecipient.parse(draft.dest); expected.dest = draft.dest; }
+    if (!Array.isArray(draft.det) || draft.det.length !== expected.det.length) fail('Itens fiscais diferentes da venda.', 'FISCAL_SALE_MISMATCH', 400);
+    for (let n = 0; n < expected.det.length; n++) { const p = draft.det[n]?.prod, e = expected.det[n].prod; if (!p || p.cProd !== e.cProd || p.xProd !== e.xProd || p.qCom !== e.qCom || p.vUnCom !== e.vUnCom || p.vProd !== e.vProd || Number(p.vDesc || 0) !== Number(e.vDesc || 0) || Number(p.vFrete || 0) !== Number(e.vFrete || 0) || p.uCom !== e.uCom) fail('Valores ou produtos fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400); }
+    for (const key of ['vProd', 'vDesc', 'vFrete', 'vNF']) if (Number(draft.total?.ICMSTot?.[key] || 0) !== Number(expected.total.ICMSTot[key])) fail('Totais fiscais diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
+    if (hash(draft.pag) !== hash(expected.pag) || hash(draft.dest || null) !== hash(expected.dest || null)) fail('Pagamento ou destinatário fiscal diferem da venda.', 'FISCAL_SALE_MISMATCH', 400);
+    const { rejectedDocumentId: _old, rejectionReviewed: _reviewed, ...command } = body; const doc = await createFiscalDocument(c, i, command);
+    if (rejectedDocumentId) { await c.query('INSERT INTO bansir.rejected_fiscal_attempts(tenant_id,establishment_id,sale_id,document_id,replacement_document_id,user_id) VALUES($1,$2,$3,$4,$5,$6)', [i.tenantId, i.establishmentId, sale.id, rejectedDocumentId, doc.id, i.userId]); await c.query('UPDATE bansir.sale_fiscal_links SET document_id=$2 WHERE sale_id=$1', [sale.id, doc.id]); }
+    else await c.query('INSERT INTO bansir.sale_fiscal_links(tenant_id,establishment_id,sale_id,document_id) VALUES($1,$2,$3,$4)', [i.tenantId, i.establishmentId, sale.id, doc.id]); return { status: 202, data: doc };
+  }));
 }
-export function saleFiscalDraft(sale,model='65'){
- const method={cash:'01',pix:'17',credit_card:'03',debit_card:'04',online:'99'};
- const draft={det:sale.items.map((item,index)=>({nItem:index+1,prod:{cProd:item.product_id,cEAN:'SEM GTIN',xProd:item.product_name,NCM:item.fiscal_profile?.[model]?.ncm||item.ncm,CFOP:item.fiscal_profile?.[model]?.cfop||'',...(item.fiscal_profile?.[model]?.comb?{comb:structuredClone(item.fiscal_profile[model].comb)}:{}),...(item.fiscal_profile?.[model]?.cest?{CEST:item.fiscal_profile[model].cest}:{}),uCom:item.unit||'UN',qCom:item.quantity,vUnCom:item.unit_price_cents/100,vProd:item.gross_cents/100,cEANTrib:'SEM GTIN',uTrib:item.unit||'UN',qTrib:item.quantity,vUnTrib:item.unit_price_cents/100,indTot:1,...(item.discount_cents?{vDesc:item.discount_cents/100}:{}),...(index===0&&sale.delivery_fee_cents?{vFrete:sale.delivery_fee_cents/100}:{})},imposto:structuredClone(item.fiscal_profile?.[model]?.taxes||{ICMS:{},PIS:{},COFINS:{}})})),
- total:{ICMSTot:{vBC:0,vICMS:0,vICMSDeson:0,vFCP:0,vBCST:0,vST:0,vFCPST:0,vFCPSTRet:0,vProd:sale.subtotal_cents/100,vFrete:sale.delivery_fee_cents/100,vSeg:0,vDesc:sale.discount_cents/100,vII:0,vIPI:0,vIPIDevol:0,vPIS:0,vCOFINS:0,vOutro:0,vNF:sale.total_cents/100}},
- pag:{detPag:sale.payments.map(p=>({indPag:p.method==='credit_card'&&p.installments>1?1:0,tPag:method[p.method],...(p.method==='online'?{xPag:'Pagamento online'}:{}),vPag:(p.method==='cash'?p.received_cents:p.amount_cents)/100,...(['credit_card','debit_card'].includes(p.method)?{card:{tpIntegra:p.smartpos_charge_id?1:2,...(p.smartpos_charge_id?{CNPJ:p.acquirer_data?.acquirerCnpj,tBand:p.acquirer_data?.brandCode}:{}),...(p.reference?{cAut:p.reference}:{})}}:{})})),vTroco:sale.payments.filter(p=>p.method==='cash').reduce((n,p)=>n+p.received_cents-p.amount_cents,0)/100},transp:{modFrete:9},...((sale.customer_document||sale.customer_details?.document)?{dest:model==='55'?saleCustomerRecipient(sale):{CNPJCPF:sale.customer_document||sale.customer_details.document,xNome:sale.customer_name||'CONSUMIDOR',indIEDest:9}}:{})};
- return applyTributaryUnits(draft,sale,model);
+export function saleFiscalDraft(sale, model = '65') {
+  const method = { cash: '01', pix: '17', credit_card: '03', debit_card: '04', online: '99' };
+  const draft = {
+    det: sale.items.map((item, index) => ({ nItem: index + 1, prod: { cProd: item.product_id, cEAN: 'SEM GTIN', xProd: item.product_name, NCM: item.fiscal_profile?.[model]?.ncm || item.ncm, CFOP: item.fiscal_profile?.[model]?.cfop || '', ...(item.fiscal_profile?.[model]?.comb ? { comb: structuredClone(item.fiscal_profile[model].comb) } : {}), ...(item.fiscal_profile?.[model]?.cest ? { CEST: item.fiscal_profile[model].cest } : {}), uCom: item.unit || 'UN', qCom: item.quantity, vUnCom: item.unit_price_cents / 100, vProd: item.gross_cents / 100, cEANTrib: 'SEM GTIN', uTrib: item.unit || 'UN', qTrib: item.quantity, vUnTrib: item.unit_price_cents / 100, indTot: 1, ...(item.discount_cents ? { vDesc: item.discount_cents / 100 } : {}), ...(index === 0 && sale.delivery_fee_cents ? { vFrete: sale.delivery_fee_cents / 100 } : {}) }, imposto: structuredClone(item.fiscal_profile?.[model]?.taxes || { ICMS: {}, PIS: {}, COFINS: {} }) })),
+    total: { ICMSTot: { vBC: 0, vICMS: 0, vICMSDeson: 0, vFCP: 0, vBCST: 0, vST: 0, vFCPST: 0, vFCPSTRet: 0, vProd: sale.subtotal_cents / 100, vFrete: sale.delivery_fee_cents / 100, vSeg: 0, vDesc: sale.discount_cents / 100, vII: 0, vIPI: 0, vIPIDevol: 0, vPIS: 0, vCOFINS: 0, vOutro: 0, vNF: sale.total_cents / 100 } },
+    pag: { detPag: sale.payments.map(p => ({ indPag: p.method === 'credit_card' && p.installments > 1 ? 1 : 0, tPag: method[p.method], ...(p.method === 'online' ? { xPag: 'Pagamento online' } : {}), vPag: (p.method === 'cash' ? p.received_cents : p.amount_cents) / 100, ...(['credit_card', 'debit_card'].includes(p.method) ? { card: { tpIntegra: p.smartpos_charge_id ? 1 : 2, ...(p.smartpos_charge_id ? { CNPJ: p.acquirer_data?.acquirerCnpj, tBand: p.acquirer_data?.brandCode } : {}), ...(p.reference ? { cAut: p.reference } : {}) } } : {}) })), vTroco: sale.payments.filter(p => p.method === 'cash').reduce((n, p) => n + p.received_cents - p.amount_cents, 0) / 100 }, transp: { modFrete: 9 }, ...((sale.customer_document || sale.customer_details?.document) ? { dest: model === '55' ? saleCustomerRecipient(sale) : { CNPJCPF: sale.customer_document || sale.customer_details.document, xNome: sale.customer_name || 'CONSUMIDOR', indIEDest: 9 } } : {})
+  };
+  return applyTributaryUnits(draft, sale, model);
 }
 
 
 
 
 
-export async function lockSmartposSale(c,i,id){await lockCash(c,i);await lock(c,`${unitKey(i)}:sale:${id}`);}
-export async function settleSmartpos(c,i,command,cash,evidence){
- const input={requestKey:command.id,method:command.method,amountCents:Number(command.amount_cents),confirmed:true,reference:evidence.authorizationCode||evidence.transactionId,installments:command.installments};
- await recordPayment(c,i,{id:command.sale_id},cash,input,{smartposChargeId:command.id,acquirerData:evidence});
+export async function lockSmartposSale(c, i, id) { await lockCash(c, i); await lock(c, `${unitKey(i)}:sale:${id}`); }
+export async function settleSmartpos(c, i, command, cash, evidence) {
+  const input = { requestKey: command.id, method: command.method, amountCents: Number(command.amount_cents), confirmed: true, reference: evidence.authorizationCode || evidence.transactionId, installments: command.installments };
+  await recordPayment(c, i, { id: command.sale_id }, cash, input, { smartposChargeId: command.id, acquirerData: evidence });
 }

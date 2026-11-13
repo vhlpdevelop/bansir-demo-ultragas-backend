@@ -68,6 +68,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    const save=await send('/storefront/settings','PUT',config);assert.equal(save.status,200,JSON.stringify(save.body));
    assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,location:{address:'Loja teste',latitude:95,longitude:0,showMap:true}}})).status,400);
    const page=await publicSend('');assert.equal(page.status,200);assert.equal(page.body.data.products.length,1);assert.equal(page.body.data.products[0].id,p.id);assert.equal(page.body.data.products[0].priceCents,12045);assert.equal(page.body.data.products[0].costPrice,undefined);assert.equal(JSON.stringify(page.body).includes(hidden.id),false);
+   const sitemapRes=await fetch(`${base}/public/stores/sitemap.xml`);assert.equal(sitemapRes.status,200);assert.match(sitemapRes.headers.get('content-type')||'',/application\/xml/);assert.equal(sitemapRes.headers.get('x-content-type-options'),'nosniff');assert.match(await sitemapRes.text(),/<loc>https:\/\/gas\.bansir\.com\.br\/pedir\/shop-public<\/loc>/);
    assert.equal((await send('/storefront/settings', 'GET',undefined,{token:s2.token})).body.data.slug,'');
    assert.equal((await send('/storefront/settings','PUT',{...config,config:{...config.config,productIds:[foreignProduct.id]}},{token:s2.token})).status,403);
    await assert.rejects(publicStorefront(db,'shop-public',null,c=>c.query('SELECT * FROM bansir.customers')),e=>e.code==='42501');
@@ -155,6 +156,7 @@ test('Deliverers, customer PDF import and public order link',{skip:!process.env.
    assert.equal((await publicSend(`/orders/${pickup.body.data.id}`,'GET',undefined,checkoutB.token)).body.data.status,'cancelled');
    await send('/storefront/settings','PUT',{...config,config:{...config.config,acceptingOrders:false}});assert.equal((await publicSend('/start','POST',{phone:'65999996666'})).status,409);
    await send('/storefront/settings','PUT',{...config,enabled:false});assert.equal((await publicSend('')).status,404);
+   assert.doesNotMatch(await (await fetch(`${base}/public/stores/sitemap.xml`)).text(),/shop-public/);
   });
   await t.test('PDV full settlement can confirm delivery with an audited actor, without duplicates or partial completion',async()=>{
    const saleId=(await admin.query('SELECT sale_id FROM bansir.storefront_orders WHERE id=$1',[order.id])).rows[0].sale_id;

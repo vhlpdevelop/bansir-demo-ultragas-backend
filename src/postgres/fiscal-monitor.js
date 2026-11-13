@@ -6,9 +6,36 @@ import {parseDistribution,decodeDocument,nextPoll,parseInboundDocument,MAX_XML_B
 import {findNode,parseXml,list} from './inbound-parser.js';
 import {enqueue} from './queue.js';
 import {requirePermission} from './catalog.js';
+const inboundRule=(kind,target)=>`EXISTS(SELECT 1 FROM bansir.fiscal_inbound_rules r
+ WHERE (r.tenant_id,r.establishment_id)=(d.tenant_id,d.establishment_id) AND r.kind='${kind}' AND r.target=d.${target})`;
+const hidden=inboundRule('hidden','access_key'),blocked=inboundRule('blocked','supplier_cnpj');
+const registered=`EXISTS(SELECT 1 FROM bansir.suppliers p WHERE
+ (p.tenant_id,p.establishment_id)=(d.tenant_id,d.establishment_id) AND p.active AND p.data->>'document'=d.supplier_cnpj)`;
+const visible=`NOT (${hidden} OR ${blocked})`;
+const pendingReceipt=`d.status<>'CANCELLED' AND NOT EXISTS(SELECT 1 FROM bansir.fiscal_stock_receipts r
+ WHERE (r.tenant_id,r.establishment_id,r.access_key)=(d.tenant_id,d.establishment_id,d.access_key))`;
 export function mountFiscalMonitor(app,{scoped}){
  const unseen="d.badge_since IS NOT NULL AND d.status<>'CANCELLED' AND NOT EXISTS(SELECT 1 FROM bansir.fiscal_inbound_seen s WHERE (s.tenant_id,s.establishment_id,s.document_id)=(d.tenant_id,d.establishment_id,d.id) AND s.user_id=bansir.actor_id())";
- app.get('/api/v1/fiscal/inbound/unseen',scoped('fiscal',true,async c=>({data:(await c.query(`SELECT count(*)::int AS count FROM bansir.fiscal_inbound d WHERE ${unseen}`)).rows[0]})));
+ app.get('/api/v1/fiscal/inbound/unseen',scoped('fiscal',true,async c=>({data:(await c.query(`SELECT count(*) FILTER(WHERE NOT ${registered})::int AS count,
+  count(*) FILTER(WHERE ${registered})::int AS "supplierCount" FROM bansir.fiscal_inbound d WHERE ${unseen} AND ${visible}`)).rows[0]})));
+ app.get('/api/v1/fiscal/inbound/supplier-queue',scoped('fiscal',true,async(c,_req,member)=>{
+  requirePermission(member,'suppliers',true);
+  return {data:(await c.query(`SELECT d.supplier_cnpj AS document,max(d.supplier_name) AS name,
+    count(*) FILTER(WHERE ${unseen})::int AS "newCount",count(*)::int AS "pendingCount"
+   FROM bansir.fiscal_inbound d WHERE ${visible} AND ${registered} AND ${pendingReceipt}
+   GROUP BY d.supplier_cnpj ORDER BY "newCount" DESC,max(d.created_at) DESC,d.supplier_cnpj`)).rows};
+ }));
+ app.put('/api/v1/fiscal/inbound/:id/triage',scoped('fiscal',false,async(c,req)=>{
+  const {kind,enabled}=z.object({kind:z.enum(['hidden','blocked']),enabled:z.boolean()}).strict().parse(req.body);
+  const {rows:[note]}=await c.query('SELECT access_key,supplier_cnpj FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(req.params.id)]);
+  if(!note)throw httpError(404,'Nota não encontrada.','NOT_FOUND');
+  const target=kind==='hidden'?note.access_key:note.supplier_cnpj;
+  if(kind==='blocked'&&!/^\d{14}$/.test(target||''))throw httpError(409,'O CNPJ do emitente ainda não está disponível.','SUPPLIER_DOCUMENT_REQUIRED');
+  const i=req.identity,values=[i.tenantId,i.establishmentId,kind,target];
+  if(enabled)await c.query('INSERT INTO bansir.fiscal_inbound_rules(tenant_id,establishment_id,kind,target) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',values);
+  else await c.query('DELETE FROM bansir.fiscal_inbound_rules WHERE (tenant_id,establishment_id,kind,target)=($1,$2,$3,$4)',values);
+  return {data:true};
+ }));
  app.post('/api/v1/fiscal/inbound/seen',scoped('fiscal',true,async(c,req)=>{
   const {id}=z.object({id:z.uuid()}).strict().parse(req.body),i=req.identity;
   await c.query(`INSERT INTO bansir.fiscal_inbound_seen(tenant_id,establishment_id,document_id,user_id)
@@ -34,7 +61,7 @@ export function mountFiscalMonitor(app,{scoped}){
  }));
  app.post('/api/v1/fiscal/inbound/:id/science',scoped('fiscal-manifest',false,async(c,req,member)=>{
   requirePermission(member,'fiscal',true);z.object({consent:z.literal(true)}).strict().parse(req.body);
-  const doc=(await c.query("SELECT id,monitor_id,access_key FROM bansir.fiscal_inbound WHERE id=$1 AND status<>'CANCELLED'",[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota indisponível para manifestação.','NOT_FOUND');
+  const doc=(await c.query(`SELECT id,monitor_id,access_key FROM bansir.fiscal_inbound d WHERE id=$1 AND status<>'CANCELLED' AND ${visible}`,[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota indisponível para manifestação. Confira se está oculta ou se o emitente foi bloqueado.','NOT_FOUND');
   const jobId=await enqueue(c,req.identity,{kind:'fiscal',key:'science:'+doc.id,payload:{action:'science',monitorId:doc.monitor_id,documentId:doc.id,userId:req.identity.userId},maxAttempts:5});return {status:202,data:{jobId}};
  }));
  app.get('/api/v1/fiscal/inbound/:id/science',scoped('fiscal-manifest',true,async(c,req,member)=>{
@@ -54,7 +81,19 @@ export function mountFiscalMonitor(app,{scoped}){
   return {status:201,data:(await c.query(`INSERT INTO bansir.fiscal_monitors(tenant_id,establishment_id,cnpj,uf,environment) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,establishment_id,cnpj,environment) DO UPDATE SET active=true,uf=EXCLUDED.uf RETURNING *`,[i.tenantId,i.establishmentId,cert.cnpj,input.uf,input.environment])).rows[0]};
  }));
  app.patch('/api/v1/fiscal/monitor/:id',scoped('settings',false,async(c,req)=>{const {active}=z.object({active:z.boolean()}).strict().parse(req.body);const row=(await c.query('UPDATE bansir.fiscal_monitors SET active=$2 WHERE id=$1 RETURNING *',[z.uuid().parse(req.params.id),active])).rows[0];if(!row)throw httpError(404,'Monitor não encontrado.','NOT_FOUND');return {data:row};}));
- app.get('/api/v1/fiscal/inbound',scoped('fiscal',true,async(c,req)=>{const page=z.coerce.number().int().min(0).max(100000).default(0).parse(req.query.page);return {data:(await c.query(`SELECT (${unseen}) AS unseen,id,monitor_id,access_key,supplier_name,supplier_cnpj,number,issued_at,total_cents,status,items,science_status,science_at,coalesce(encrypted_xml<>'',false) AS xml_available,EXISTS(SELECT 1 FROM bansir.fiscal_stock_receipts r WHERE r.access_key=d.access_key) AS stock_received,created_at FROM bansir.fiscal_inbound d ORDER BY created_at DESC,id LIMIT 30 OFFSET $1`,[page*30])).rows,meta:{total:(await c.query('SELECT count(*)::int AS n FROM bansir.fiscal_inbound')).rows[0].n}};}));
+ app.get('/api/v1/fiscal/inbound',scoped('fiscal',true,async(c,req,member)=>{
+  const {page,view,supplier}=z.object({page:z.coerce.number().int().min(0).max(100000).default(0),
+   view:z.enum(['active','hidden','blocked','suppliers','supplier-queue']).default('active'),supplier:z.string().regex(/^\d{14}$/).optional()}).parse(req.query);
+  if(view==='suppliers'||view==='supplier-queue')requirePermission(member,'suppliers',true);
+  const filter={active:`(${visible} AND NOT ${registered})`,hidden,blocked,suppliers:`(${visible} AND ${registered})`,
+   'supplier-queue':`(${visible} AND ${registered} AND ${pendingReceipt})`}[view];
+  const where=`WHERE ${filter} AND ($1::text IS NULL OR d.supplier_cnpj=$1)`;
+  return {data:(await c.query(`SELECT (${unseen} AND ${visible}) AS unseen,${registered} AS supplier_registered,
+   ${hidden} AS hidden,${blocked} AS blocked,id,monitor_id,access_key,supplier_name,supplier_cnpj,number,issued_at,total_cents,status,items,science_status,science_at,
+   coalesce(encrypted_xml<>'',false) AS xml_available,EXISTS(SELECT 1 FROM bansir.fiscal_stock_receipts r WHERE r.access_key=d.access_key) AS stock_received,created_at
+   FROM bansir.fiscal_inbound d ${where} ORDER BY created_at DESC,id LIMIT 30 OFFSET $2`,[supplier??null,page*30])).rows,
+   meta:{total:(await c.query(`SELECT count(*)::int AS n FROM bansir.fiscal_inbound d ${where}`,[supplier??null])).rows[0].n}};
+ }));
  app.get('/api/v1/fiscal/inbound/:id/xml',scoped('fiscal',true,async(c,req)=>{
   const doc=(await c.query('SELECT id,access_key,encrypted_xml FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0];if(!doc)throw httpError(404,'Nota não encontrada.','NOT_FOUND');if(!doc.encrypted_xml)throw httpError(409,'A SEFAZ disponibilizou apenas o resumo. O XML completo ainda não está disponível.','XML_NOT_AVAILABLE');
   return {data:{filename:doc.access_key+'.xml',xml:unseal(doc.encrypted_xml,secretContext(req.identity,'inbound:'+doc.access_key))}};
@@ -100,7 +139,15 @@ export async function processInbound(queue,job,{wizard}={}){
     const state=prior?.status==='CANCELLED'?'CANCELLED':doc.status,xml=doc.xml?seal(doc.xml,secretContext(scope,'inbound:'+doc.accessKey)):null;
     await c.query(`INSERT INTO bansir.fiscal_inbound(tenant_id,establishment_id,monitor_id,access_key,supplier_cnpj,supplier_name,number,issued_at,total_cents,status,items,encrypted_xml) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT(tenant_id,establishment_id,monitor_id,access_key) DO UPDATE SET supplier_cnpj=coalesce(EXCLUDED.supplier_cnpj,bansir.fiscal_inbound.supplier_cnpj),supplier_name=coalesce(EXCLUDED.supplier_name,bansir.fiscal_inbound.supplier_name),number=coalesce(EXCLUDED.number,bansir.fiscal_inbound.number),issued_at=coalesce(EXCLUDED.issued_at,bansir.fiscal_inbound.issued_at),total_cents=coalesce(EXCLUDED.total_cents,bansir.fiscal_inbound.total_cents),status=CASE WHEN bansir.fiscal_inbound.status='CANCELLED' THEN 'CANCELLED' WHEN EXCLUDED.status='SUMMARY' AND bansir.fiscal_inbound.encrypted_xml IS NOT NULL THEN 'AVAILABLE' ELSE EXCLUDED.status END,items=CASE WHEN EXCLUDED.encrypted_xml IS NOT NULL THEN EXCLUDED.items ELSE bansir.fiscal_inbound.items END,encrypted_xml=coalesce(EXCLUDED.encrypted_xml,bansir.fiscal_inbound.encrypted_xml),updated_at=now()`,[job.tenant_id,job.establishment_id,monitor.id,doc.accessKey,doc.supplierCnpj||null,doc.supplierName||null,doc.number||null,doc.issuedAt||null,doc.totalCents??null,state,JSON.stringify(doc.items),xml]);
-    if(!prior||prior.status!==state||(!prior.encrypted_xml&&xml))await c.query('SELECT bansir.notify_fiscal($1,$2,$3)',[`inbound:${monitor.id}:${doc.accessKey}:${state}`,state==='CANCELLED'?'NF-e de fornecedor cancelada':'Nova nota de fornecedor',state==='CANCELLED'?'Uma nota foi cancelada. Confira o documento e os registros da loja.':'Uma nota está disponível para conferência. Abra Minha empresa → Fiscal para conferir os produtos recebidos.']);
+    if(!prior||prior.status!==state||(!prior.encrypted_xml&&xml))await c.query(`WITH destination AS (
+      SELECT EXISTS(SELECT 1 FROM bansir.suppliers p WHERE (p.tenant_id,p.establishment_id)=($4,$5)
+       AND p.active AND p.data->>'document'=$7) AS registered
+     ) SELECT bansir.notify_fiscal($1,CASE WHEN registered THEN $8::text ELSE $2::text END,
+      $3::text||CASE WHEN registered THEN ' Abra Fornecedores → Notas fiscais recebidas.' ELSE ' Abra Minha empresa → Fiscal.' END)
+     FROM destination
+     WHERE NOT EXISTS(SELECT 1 FROM bansir.fiscal_inbound_rules r
+      WHERE (r.tenant_id,r.establishment_id)=($4,$5) AND ((r.kind='hidden' AND r.target=$6) OR (r.kind='blocked' AND r.target=$7)))`,
+     [`inbound:${monitor.id}:${doc.accessKey}:${state}`,state==='CANCELLED'?'NF-e de fornecedor cancelada':'Nova nota de fornecedor',state==='CANCELLED'?'Uma nota foi cancelada. Confira o documento e os registros da loja.':'Uma nota está disponível para conferência.',job.tenant_id,job.establishment_id,doc.accessKey,doc.supplierCnpj,state==='CANCELLED'?'NF-e de fornecedor cadastrado cancelada':'Nova nota de fornecedor cadastrado']);
    }
    await c.query('UPDATE bansir.fiscal_monitors SET ult_nsu=$2,max_nsu=$3,last_status=$4,last_polled_at=now(),next_poll_at=$5 WHERE id=$1',[monitor.id,result.ultNSU,result.maxNSU,result.status,nextPoll(result)]);
   });

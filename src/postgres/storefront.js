@@ -11,7 +11,7 @@ import rateLimit from 'express-rate-limit';
 import {randomBytes,createHash} from 'node:crypto';
 import {httpError} from './database.js';
 import {fiscalDraftHash} from './fiscal.js';
-import {normalizePhone} from './phone.js';
+import {normalizePhone,customersForPhone} from './phone.js';
 import {createCustomer} from './customers.js';
 import {registerSale,saleView} from './sales.js';
 import {pricingDay,productQuote,basketShipping,storeTimeZones} from './product-pricing.js';
@@ -26,6 +26,30 @@ export const storefrontConfig=z.object({deliveryRadiusKm:z.number().finite().min
  .refine(d=>d.allowPickup||d.shippingMode==='fixed'||d.zones.length>0,'Habilite retirada ou cadastre uma região de entrega.');
 export const defaultStorefront={name:'Ultragas',headline:'Seu gás e sua água, sem complicação.',description:'Escolha seus produtos e envie seu pedido para a loja.',contactPhone:'',primaryColor:'#125bea',backgroundColor:'#f5f8ff',style:'modern',logoUrl:'',productIds:[],productImages:{},shippingMode:'regions',fixedShippingCents:0,allowPickup:true,acceptingOrders:true,zones:[],notices:[{title:'Entrega combinada com você',body:'A loja confirma disponibilidade e entrega após receber o pedido.',tone:'info'}]};
 const tokenHash=token=>createHash('sha256').update(token).digest('hex');
+const escapeXml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+let sitemapCache={xml:'',expiresAt:0,pending:null};
+export function clearStorefrontSitemapCache(){sitemapCache={xml:'',expiresAt:0,pending:null};}
+export async function publicStorefrontSitemap(database,{baseUrl='https://gas.bansir.com.br'}={}){
+ const c=await database.pool.connect();let discard;
+ try{
+  await c.query('BEGIN READ ONLY');await c.query('SET LOCAL ROLE bansir_storefront');
+  const rows=(await c.query('SELECT tenant_id,slug,updated_at FROM bansir.storefronts WHERE enabled ORDER BY slug LIMIT 5000')).rows;
+  const tenants=new Map();
+  for(const r of rows)if(!tenants.has(r.tenant_id)){
+   await c.query("SELECT set_config('app.tenant_id',$1,true)",[r.tenant_id]);
+   tenants.set(r.tenant_id,(await c.query('SELECT bansir.tenant_features() AS f')).rows[0]?.f?.orderLink===true);
+  }
+  await c.query('COMMIT');
+  const origin=String(baseUrl||'https://gas.bansir.com.br').replace(/\/+$/,'');
+  const urls=rows.filter(r=>tenants.get(r.tenant_id)&&slugInput.safeParse(r.slug).success).map(r=>{
+   const loc=escapeXml(`${origin}/pedir/${encodeURIComponent(r.slug)}`);
+   const date=r.updated_at?new Date(r.updated_at).toISOString().slice(0,10):'';
+   const lastmod=/^\d{4}-\d{2}-\d{2}$/.test(date)?`\n    <lastmod>${escapeXml(date)}</lastmod>`:'';
+   return `  <url>\n    <loc>${loc}</loc>${lastmod}\n    <changefreq>daily</changefreq>\n    <priority>0.9</priority>\n  </url>`;
+  });
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}${urls.length?'\n':''}</urlset>\n`;
+ }catch(e){try{await c.query('ROLLBACK');}catch(rollback){discard=rollback;}throw e;}finally{c.release(discard);}
+}
 export async function publicStorefront(database,slug,checkoutHash,fn){
  const c=await database.pool.connect();let discard;
  try{
@@ -42,9 +66,20 @@ const checkoutToken=req=>{const value=req.get('X-Checkout-Token')||'';if(!/^[a-f
 const publicOrderInput=z.object({requestKey:z.uuid(),customerName:text.min(2).max(200),preferredPayment:z.enum(['cash','pix','credit_card','debit_card']).optional(),deliveryLocation:deliveryLocation.optional(),deliveryAddress:text.max(1000).default(''),fulfillment:z.enum(['pickup','delivery']),zoneId:text.max(60).default(''),expectedShippingCents:money,items:z.array(z.object({productId:z.uuid(),quantity:z.number().int().min(1).max(100),expectedUnitPriceCents:money.refine(n=>n>0)}).strict()).min(1).max(50)}).strict();
 
 export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),imageStorage,geocoder=createDeliveryGeocoder()}){
+ const sitemapLimit=rateLimit({windowMs:60000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
  const reads=rateLimit({windowMs:60000,limit:120,standardHeaders:'draft-7',legacyHeaders:false});
  const starts=rateLimit({windowMs:3600000,limit:20,standardHeaders:'draft-7',legacyHeaders:false});
  const writes=rateLimit({windowMs:900000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
+ app.get('/api/v1/public/stores/sitemap.xml',sitemapLimit,async(_req,res,next)=>{
+  try{
+   const now=clock().getTime();
+   if(!sitemapCache.xml||now>=sitemapCache.expiresAt){
+    if(!sitemapCache.pending)sitemapCache.pending=publicStorefrontSitemap(database).then(xml=>{sitemapCache={xml,expiresAt:clock().getTime()+60000,pending:null};return xml;}).catch(err=>{sitemapCache.pending=null;throw err;});
+    await sitemapCache.pending;
+   }
+   res.set({'Content-Type':'application/xml; charset=utf-8','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'",'X-Robots-Tag':'noindex'}).status(200).send(sitemapCache.xml);
+  }catch(e){next(e);}
+ });
  app.get('/api/v1/public/stores/:slug/products/:id/image',reads,async(req,res,next)=>{
   try{const result=await publicStorefront(database,req.params.slug,null,async(c,store)=>{
    const id=z.uuid().parse(req.params.id);
@@ -95,8 +130,8 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),i
    const items=data.items.map(i=>{const p=products.find(p=>p.id===i.productId);if(!p||p.stock<i.quantity)throw httpError(409,'Um produto não possui a quantidade disponível.','STOCK_UNAVAILABLE');const quote=productQuote(p,day);if(data.fulfillment==='delivery'&&!quote.allowDelivery)throw httpError(409,'Gás do Povo disponível somente para retirada na loja. Remova o produto ou escolha retirada.','PROGRAM_PICKUP_ONLY');const price=data.fulfillment==='delivery'?quote.deliveryCents:quote.pickupCents;if(price!==i.expectedUnitPriceCents)throw httpError(409,'O preço foi atualizado. Recarregue os produtos antes de confirmar.','PRICE_CHANGED');return {productId:p.id,name:p.name,quantity:i.quantity,priceCents:price,deliveryFeePerUnitCents:quote.deliveryFeePerUnitCents,deliveryIncluded:data.fulfillment==='delivery'&&quote.deliveryIncluded,gasDoPovo:quote.gasDoPovo};});
    const shipping=basketShipping(items,data.fulfillment,normalShipping);if(shipping!==data.expectedShippingCents)throw httpError(409,'O frete foi atualizado. Confira o pedido novamente.','SHIPPING_CHANGED');
    const subtotal=items.reduce((n,i)=>n+i.quantity*i.priceCents,0),total=subtotal+shipping;if(total>1000000000)throw httpError(400,'Valor do pedido acima do limite.','INVALID_TOTAL');
-   const row=(await c.query(`INSERT INTO bansir.storefront_orders(tenant_id,establishment_id,checkout_session_id,request_key,request_hash,customer_name,delivery_address,fulfillment,zone_id,items,subtotal_cents,shipping_cents,total_cents,pricing_context,delivery_location,preferred_payment)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id,status,total_cents`,[store.tenant_id,store.establishment_id,session.id,data.requestKey,fingerprint,data.customerName,data.deliveryAddress,data.fulfillment,data.zoneId,JSON.stringify(items),subtotal,shipping,total,day,data.deliveryLocation||null,data.preferredPayment||null])).rows[0];
+   const row=(await c.query(`INSERT INTO bansir.storefront_orders(tenant_id,establishment_id,checkout_session_id,request_key,request_hash,customer_name,delivery_address,fulfillment,zone_id,items,subtotal_cents,shipping_cents,total_cents,pricing_context,delivery_location,preferred_payment,requested_payment)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id,status,total_cents`,[store.tenant_id,store.establishment_id,session.id,data.requestKey,fingerprint,data.customerName,data.deliveryAddress,data.fulfillment,data.zoneId,JSON.stringify(items),subtotal,shipping,total,day,data.deliveryLocation||null,data.preferredPayment||null,data.preferredPayment||'arrange'])).rows[0];
    return {id:row.id,status:row.status,totalCents:Number(row.total_cents)};
   })};
  }));
@@ -126,7 +161,7 @@ export function mountStorefrontAdmin(app,{scoped}){
   const count=(await c.query('SELECT id FROM bansir.products WHERE active AND id=ANY($1::uuid[])',[data.config.productIds])).rowCount;if(count!==data.config.productIds.length)throw httpError(400,'Selecione apenas produtos ativos deste estabelecimento.','INVALID_PRODUCTS');
   if(data.enabled&&!data.config.productIds.length)throw httpError(400,'Escolha os produtos antes de ativar o link.','EMPTY_CATALOG');
   if(previous)await c.query('UPDATE bansir.storefronts SET slug=$3,enabled=$4,config=$5,updated_at=now() WHERE tenant_id=$1 AND establishment_id=$2',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);
-  else await c.query('INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,$3,$4,$5)',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);return {data};
+  else await c.query('INSERT INTO bansir.storefronts(tenant_id,establishment_id,slug,enabled,config) VALUES($1,$2,$3,$4,$5)',[i.tenantId,i.establishmentId,data.slug,data.enabled,data.config]);clearStorefrontSitemapCache();return {data};
  }));
  app.get('/api/v1/storefront/conversations',scoped('sales',true,async(c,req)=>{
   const page=z.coerce.number().int().min(0).max(10000).default(0).parse(req.query.page),search=z.string().max(200).default('').parse(req.query.search);
@@ -167,8 +202,52 @@ export function mountStorefrontAdmin(app,{scoped}){
    AND created_at>=${ordersSince('$3')}`;
   const total=(await c.query(`SELECT count(*)::int AS total FROM bansir.storefront_orders WHERE ${where}`,[q.status,q.search,q.period])).rows[0].total;
   const stats=(await c.query(`SELECT count(*)::int AS total,count(*) FILTER(WHERE status='new')::int AS pending,count(*) FILTER(WHERE status='accepted')::int AS accepted,count(*) FILTER(WHERE status IN('rejected','cancelled'))::int AS closed,(SELECT jsonb_build_object('id',o.id,'createdAt',to_char(o.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) FROM bansir.storefront_orders o WHERE o.status='new' AND o.created_at>=${ordersSince('$1')} ORDER BY o.created_at DESC,o.id DESC LIMIT 1) AS latest_pending FROM bansir.storefront_orders WHERE created_at>=${ordersSince('$1')}`,[q.period])).rows[0];
-  const rows=(await c.query(`SELECT *, (SELECT t.status FROM bansir.delivery_tasks t WHERE t.sale_id=storefront_orders.sale_id) AS delivery_status, (SELECT jsonb_build_object('name',u.name,'source',e.action,'confirmedAt',e.created_at) FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id WHERE e.sale_id=storefront_orders.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS delivery_confirmation FROM bansir.storefront_orders WHERE ${where} ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC,id LIMIT $4 OFFSET $5`,[q.status,q.search,q.period,q.pageSize,q.page*q.pageSize])).rows;
+  const rows=(await c.query(`SELECT *, (SELECT t.status FROM bansir.delivery_tasks t WHERE t.sale_id=storefront_orders.sale_id) AS delivery_status, (SELECT jsonb_build_object('name',u.name,'source',e.action,'confirmedAt',e.created_at,'reportedPayment',e.reported_payment) FROM bansir.delivery_events e JOIN bansir.users u ON u.id=e.user_id WHERE e.sale_id=storefront_orders.sale_id AND e.action IN('complete','complete_pdv') ORDER BY e.created_at DESC LIMIT 1) AS delivery_confirmation FROM bansir.storefront_orders WHERE ${where} ORDER BY (status='new') DESC,CASE WHEN status='new' THEN created_at END ASC,created_at DESC,id LIMIT $4 OFFSET $5`,[q.status,q.search,q.period,q.pageSize,q.page*q.pageSize])).rows;
   return {data:rows.map(o=>({...o,subtotal_cents:Number(o.subtotal_cents),shipping_cents:Number(o.shipping_cents),total_cents:Number(o.total_cents)})),meta:{total,stats,page:q.page,pageSize:q.pageSize}};
+ }));
+ app.get('/api/v1/storefront/orders/:id/customer-agreement',scoped('sales',true,async(c,req)=>{
+  const id=z.uuid().parse(req.params.id);
+  const order=(await c.query('SELECT id,phone,customer_name,customer_id,delivery_address FROM bansir.storefront_orders WHERE id=$1',[id])).rows[0];
+  if(!order)throw httpError(404,'Pedido não encontrado.','NOT_FOUND');
+  let customer=null;
+  if(order.customer_id){
+   customer=(await c.query('SELECT id,name,phone,document,address FROM bansir.customers WHERE id=$1',[order.customer_id])).rows[0]||null;
+  }
+  if(!customer&&order.phone){
+   const found=await customersForPhone(c,order.phone);
+   customer=found[0]||null;
+  }
+  let agreement=null;
+  if(customer){
+   agreement=await customerAgreement(c,customer.id);
+  }
+  return {
+   data:{
+    hasCustomer:!!customer,
+    customer:customer?{id:customer.id,name:customer.name,phone:customer.phone,document:customer.document}:null,
+    orderCustomer:{name:order.customer_name,phone:order.phone,address:order.delivery_address},
+    agreement:agreement?{
+     id:agreement.id,
+     name:agreement.name,
+     payerName:agreement.payer_name,
+     active:agreement.active,
+     cutDay:agreement.cut_day,
+     dueDay:agreement.due_day
+    }:null
+   }
+  };
+ }));
+ app.post('/api/v1/storefront/orders/:id/ensure-customer',scoped('sales',false,async(c,req)=>{
+  const id=z.uuid().parse(req.params.id);
+  const order=(await c.query('SELECT id,phone,customer_name,customer_id,delivery_address FROM bansir.storefront_orders WHERE id=$1',[id])).rows[0];
+  if(!order)throw httpError(404,'Pedido não encontrado.','NOT_FOUND');
+  const customer=await createCustomer(c,req.identity,{
+   name:order.customer_name,
+   phone:order.phone,
+   document:'',
+   address:order.delivery_address
+  },{useExisting:true});
+  return {status:201,data:customer};
  }));
  app.post('/api/v1/storefront/orders/:id/accept',scoped('sales',false,async(c,req,member)=>{
   const input=z.object({customerConfirmed:z.literal(true),deliveryEmployeeId:z.uuid().optional(),routePlan:routePlanInput.optional(),preferredPayment:z.enum(['cash','pix','credit_card','debit_card']).nullable().optional(),useAgreement:z.boolean().optional(),agreementId:z.uuid().optional()}).strict().parse(req.body),id=z.uuid().parse(req.params.id),i=req.identity;

@@ -42,10 +42,12 @@ export async function checkAgreementCredit(c,a,total){
 }
 export async function attachAgreement(c,i,sale,a){
  if(!a)return;
- const {rows:[balance]}=await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1 AND ($2::uuid IS NULL OR l.customer_id=$2)) balances`,[a.id,a.individual_balance?a.customer_id:null]);
- const previousCents=Number(balance.cents),entryCents=Number(sale.total_cents);
+ // Both positions are stored so the receipt can show the participant, the group, both or neither.
+ const {rows:[balance]}=await c.query(`SELECT coalesce(sum(outstanding_cents),0) AS group_cents,coalesce(sum(outstanding_cents) FILTER(WHERE customer_id=$2),0) AS individual_cents FROM (${agreementBalancesSql} WHERE l.agreement_id=$1) balances`,[a.id,a.customer_id]);
+ const entryCents=Number(sale.total_cents),groupPrevious=Number(balance.group_cents),individualPrevious=Number(balance.individual_cents);
+ const previousCents=a.individual_balance?individualPrevious:groupPrevious;
  await c.query(`INSERT INTO bansir.sale_agreements(tenant_id,establishment_id,sale_id,agreement_id,customer_id,period_end,due_date,snapshot)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents,balanceAtEntry:{scope:a.individual_balance?'individual':'group',visible:a.show_receipt_balance!==false,previousCents,entryCents,totalCents:previousCents+entryCents}}]);}
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[i.tenantId,i.establishmentId,sale.id,a.id,a.customer_id,a.periodEnd,a.dueDate,{name:a.name,payerName:a.payer_name,payerDocument:a.payer_document,payerCustomerId:a.payer_customer_id,cutDay:a.cut_day,dueDay:a.due_day,limitCents:a.limit_cents,balanceAtEntry:{scope:a.individual_balance?'individual':'group',visible:a.show_receipt_individual_balance===true||a.show_receipt_group_balance===true,previousCents,entryCents,totalCents:previousCents+entryCents,individual:{previousCents:individualPrevious,totalCents:individualPrevious+entryCents},group:{previousCents:groupPrevious,totalCents:groupPrevious+entryCents}}}]);}
 
 export async function nextAgreementTerms(c,a,today){
  let terms=agreementTerms(today,a.cut_day,a.due_day);
@@ -54,4 +56,17 @@ export async function nextAgreementTerms(c,a,today){
   const next=new Date(terms.periodEnd+'T00:00:00Z');next.setUTCDate(next.getUTCDate()+1);terms=agreementTerms(iso(next),a.cut_day,a.due_day);
  }
  return terms;
+}
+
+// Which balances a receipt shows. Sales saved before both positions were recorded fall back to the current balance.
+export function receiptBalancePlan(agreement){
+ const snap=agreement?.snapshot?.balanceAtEntry||null;
+ const position=scope=>{
+  if(!snap)return null;const p=snap[scope];
+  if(p&&Number.isFinite(p.previousCents))return {previousCents:p.previousCents,totalCents:p.totalCents};
+  if(snap.scope===scope&&Number.isFinite(snap.previousCents))return {previousCents:snap.previousCents,totalCents:snap.totalCents};
+  return null;
+ };
+ const scopes=[['individual',agreement?.showIndividualBalance],['group',agreement?.showGroupBalance]].filter(x=>x[1]).map(x=>x[0]);
+ return {entryCents:snap?Number(snap.entryCents):null,items:scopes.map(scope=>({scope,position:position(scope)}))};
 }

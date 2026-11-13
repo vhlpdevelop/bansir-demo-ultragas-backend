@@ -2,6 +2,7 @@
 export function calculatePricing({ taxRate, variableRate, commissionRate, fixedExpenseRate, desiredProfitMargin, creditCardTermRate, cost = 0 }) {
   const values = [taxRate, variableRate, commissionRate, fixedExpenseRate, desiredProfitMargin, creditCardTermRate, cost];
   const errors = [];
+  const warnings = [];
   if (values.some(v => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
     errors.push('Custos e percentuais devem ser números não negativos.');
   }
@@ -19,22 +20,20 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
   const safeTermRate = creditCardTermRate || 0;
   const maxSafeTotal = Math.max(50, 92 - safeTermRate);
 
-  // Inteligência de Rateio para Varejo de Gás e Água (Ultragas):
-  // Em distribuição de gás, o custo fixo de estrutura alocado diretamente a cada unidade
-  // não pode exceder uma cota viável de mercado (8% a 10%), evitando que uma baixa previsão
-  // de receita mensal exploda o preço unitário do botijão.
-  // Se a taxa for nominal <= 18%, mantém a taxa informada para respeitar o modelo tradicional e os testes.
-  // Se a taxa bruta for desproporcional (> 18%, ex: receita de R$ 10.000 gerando rateio de 146%),
-  // normaliza para a cota máxima sustentável de varejo (8.5%).
+  // Rateio Real baseado nas despesas fixas e receita prevista da revenda:
+  // Utiliza a taxa real de despesas fixas informada pela empresa, garantindo que
+  // todo o custo de estrutura seja coberto pelo preço sugerido.
+  // Somente limita a taxa se a soma total de deduções inviabilizar matematicamente
+  // a formação de preço (quando custos fixos + variáveis + margem excederem a capacidade viável da margem divisor).
   let effectiveFixedExpenseRate = fixedExpenseRate;
   let isRateioAdjusted = false;
 
-  if (fixedExpenseRate > 18.0) {
-    effectiveFixedExpenseRate = 8.5;
-    isRateioAdjusted = true;
-  } else if (baseDeductions + fixedExpenseRate >= maxSafeTotal) {
+  if (baseDeductions + fixedExpenseRate >= maxSafeTotal) {
     effectiveFixedExpenseRate = Math.max(5.0, maxSafeTotal - baseDeductions);
     isRateioAdjusted = true;
+    warnings.push('As despesas fixas da revenda ultrapassam o teto viável por unidade. O rateio foi limitado a ' + effectiveFixedExpenseRate.toFixed(1) + '% para manter a viabilidade matemática.');
+  } else if (fixedExpenseRate > 25.0) {
+    warnings.push('A taxa de custos fixos está elevada (' + fixedExpenseRate.toFixed(1) + '% da receita). Preço calculado com a taxa real para cobertura integral.');
   }
 
   const totalT = variableTotal + effectiveFixedExpenseRate + desiredProfitMargin;
@@ -50,6 +49,7 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
     return {
       valid: false,
       errors,
+      warnings,
       totalT,
       markupDivisor: 0,
       markupMultiplier: 0,
@@ -73,6 +73,7 @@ export function calculatePricing({ taxRate, variableRate, commissionRate, fixedE
   return {
     valid: true,
     errors,
+    warnings,
     totalT,
     markupDivisor,
     markupMultiplier,

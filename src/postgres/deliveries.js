@@ -1,4 +1,5 @@
-import {routePlanInput,routeUnitLock,applySuggestedInsertion} from './delivery-route-state.js';
+import {routePlanInput,routeUnitLock,applySuggestedInsertion,activeTasks} from './delivery-route-state.js';
+import {orderedStops,routeRevision} from './delivery-planner.js';
 import {mountDeliveryRouting} from './delivery-routing-routes.js';
 import {createDeliveryRouter} from './delivery-router.js';
 import {z} from 'zod';
@@ -43,7 +44,11 @@ async function tasks(c,{driverId,legacy=false,mode='all',zone='America/Cuiaba',f
  AND($5::date IS NULL OR(coalesce(t.delivered_at,t.updated_at) AT TIME ZONE $4)::date >= $5)
  AND($6::date IS NULL OR(coalesce(t.delivered_at,t.updated_at) AT TIME ZONE $4)::date <= $6))`;
  const params=[driverId||null,legacy,mode,zone,from,to,status];
- const rows=(await c.query(`SELECT t.*,s.customer_name,s.customer_phone,d.name AS driver_name,
+ const rows=(await c.query(`SELECT t.*,s.customer_name,s.customer_phone,s.coupon_number,d.name AS driver_name,
+ (SELECT o.preferred_payment FROM bansir.storefront_orders o WHERE o.sale_id=t.sale_id LIMIT 1) AS preferred_payment,
+ (SELECT e.reported_payment FROM bansir.delivery_events e WHERE e.sale_id=t.sale_id AND e.action='complete' ORDER BY e.created_at DESC LIMIT 1) AS reported_payment,
+ EXISTS(SELECT 1 FROM bansir.sale_agreements a WHERE a.sale_id=t.sale_id) AS is_agreement,
+ (s.total_cents-coalesce((SELECT sum(p.amount_cents) FROM bansir.active_sale_payments p WHERE p.sale_id=t.sale_id),0))::int AS outstanding_cents,
  coalesce((SELECT jsonb_agg(jsonb_build_object('name',product_name,'quantity',quantity) ORDER BY position) FROM bansir.sale_items WHERE sale_id=t.sale_id),'[]') AS items
  FROM bansir.delivery_tasks t JOIN bansir.sales s ON s.id=t.sale_id LEFT JOIN bansir.deliverers d ON d.id=t.driver_id WHERE ${filter}
  ORDER BY CASE WHEN $3='active' THEN CASE WHEN t.status='en_route' THEN 0 WHEN t.status='assigned' THEN 1 ELSE 2 END END,CASE WHEN $3='active' THEN t.route_order END,CASE WHEN $3='all' AND t.status IN('pending','assigned','en_route','failed') THEN 0 ELSE 1 END,
@@ -65,7 +70,7 @@ async function prior(c,i,key,payload){
  const row=(await c.query('SELECT request_hash FROM bansir.delivery_events WHERE request_key=$1',[key])).rows[0];
  if(row&&row.request_hash!==hash({...payload,userId:i.userId}))fail('Esta tentativa já foi usada com outros dados.','IDEMPOTENCY_CONFLICT');return !!row;
 }
-const audit=(c,i,key,payload,saleId)=>c.query('INSERT INTO bansir.delivery_events(tenant_id,establishment_id,sale_id,user_id,request_key,request_hash,action,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[i.tenantId,i.establishmentId,saleId,i.userId,key,hash({...payload,userId:i.userId}),payload.action,payload.reason||'']);
+const audit=(c,i,key,payload,saleId)=>c.query('INSERT INTO bansir.delivery_events(tenant_id,establishment_id,sale_id,user_id,request_key,request_hash,action,reason,reported_payment) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[i.tenantId,i.establishmentId,saleId,i.userId,key,hash({...payload,userId:i.userId}),payload.action,payload.reason||'',payload.reportedPayment??null]);
 export function mountDeliveries(app,{database,route,deliveryRouter}){
  const router=deliveryRouter||createDeliveryRouter();database.onClose(()=>router.close());
  mountDeliveryRouting(app,{database,route,drivers,ownDriver,router});
@@ -130,6 +135,24 @@ export function mountDeliveries(app,{database,route,deliveryRouter}){
   if(w.captured_at&&new Date(b.capturedAt)<new Date(w.captured_at))return {data:{accepted:false,sequence:w.sequence}};
   await c.query(`UPDATE bansir.driver_work SET latitude=$2,longitude=$3,accuracy=$4,captured_at=$5,received_at=now(),sequence=$6,point_hash=$7,gps_state='ok',updated_at=now() WHERE driver_id=$1`,[d.id,b.latitude,b.longitude,b.accuracy,b.capturedAt,b.sequence,fingerprint]);return {data:{accepted:true,sequence:b.sequence}};
  }));
+ app.get('/api/v1/deliveries/drivers/:id/stops',manager(async(c,r)=>{
+  const id=uuid.parse(r.params.id),stops=orderedStops(await activeTasks(c,id),id);
+  return {data:{revision:routeRevision(stops),stops:stops.map(t=>({id:t.sale_id,address:t.address,status:t.status}))}};
+ }));
+ app.put('/api/v1/deliveries/drivers/:id/stops',manager(async(c,r)=>{
+  const id=uuid.parse(r.params.id);
+  const {revision,ids}=z.object({revision:z.string().regex(/^[a-f0-9]{64}$/),ids:z.array(uuid).min(1).max(2000)}).strict().parse(r.body);
+  await routeUnitLock(c,r.identity);
+  const stops=orderedStops(await activeTasks(c,id),id);
+  const current=new Set(stops.map(t=>t.sale_id));
+  if(revision!==routeRevision(stops)||ids.length!==stops.length||new Set(ids).size!==ids.length||ids.some(saleId=>!current.has(saleId))||
+    stops.some((t,index)=>t.status==='en_route'&&t.sale_id!==ids[index])){
+   fail('As paradas mudaram ou uma entrega já está em rota. Atualize a lista.','STALE_ROUTE');
+  }
+  await c.query(`UPDATE bansir.delivery_tasks t SET route_order=x.n::int,version=version+1,updated_at=now()
+   FROM unnest($1::uuid[]) WITH ORDINALITY AS x(id,n) WHERE t.sale_id=x.id AND t.route_order IS DISTINCT FROM x.n::int`,[ids]);
+  return {data:true};
+ }));
  app.post('/api/v1/deliveries/tasks/:id/assign',manager(async(c,r)=>{
   const b=z.object({requestKey:uuid,driverId:uuid,version:z.number().int().min(1),reason:text.default(''),routePlan:routePlanInput.optional()}).strict().parse(r.body),i=r.identity,payload={...b,action:'assign',saleId:r.params.id};
   await routeUnitLock(c,r.identity);const t=await lockedTask(c,r.params.id);if(await prior(c,i,b.requestKey,payload))return {data:true};
@@ -147,7 +170,8 @@ export function mountDeliveries(app,{database,route,deliveryRouter}){
   await c.query('UPDATE bansir.delivery_tasks SET address=$2,latitude=$3,longitude=$4,accuracy=$5,destination_source=$6,version=version+1,updated_at=now() WHERE sale_id=$1',[t.sale_id,b.address,b.location?.latitude??null,b.location?.longitude??null,b.location?.accuracy??null,b.location?'confirmed':'address']);await audit(c,i,b.requestKey,payload,t.sale_id);return {data:true};
  }));
  app.post('/api/v1/deliveries/tasks/:id/actions',own(async(c,r,m)=>{
-  const b=z.object({requestKey:uuid,version:z.number().int().min(1),action:z.enum(['depart','complete','failed']),reason:text.default('')}).strict().parse(r.body),i=r.identity;
+  const b=z.object({requestKey:uuid,version:z.number().int().min(1),action:z.enum(['depart','complete','failed']),reason:text.default(''),reportedPayment:z.enum(['cash','pix','credit_card','debit_card','not_received']).optional()}).strict().parse(r.body),i=r.identity;
+  if(b.reportedPayment&&b.action!=='complete')fail('Informe o pagamento ao concluir a entrega.','INVALID_PAYMENT_REPORT',400);
   await routeUnitLock(c,r.identity);const t=await lockedTask(c,r.params.id);const d=driveDeliveries(m)?await ownDriver(c,i):null;
   if(!manageDeliveries(m)&&(!d||d.id!==t.driver_id))fail('Entrega não encontrada.','NOT_FOUND',404);
   const payload={...b,saleId:t.sale_id};if(await prior(c,i,b.requestKey,payload))return {data:true};

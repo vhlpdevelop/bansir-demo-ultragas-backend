@@ -4,6 +4,7 @@ import {httpError} from './database.js';
 import {fiscalDraftHash} from './fiscal.js';
 import {updateProduct} from './catalog.js';
 import {compute,validate} from './pricing-engine.js';
+import {saleView} from './sales.js';
 const admin=m=>['admin','superadmin'].includes(m.role);
 const deny=()=>{throw httpError(403,'Seu perfil não permite esta operação.','FORBIDDEN');};
 const manage=m=>{if(!admin(m))deny();};
@@ -13,12 +14,34 @@ const text=z.string().trim().max(200),uuid=z.uuid();
 const employeeInput=z.object({name:text.min(2),email:z.email().max(200),phone:text.default(''),pixKey:text.default(''),roleTitle:text.min(1),laborType:z.enum(['MOD','MOI']),baseSalary:money,commissionType:z.enum(['percentage','fixed']),commissionValue:money,userId:uuid.nullable().optional(),active:z.boolean().optional()}).strict().refine(d=>d.commissionType!=='percentage'||d.commissionValue<=100,'Comissão percentual não pode superar 100%.');
 const entryInput=z.object({requestKey:uuid,title:text.min(2),type:z.enum(['income','expense']),category:text.min(1),amount:money.refine(n=>n>0),paymentMethod:z.enum(['pix','cartao_credito','cartao_debito','dinheiro','transferencia','boleto','vale','outro']),notes:z.string().max(2000).default(''),brandName:text.optional(),sellerName:text.optional(),status:z.enum(['pending','completed']).default('pending'),date:z.iso.datetime({offset:true}).optional(),dueDate:z.iso.date().optional()}).strict();
 const viewEntry=r=>({...r,_id:r.id,amount:Number(r.amount_cents)/100,paymentMethod:r.payment_method,sellerName:r.seller_name,dueDate:r.due_date,settledAt:r.settled_at,source:'manual'});
+const gasLevel=(role,pts,count)=>{const isDelivery=/entregador|motorista/i.test(role||'');if(pts>=600||count>=50)return isDelivery?'Campeão das Rotas Diamante 💎':'Mestre do Gás Diamante 💎';if(pts>=300||count>=25)return isDelivery?'Mestre das Entregas Ouro 🥇':'Especialista Bansir Ouro 🏆';if(pts>=100||count>=10)return isDelivery?'Entregador Ágil Prata 🥈':'Vendedor Destaque Prata 🥈';return isDelivery?'Entregador Bronze 🛵':'Novato do Gás Bronze 🎯';};
 export async function employees(c){
- const rows=(await c.query(`SELECT e.*,coalesce(x.count,0) AS count,coalesce(x.total,0) AS total,coalesce(x.commission,0) AS commission FROM bansir.employees e LEFT JOIN LATERAL(
- SELECT count(*) AS count,sum(s.total_cents) AS total,sum(sc.amount_cents) AS commission FROM bansir.sale_commissions sc JOIN bansir.sales s ON s.id=sc.sale_id
- WHERE sc.employee_id=e.id AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id)
- AND s.total_cents=(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id))x ON true ORDER BY e.name`)).rows;
- return rows.map(e=>({_id:e.id,id:e.id,name:e.name,email:e.email,phone:e.phone,pixKey:e.pix_key,roleTitle:e.role_title,laborType:e.labor_type,baseSalary:Number(e.salary_cents)/100,commissionType:e.commission_type,commissionValue:Number(e.commission_value),userId:e.user_id,active:e.active,hiredAt:e.hired_at,totalSalesCount:Number(e.count),totalSalesAmount:Number(e.total)/100,totalCommissionsEarned:Number(e.commission)/100,gamificationPoints:Number(e.count)*10,badges:[],gamificationLevel:'Equipe Bansir'}));
+ const rows=(await c.query(`SELECT e.*,
+ coalesce(x.count,0) AS count,coalesce(x.total,0) AS total,coalesce(x.commission,0) AS commission,
+ coalesce(d.deliveries_count,0) AS deliveries_count,coalesce(d.deliveries_amount,0) AS deliveries_amount
+ FROM bansir.employees e 
+ LEFT JOIN LATERAL(
+  SELECT count(*) AS count,sum(s.total_cents) AS total,sum(sc.amount_cents) AS commission 
+  FROM bansir.sale_commissions sc JOIN bansir.sales s ON s.id=sc.sale_id
+  WHERE sc.employee_id=e.id AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id)
+  AND s.total_cents=(SELECT coalesce(sum(p.amount_cents),0) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id)
+ ) x ON true
+ LEFT JOIN LATERAL(
+  SELECT count(*) AS deliveries_count,coalesce(sum(s.total_cents),0) AS deliveries_amount
+  FROM bansir.delivery_tasks t 
+  JOIN bansir.deliverers del ON del.id=t.driver_id
+  JOIN bansir.sales s ON s.id=t.sale_id
+  WHERE (del.employee_id=e.id OR (e.user_id IS NOT NULL AND del.user_id=e.user_id))
+    AND t.status='delivered'
+    AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id)
+ ) d ON true
+ ORDER BY e.name`)).rows;
+ return rows.map(e=>{
+  const salesCount=Number(e.count),deliveriesCount=Number(e.deliveries_count),totalActivity=salesCount+deliveriesCount;
+  const salesTotal=Number(e.total)/100,deliveriesTotal=Number(e.deliveries_amount)/100,totalAmount=salesTotal+deliveriesTotal;
+  const points=totalActivity*10,level=gasLevel(e.role_title,points,totalActivity);
+  return {_id:e.id,id:e.id,name:e.name,email:e.email,phone:e.phone,pixKey:e.pix_key,roleTitle:e.role_title,laborType:e.labor_type,baseSalary:Number(e.salary_cents)/100,commissionType:e.commission_type,commissionValue:Number(e.commission_value),userId:e.user_id,active:e.active,hiredAt:e.hired_at,totalSalesCount:totalActivity,totalDeliveriesCount:deliveriesCount,directSalesCount:salesCount,totalSalesAmount:totalAmount,totalCommissionsEarned:Number(e.commission)/100,gamificationPoints:points,badges:[],gamificationLevel:level};
+ });
 }
 export async function financeEntries(c){
  const manual=(await c.query('SELECT * FROM bansir.financial_entries ORDER BY date DESC')).rows.map(viewEntry);
@@ -28,6 +51,28 @@ export async function financeEntries(c){
  const pending=(await c.query(`SELECT s.*,s.total_cents-coalesce((SELECT sum(p.amount_cents) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id),0) AS outstanding FROM bansir.sales s WHERE NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id)`)).rows.filter(s=>Number(s.outstanding)>0).map(s=>({_id:'sale:'+s.id,title:'Saldo venda '+s.id.slice(0,8),type:'income',category:'vendas',amount:Number(s.outstanding)/100,date:s.created_at,dueDate:s.due_date,status:'pending',sellerName:s.seller_name,source:'pdv',saleId:s.id}));
  const reversals=(await c.query('SELECT r.*,p.method,p.amount_cents,s.seller_name FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id JOIN bansir.sales s ON s.id=r.sale_id')).rows.map(r=>({_id:'revision:'+r.payment_id,title:'Revisão de pagamento '+r.sale_id.slice(0,8),type:'expense',category:'estorno',amount:Number(r.amount_cents)/100,paymentMethod:r.method,date:r.created_at,status:'completed',sellerName:r.seller_name,source:'pdv',saleId:r.sale_id}));
  return [...manual,...entries,...reversals,...pending].sort((a,b)=>new Date(b.date)-new Date(a.date));
+}
+// Paginated ledger: the same entries as financeEntries, filtered, ordered and paged by PostgreSQL.
+const ledgerSql=`SELECT '' AS _id,NULL::text AS id,'' AS title,'' AS type,'' AS category,0::bigint AS amount_cents,NULL::text AS payment_method,now() AS date,NULL::date AS due_date,'' AS status,'' AS seller_name,'' AS source,NULL::uuid AS sale_id,NULL::timestamptz AS settled_at WHERE false
+ UNION ALL SELECT e.id::text,e.id::text,e.title::text,e.type::text,e.category::text,e.amount_cents,e.payment_method::text,e.date,e.due_date,e.status::text,e.seller_name::text,'manual',NULL::uuid,e.settled_at FROM bansir.financial_entries e
+ UNION ALL SELECT 'payment:'||p.id::text,NULL,'Recebimento venda '||left(p.sale_id::text,8),'income','vendas',p.amount_cents,p.method::text,p.created_at,NULL::date,'completed',s.seller_name,'pdv',p.sale_id,NULL::timestamptz FROM bansir.sale_payments p JOIN bansir.sales s ON s.id=p.sale_id
+ UNION ALL SELECT 'refund:'||p.id::text,NULL,'Estorno '||left(p.sale_id::text,8),'expense','estorno',p.amount_cents,p.method::text,x.created_at,NULL::date,'completed',s.seller_name,'pdv',p.sale_id,NULL::timestamptz FROM bansir.sale_payments p JOIN bansir.sales s ON s.id=p.sale_id JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE p.reversed_at IS NULL OR p.reversed_at>x.created_at
+ UNION ALL SELECT 'revision:'||r.payment_id::text,NULL,'Revisão de pagamento '||left(r.sale_id::text,8),'expense','estorno',p.amount_cents,p.method::text,r.created_at,NULL::date,'completed',s.seller_name,'pdv',r.sale_id,NULL::timestamptz FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id JOIN bansir.sales s ON s.id=r.sale_id
+ UNION ALL SELECT 'sale:'||s.id::text,NULL,'Saldo venda '||left(s.id::text,8),'income','vendas',o.outstanding,NULL,s.created_at,s.due_date,'pending',s.seller_name,'pdv',s.id,NULL::timestamptz FROM bansir.sales s CROSS JOIN LATERAL(SELECT s.total_cents-coalesce((SELECT sum(p.amount_cents) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id),0) AS outstanding) o WHERE o.outstanding>0 AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id)`;
+export async function financeEntriesPage(c,{type=null,status='all',page=0,pageSize=30}={}){
+  const filter="WHERE ($1::text IS NULL OR type=$1::text) AND ($2::text='all' OR status=$2::text)";
+  const totals=(await c.query(`WITH ledger AS (${ledgerSql}) SELECT count(*)::int AS total,coalesce(sum(amount_cents),0) AS cents FROM ledger ${filter}`,[type,status])).rows[0];
+  const rows=(await c.query(`WITH ledger AS (${ledgerSql}), paged AS (
+    SELECT * FROM ledger ${filter} ORDER BY date DESC,_id LIMIT $3 OFFSET $4
+  ) SELECT p.*,to_char(p.due_date,'YYYY-MM-DD') AS due_date,s.coupon_number,
+    a.agreement_id,a.snapshot->>'name' AS agreement_name,
+    EXISTS(SELECT 1 FROM bansir.storefront_orders o WHERE o.sale_id=p.sale_id) AS link_order
+  FROM paged p
+  LEFT JOIN bansir.sales s ON s.id=p.sale_id
+  LEFT JOIN bansir.sale_agreements a ON a.sale_id=p.sale_id
+  ORDER BY p.date DESC,p._id`,[type,status,pageSize,page*pageSize])).rows;
+  return {data:rows.map(r=>({_id:r._id,id:r.id,title:r.title,type:r.type,category:r.category,amount:Number(r.amount_cents)/100,amountCents:Number(r.amount_cents),paymentMethod:r.payment_method,date:r.date,dueDate:r.due_date,status:r.status,sellerName:r.seller_name,source:r.source,saleId:r.sale_id,settledAt:r.settled_at,couponNumber:r.coupon_number,agreement:r.agreement_id?{name:r.agreement_name}:null,linkOrder:r.link_order})),
+   meta:{total:totals.total,page,pageSize,hasNext:(page+1)*pageSize<totals.total,totalCents:Number(totals.cents)}};
 }
 export async function createEntry(c,i,body){
  const d=entryInput.parse(body),hash=fiscalDraftHash(d);
@@ -63,7 +108,36 @@ export function mountManagement(app,{scoped}){
   return {status:method==='post'?201:200,data:(await employees(c)).find(e=>e.id===id)};
  }));
  app.delete('/api/v1/employees/:id',scoped('employees',false,async(c,req,m)=>{manage(m);if(!(await c.query('UPDATE bansir.employees SET active=false WHERE id=$1 RETURNING id',[uuid.parse(req.params.id)])).rowCount)throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');return {data:true};}));
- app.get('/api/v1/financial/transactions',scoped('financial',true,async(c,req,m)=>{const type=z.enum(['income','expense']).optional().parse(req.query.type);access(m,type==='expense'?'financial-payables':type==='income'?'financial-receivables':'financial-overview');return {data:(await financeEntries(c)).filter(e=>!type||e.type===type)};}));
+ app.delete('/api/v1/employees/:id/permanent',scoped('employees',false,async(c,req,m)=>{
+  manage(m);
+  const id=uuid.parse(req.params.id);
+  if(!(await c.query('SELECT id FROM bansir.employees WHERE id=$1 FOR UPDATE',[id])).rowCount){
+   throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');
+  }
+  try{
+   await c.query('DELETE FROM bansir.deliverers WHERE employee_id=$1',[id]);
+   await c.query('DELETE FROM bansir.employees WHERE id=$1',[id]);
+  }catch(error){
+   if(error.code!=='23503')throw error;
+   throw httpError(409,'Este funcionário tem registros vinculados, como comissões, adiantamentos ou entregas. Desative o cadastro em Editar para preservar o histórico.','EMPLOYEE_IN_USE');
+  }
+  return {data:true};
+ }));
+ app.get('/api/v1/financial/transactions',scoped('financial',true,async(c,req,m)=>{
+   const q=z.object({type:z.enum(['income','expense']).optional(),status:z.enum(['all','pending','completed','cancelled']).default('all'),page:z.coerce.number().int().min(0).max(100000).optional(),pageSize:z.coerce.number().int().min(1).max(100).default(30)}).parse(req.query),type=q.type;
+   access(m,type==='expense'?'financial-payables':type==='income'?'financial-receivables':'financial-overview');
+   // Clients that do not send "page" still receive the complete legacy list.
+   if(q.page===undefined)return {data:(await financeEntries(c)).filter(e=>!type||e.type===type)};
+   return financeEntriesPage(c,{type:type??null,status:q.status,page:q.page,pageSize:q.pageSize});
+  }));
+ app.get('/api/v1/financial/receivables/sales/:id',scoped('financial',true,async(c,req,m)=>{
+  access(m,'financial-receivables');
+  const sale=await saleView(c,uuid.parse(req.params.id));
+  if(!sale || (!sale.payments.length && !(!sale.cancelled_at && sale.outstanding_cents>0))) {
+   throw httpError(404,'Venda não encontrada nas contas a receber.','NOT_FOUND');
+  }
+  return {data:sale};
+ }));
  app.post('/api/v1/financial/transactions',scoped('financial',false,async(c,req,m)=>{manage(m);return {status:201,data:await createEntry(c,req.identity,req.body)};}));
  app.patch('/api/v1/financial/transactions/:id/status',scoped('financial',false,async(c,req,m)=>{
   manage(m);const {status}=z.object({status:z.enum(['completed','cancelled'])}).strict().parse(req.body),id=uuid.parse(req.params.id);

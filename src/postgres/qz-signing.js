@@ -1,6 +1,12 @@
 import {createHash,createPrivateKey,createSign,X509Certificate} from 'node:crypto';
 import {z} from 'zod';
 import {httpError} from './database.js';
+import {GetObjectCommand, S3Client} from '@aws-sdk/client-s3';
+import {getSignedUrl} from '@aws-sdk/s3-request-presigner';
+import {delegatedSetting} from './settings-permissions.js';
+
+const installerStorage = new S3Client({region: process.env.AWS_REGION || 'sa-east-1'});
+const installerKey = 'installers/qztray/1.0.0/bansir-qz-caixa.zip';
 const grants=new Map(),scope=i=>[i.tenantId,i.establishmentId,i.userId].join('/'),hash=v=>createHash('sha256').update(v).digest('hex');
 export function grantPrint(i,pdf){for(const [k,expiry] of grants)if(expiry<Date.now())grants.delete(k);if(grants.size>2000)grants.delete(grants.keys().next().value);grants.set(scope(i)+':'+hash(pdf.toString('base64')),Date.now()+300000);}
 export function signingConfig(env=process.env){
@@ -22,6 +28,24 @@ export function signQz(identity,body,config){
  const signer=createSign('RSA-SHA512');signer.update(digest);return signer.sign(config.key,'base64');
 }
 export function mountQzSigning(app,{scoped}){
+ app.get('/api/v1/printing/qz/installer', (req,res,next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+ }, scoped('settings-terminals', false, async (_client, _req, member) => {
+  if (!delegatedSetting(member, 'settings-terminals')) {
+   throw httpError(403, 'Sem permissão para configurar impressoras.', 'FORBIDDEN');
+  }
+  const bucket = process.env.FISCAL_S3_BUCKET;
+  if (!bucket) throw httpError(503, 'Download do Bansir QZ Tray indisponível.', 'QZ_INSTALLER_UNAVAILABLE');
+  const command = new GetObjectCommand({
+   Bucket: bucket,
+   Key: installerKey,
+   ResponseContentDisposition: 'attachment; filename="bansir-qz-caixa.zip"',
+   ResponseCacheControl: 'private, no-store'
+  });
+  const url = await getSignedUrl(installerStorage, command, {expiresIn: 300});
+  return {data: {url}};
+ }));
  app.get('/api/v1/printing/qz',scoped('sales',true,async()=>{let config;try{config=signingConfig();}catch{}return {data:{configured:!!config,certificate:config?.certificate||null}};}));
  app.post('/api/v1/printing/qz/sign',scoped('sales',true,async(c,req)=>{let config;try{config=signingConfig();}catch{}return {data:{signature:signQz(req.identity,req.body,config)}};}));
 }

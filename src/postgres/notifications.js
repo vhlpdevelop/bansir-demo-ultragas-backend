@@ -5,6 +5,8 @@ import {configureVapid} from '../config/vapid.js';
 import {enqueue} from './queue.js';
 import {httpError} from './database.js';
 
+const preferenceCategories = ['sales','stock','smartpos','payables','receivables','agreements','fleet','fiscal-inbound','fiscal-outbound','other'];
+
 export function pushEndpoint(value) {
  try {const u=new URL(value);return u.protocol==='https:' && !u.username && !u.password && (!u.port || u.port==='443') &&
   (['fcm.googleapis.com','web.push.apple.com'].includes(u.hostname) || u.hostname.endsWith('.push.services.mozilla.com'));} catch{return false;}
@@ -16,17 +18,34 @@ const deviceInput=z.object({deviceId:z.string().min(1).max(200),pushEnabled:z.bo
 
 // Producers call this in the SAME transaction as their business event (outbox).
 // Recipient is always explicit and scoped. Never broadcast to all tenants.
-export async function enqueueNotification(client,identity,{key,title,body,deviceId}) {
+export async function enqueueNotification(client,identity,{key,title,body,deviceId,metadata={}}) {
  const id=randomUUID();
  const job=await enqueue(client,identity,{kind:'notification',key,payload:{notificationId:id,userId:identity.userId,title,body,...(deviceId?{deviceId}:{})}});
- if(job)await client.query('INSERT INTO bansir.notifications(tenant_id,establishment_id,id,user_id,title,body) VALUES($1,$2,$3,$4,$5,$6)',[identity.tenantId,identity.establishmentId,id,identity.userId,title,body]);
+ if(job)await client.query('INSERT INTO bansir.notifications(tenant_id,establishment_id,id,user_id,title,body,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)',[identity.tenantId,identity.establishmentId,id,identity.userId,title,body,metadata]);
  return job;
 }
 export function mountNotifications(app,{scoped,route,database}) {
  const vapid=configureVapid(webpush,process.env);
  app.get('/api/v1/notifications/vapid-public-key',route(async req=>{await database.transaction(req.identity,async()=>{});return {data:{publicKey:vapid.publicKey},meta:{publicKey:vapid.publicKey}};}));
  const own=fn=>route(async req=>database.transaction(req.identity,client=>fn(client,req)));
- app.get('/api/v1/notifications',own(async c=>({data:(await c.query('SELECT id AS _id,title,body,created_at AS date,read_at IS NOT NULL AS read,metadata FROM bansir.notifications ORDER BY created_at DESC LIMIT 100')).rows})));
+ app.get('/api/v1/notifications',own(async c=>({data:(await c.query(`
+  SELECT id AS _id,title,body,created_at AS date,read_at IS NOT NULL AS read,metadata,bansir.notification_category(title) AS category
+  FROM bansir.notifications
+  WHERE NOT (bansir.notification_category(title)=ANY(coalesce((SELECT disabled FROM bansir.notification_preferences),'{}'::text[])))
+  ORDER BY created_at DESC LIMIT 100`)).rows})));
+ app.get('/api/v1/notifications/preferences',own(async c=>({data:(await c.query('SELECT disabled FROM bansir.notification_preferences')).rows[0]||{disabled:[]}})));
+ app.put('/api/v1/notifications/preferences',own(async(c,req)=>{
+  const {disabled}=z.object({disabled:z.array(z.enum(preferenceCategories)).max(preferenceCategories.length)}).strict().parse(req.body);
+  const {tenantId,establishmentId,userId}=req.identity;
+  const {rows:[data]}=await c.query(`INSERT INTO bansir.notification_preferences (tenant_id,establishment_id,user_id,disabled)
+   VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id,establishment_id,user_id)
+   DO UPDATE SET disabled=excluded.disabled RETURNING disabled`,[tenantId,establishmentId,userId,[...new Set(disabled)]]);
+  return {data};
+ }));
+ app.delete('/api/v1/notifications',own(async(c,req)=>{
+  const result=await c.query('DELETE FROM bansir.notifications WHERE user_id=$1 AND tenant_id=$2 AND establishment_id=$3',[req.identity.userId,req.identity.tenantId,req.identity.establishmentId]);
+  return {data:{deleted:result.rowCount}};
+ }));
  app.get('/api/v1/notifications/devices',own(async c=>({data:(await c.query('SELECT details,device_id AS "deviceId",enabled AS "pushEnabled",updated_at AS "lastActive" FROM bansir.push_devices')).rows.map(d=>({...d,...d.details}))})));
  app.post('/api/v1/notifications/devices/register',own(async(c,req)=>{
   const data=deviceInput.parse(req.body),i=req.identity;
@@ -60,7 +79,10 @@ export async function deliverNotification(queue,job,{send=webpush.sendNotificati
  const devices=await queue.scope(job,async c=>{
   const active=(await c.query('SELECT bansir.push_recipient_active($1,$2,$3) AS active',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].active;
   if(!active)return [];
-  if(!(await c.query('SELECT id FROM bansir.notifications WHERE id=$1 AND user_id=$2',[job.payload.notificationId,job.payload.userId])).rowCount)return [];
+  const {rows:[notification]}=await c.query('SELECT title FROM bansir.notifications WHERE id=$1 AND user_id=$2',[job.payload.notificationId,job.payload.userId]);
+  if(!notification)return [];
+  if(!job.payload.deviceId&&(await c.query(`SELECT 1 FROM bansir.notification_preferences
+   WHERE user_id=$1 AND bansir.notification_category($2)=ANY(disabled)`,[job.payload.userId,notification.title])).rowCount)return [];
   if(job.payload.category==='fleet'&&!(await c.query('SELECT bansir.fleet_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
   if(job.payload.category==='fiscal'&&!(await c.query('SELECT bansir.fiscal_recipient_allowed($1,$2,$3) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId])).rows[0].allowed)return [];
   if(job.payload.category==='financial'&&!(await c.query('SELECT bansir.financial_recipient_allowed($1,$2,$3,$4) AS allowed',[job.tenant_id,job.establishment_id,job.payload.userId,job.payload.financialPart])).rows[0].allowed)return [];

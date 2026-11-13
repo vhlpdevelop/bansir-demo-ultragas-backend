@@ -74,7 +74,7 @@ export function mountSmartpos(app,{scoped,secret}){
    else await settleSmartpos(c,{...r.identity,userId:command.requested_by},command,cash,evidence);
   }
   let updated;try{updated=(await c.query('UPDATE bansir.smartpos_charges SET status=$2,result_hash=$3,result=$4,provider_transaction_id=$5,result_by=$6,updated_at=now() WHERE id=$1 RETURNING *',[id,status,fingerprint,evidence,input.transactionId||null,r.identity.userId])).rows[0];}catch(e){if(e.code==='23505'&&e.constraint==='smartpos_provider_transaction')fail('Transação da adquirente já utilizada.','ACQUIRER_TRANSACTION_REUSED');throw e;}
-  await enqueueNotification(c,{...r.identity,userId:command.requested_by},{key:`smartpos:${id}:${status}`,title:status==='approved'?'Pagamento SmartPOS aprovado':'Cobrança SmartPOS atualizada',body:`Cupom ${(await saleView(c,command.sale_id)).saleNumber}: ${status}.`,userId:command.requested_by});return {data:view(updated)};
+  await enqueueNotification(c,{...r.identity,userId:command.requested_by},{key:`smartpos:${id}:${status}`,metadata:{saleId:command.sale_id},title:status==='approved'?'Pagamento SmartPOS aprovado':'Cobrança SmartPOS atualizada',body:`Cupom ${(await saleView(c,command.sale_id)).saleNumber}: ${status}.`,userId:command.requested_by});return {data:view(updated)};
  }));
  app.post('/api/v1/sales/:saleId/smartpos/:id/cancel',scoped('sales',false,async(c,r,m)=>{
   const saleId=z.uuid().parse(r.params.saleId);await lockSmartposSale(c,r.identity,saleId);await ownedSale(c,r.identity,m,saleId);

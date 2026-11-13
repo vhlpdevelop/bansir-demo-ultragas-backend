@@ -105,5 +105,19 @@ export function mountCustomers(app,{scoped}){
  const deliverer=z.object({name:z.string().trim().min(2).max(200),phone:z.string().max(40).default('').transform(v=>normalizePhone(v,{optional:true})),active:z.boolean().default(true)}).strict();
  app.post('/api/v1/deliverers',scoped('sales-manage',false,async(c,req)=>{const d=deliverer.parse(req.body),i=req.identity;return {status:201,data:(await c.query('INSERT INTO bansir.deliverers(tenant_id,establishment_id,name,phone,active) VALUES($1,$2,$3,$4,$5) RETURNING id,name,phone,active',[i.tenantId,i.establishmentId,d.name,d.phone,d.active])).rows[0]};}));
  app.put('/api/v1/deliverers/:id',scoped('sales-manage',false,async(c,req)=>{const d=deliverer.parse(req.body);if((await c.query('SELECT employee_id FROM bansir.deliverers WHERE id=$1',[z.uuid().parse(req.params.id)])).rows[0]?.employee_id)throw httpError(409,'Edite este entregador em Funcionários.','EMPLOYEE_MANAGED');const row=(await c.query('UPDATE bansir.deliverers SET name=$2,phone=$3,active=$4 WHERE id=$1 RETURNING id,name,phone,active',[z.uuid().parse(req.params.id),d.name,d.phone,d.active])).rows[0];if(!row)throw httpError(404,'Entregador não encontrado.','NOT_FOUND');return {data:row};}));
+ app.delete('/api/v1/deliverers/:id',scoped('sales-manage',false,async(c,req,m)=>{
+  if(!['admin','superadmin'].includes(m.role))throw httpError(403,'Somente administradores podem excluir entregadores.','FORBIDDEN');
+  const id=z.uuid().parse(req.params.id);
+  const {rows:[row]}=await c.query('SELECT employee_id FROM bansir.deliverers WHERE id=$1 FOR UPDATE',[id]);
+  if(!row)throw httpError(404,'Entregador não encontrado.','NOT_FOUND');
+  if(row.employee_id)throw httpError(409,'Exclua o cadastro vinculado em Funcionários.','EMPLOYEE_MANAGED');
+  try{
+   await c.query('DELETE FROM bansir.deliverers WHERE id=$1',[id]);
+  }catch(error){
+   if(error.code!=='23503')throw error;
+   throw httpError(409,'Este entregador tem registros vinculados. Desative o cadastro em Editar para preservar o histórico.','DELIVERER_IN_USE');
+  }
+  return {data:true};
+ }));
 }
 

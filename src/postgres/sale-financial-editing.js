@@ -19,13 +19,13 @@ export async function financialBlock(c,sale){
 }
 export const financialCashLock=(c,i)=>c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`sale-financial:${i.tenantId}:${i.establishmentId}`]);
 const fail=(m,code='SALE_FINANCIAL_INVALID')=>{throw httpError(409,m,code);};
-export async function applyFinancialEdit(c,i,sale,b,reason,requestKey,customer,member){
+export async function applyFinancialEdit(c,i,sale,b,reason,requestKey,customer,member,targetDeliveryMode=sale.delivery_mode){
  const blocked=await financialBlock(c,sale);if(blocked)fail(blocked,'SALE_FINANCIAL_LOCKED');
  const cash=await openCash(c,i);
  if(b.items.length!==sale.items.length||new Set(b.items.map(x=>x.position)).size!==sale.items.length||b.items.some(x=>!sale.items.some(y=>y.position===x.position)))fail('Revise os mesmos produtos da venda.','SALE_ITEMS_MISMATCH');
  const items=b.items.map(x=>({...x,old:sale.items.find(y=>y.position===x.position),gross:x.quantity*x.unitPriceCents})),subtotal=items.reduce((n,x)=>n+x.gross,0),total=subtotal-b.discountCents+b.deliveryFeeCents;
  if(!Number.isSafeInteger(subtotal)||subtotal>1000000000||total>1000000000||b.discountCents>=subtotal||total<=0)fail('Total ou desconto inválido.','INVALID_TOTAL');
- if(sale.delivery_mode==='pickup'&&b.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.');
+ if(targetDeliveryMode==='pickup'&&b.deliveryFeeCents)fail('Taxa de entrega exige modalidade entrega.');
  if(total!==sale.total_cents&&(await c.query('SELECT 1 FROM bansir.sale_commissions WHERE sale_id=$1 AND amount_cents>0',[sale.id])).rowCount)fail('Esta venda possui comissão registrada. Revise a comissão antes de alterar o total.','SALE_COMMISSION_REVIEW_REQUIRED');
  const commercialChanged=total!==sale.total_cents||items.some(x=>x.quantity!==x.old.quantity||x.unitPriceCents!==x.old.unit_price_cents)||b.discountCents!==sale.discount_cents||b.deliveryFeeCents!==sale.delivery_fee_cents;
  if(commercialChanged&&(await c.query('SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1',[sale.id])).rowCount)fail('Esta venda veio do link de pedidos. Os produtos e valores do pedido precisam ser revistos pelo fluxo do pedido; aqui você pode corrigir somente os pagamentos.','SALE_ORDER_REVIEW_REQUIRED');
@@ -44,7 +44,7 @@ export async function applyFinancialEdit(c,i,sale,b,reason,requestKey,customer,m
  }
  if(paid>total)fail('Os pagamentos superam o novo total. Ajuste os recebimentos e confira a devolução.','PAYMENT_EXCEEDS_BALANCE');
  let agreement=null;if(b.useAgreement){if(paid!==0||!sale.customer_id)fail('Convênio exige cliente cadastrado e valor integral a receber.');agreement=await prepareAgreement(c,i,member,{customerId:sale.customer_id,payment:{method:'pending',term:'credit'}});if(!agreement)fail('Associe este cliente a um convênio ativo antes de salvar.');if(agreement.id!==b.agreementId)fail('O convênio do cliente mudou. Confira o grupo antes de salvar.','STALE_AGREEMENT');await checkAgreementCredit(c,agreement,total);}
- const term=b.useAgreement?'credit':paid===total?'immediate':b.paymentTerm&&b.paymentTerm!=='immediate'?b.paymentTerm:sale.payment_term==='immediate'?(sale.delivery_mode==='delivery'?'delivery':'pickup'):sale.payment_term;
+ const term=b.useAgreement?'credit':paid===total?'immediate':b.paymentTerm&&b.paymentTerm!=='immediate'?b.paymentTerm:sale.payment_term==='immediate'?(targetDeliveryMode==='delivery'?'delivery':'pickup'):sale.payment_term;
  const due=agreement?.dueDate||(b.dueDate===undefined?sale.due_date:b.dueDate);
  if(paid<total&&term!=='delivery'&&(!customer.name||!customer.phone))fail('Saldo a receber exige nome e telefone do cliente.','CUSTOMER_REQUIRED');
  if(paid<total&&term==='credit'&&!due)fail('Informe o vencimento do saldo a receber.','DUE_DATE_REQUIRED');
@@ -59,7 +59,7 @@ export async function applyFinancialEdit(c,i,sale,b,reason,requestKey,customer,m
  if(agreement)await attachAgreement(c,i,{...sale,total_cents:total},agreement);
  if(sale.agreement?.snapshot.balanceAtEntry){
   const balance=sale.agreement.snapshot.balanceAtEntry;
-  await c.query('UPDATE bansir.sale_agreements SET snapshot=$2 WHERE sale_id=$1',[sale.id,{...sale.agreement.snapshot,balanceAtEntry:{...balance,entryCents:total,totalCents:balance.previousCents+total}}]);
+  await c.query('UPDATE bansir.sale_agreements SET snapshot=$2 WHERE sale_id=$1',[sale.id,{...sale.agreement.snapshot,balanceAtEntry:{...balance,entryCents:total,totalCents:balance.previousCents+total,...(balance.individual?{individual:{...balance.individual,totalCents:balance.individual.previousCents+total}}:{}),...(balance.group?{group:{...balance.group,totalCents:balance.group.previousCents+total}}:{})}}]);
  }
  if(b.payments){for(const p of sale.payments){await c.query('INSERT INTO bansir.sale_payment_reversals(tenant_id,establishment_id,payment_id,sale_id,cash_session_id,user_id,request_key,reason,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())',[i.tenantId,i.establishmentId,p.id,sale.id,cash.id,i.userId,requestKey,reason]);await c.query('UPDATE bansir.sale_payments SET reversed_at=clock_timestamp() WHERE id=$1 AND reversed_at IS NULL',[p.id]);if(p.method==='cash')await c.query("INSERT INTO bansir.cash_movements(tenant_id,establishment_id,cash_session_id,request_key,request_hash,payment_id,kind,amount_cents,reason) VALUES($1,$2,$3,$4,$5,$6,'refund',$7,$8)",[i.tenantId,i.establishmentId,cash.id,randomUUID(),fiscalDraftHash({requestKey,paymentId:p.id}),p.id,p.amount_cents,'Revisão da venda: '+reason]);}
  for(const p of b.payments)await recordPayment(c,i,sale,cash,{...p,requestKey:randomUUID(),confirmed:true});}

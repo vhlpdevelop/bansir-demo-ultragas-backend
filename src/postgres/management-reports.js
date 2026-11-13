@@ -14,7 +14,7 @@ const reportAvailable=(entry,features,member)=>(!entry.feature||features[entry.f
  &&(!entry.adminOnly||['admin','superadmin'].includes(member.role))
  &&(entry.key!=='convenios'||agreementAllowed(member,'view'));
 export async function managementReport(c,query,member={role:'admin'},context=null){
- const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online','pending']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default('')}).strict().parse(query);
+ const now=new Date().toISOString().slice(0,10),d=z.object({startDate:z.iso.date().default(now.slice(0,8)+'01'),endDate:z.iso.date().default(now),mode:z.enum(modes).default('consolidado'),driverId:z.union([z.uuid(),z.literal('')]).default(''),seller:z.string().max(200).default(''),category:z.string().max(200).default(''),paymentMethod:z.enum(['','cash','pix','credit_card','debit_card','online','pending']).default(''),saleStatus:z.enum(['','paid','pending','cancelled']).default(''),customerId:z.union([z.uuid(),z.literal('')]).default('')}).strict().parse(query);
  if(d.endDate<d.startDate||(+new Date(d.endDate)-+new Date(d.startDate))>366*86400000)throw httpError(400,'Selecione um período de até um ano.','INVALID_PERIOD');
  const features=context?.features||await tenantFeatures(c);
  const coverage=reportCatalog.map(x=>({...x,available:reportAvailable(x,features,member)}));
@@ -26,7 +26,7 @@ export async function managementReport(c,query,member={role:'admin'},context=nul
  FROM bansir.sales s LEFT JOIN bansir.sale_cancellations x ON x.sale_id=s.id
  WHERE (s.created_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date AND ($4='' OR s.seller_name=$4)
  AND ($5='' OR EXISTS(SELECT 1 FROM bansir.sale_items i JOIN bansir.products p ON p.id=i.product_id WHERE i.sale_id=s.id AND p.category=$5))
- AND ($6='' OR ($6='pending' AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>coalesce((SELECT sum(p.amount_cents) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id),0)) OR EXISTS(SELECT 1 FROM bansir.active_sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod])).rows;
+ AND ($6='' OR ($6='pending' AND NOT EXISTS(SELECT 1 FROM bansir.sale_cancellations x WHERE x.sale_id=s.id) AND s.total_cents>coalesce((SELECT sum(p.amount_cents) FROM bansir.active_sale_payments p WHERE p.sale_id=s.id),0)) OR EXISTS(SELECT 1 FROM bansir.active_sale_payments p WHERE p.sale_id=s.id AND p.method=$6)) AND ($7='' OR s.customer_id=$7::uuid) ORDER BY s.created_at DESC LIMIT 5001`,[d.startDate,d.endDate,timezone,d.seller,d.category,d.paymentMethod,d.customerId])).rows;
  if(rawSales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
  const sales=rawSales.map(s=>({...s,status:s.cancelled?'cancelled':Number(s.paid)>=Number(s.total_cents)?'paid':'pending'})).filter(s=>!d.saleStatus||d.saleStatus===s.status);
  if(sales.length>5000)throw httpError(400,'Reduza o período para exportar até 5.000 vendas.','REPORT_TOO_LARGE');
@@ -95,6 +95,7 @@ export function mountManagementReports(app,{scoped}){
  app.get('/api/v1/reports/catalog',scoped('reports',true,async(c,r,m)=>{const f=await tenantFeatures(c);return {data:{modes:reportCatalog.map(x=>({...x,available:reportAvailable(x,f,m)})),drivers:(await c.query('SELECT id,name FROM bansir.deliverers ORDER BY name')).rows}};}));
  app.get('/api/v1/reports/csv',scoped('reports',true,async(c,r,m)=>({data:{base64:reportCsv(await managementReport(c,r.query,m)).toString('base64')}})));
  app.get('/api/v1/reports/sellers',scoped('reports',true,async c=>({data:(await c.query('SELECT DISTINCT seller_name AS name FROM bansir.sales ORDER BY seller_name')).rows})));
+ app.get('/api/v1/reports/customers',scoped('reports',true,async c=>({data:(await c.query('SELECT id,name,phone,document FROM bansir.customers WHERE active ORDER BY name LIMIT 500')).rows})));
  app.get('/api/v1/reports/summary',scoped('reports',true,async(c,req,m)=>({data:await managementReport(c,req.query,m)})));
  app.get('/api/v1/reports/pdf',scoped('reports',true,async(c,req,m)=>({data:{base64:(await reportPdf(await managementReport(c,req.query,m))).toString('base64')}})));
 }

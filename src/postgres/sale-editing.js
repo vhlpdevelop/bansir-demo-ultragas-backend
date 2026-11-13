@@ -11,8 +11,8 @@ import {assertNoSmartpos} from './smartpos-state.js';
 import {routeUnitLock} from './delivery-route-state.js';
 const manager=m=>['admin','superadmin'].includes(m.role)||m.allowed_routes?.includes('sales-manage');
 const customer=z.object({additionalPhone:z.string().regex(/^\d{0,14}$/).optional(),additionalInfo:z.string().trim().max(500).optional(),name:z.string().trim().min(1).max(200),document:z.string().regex(/^(\d{11}|\d{14})?$/),phone:z.string().regex(/^\d{0,14}$/),address:z.string().trim().max(1000),email:z.union([z.literal(''),z.email()]).default(''),notes:z.string().max(5000).default(''),fiscal:customerFiscalInput.default({})}).strict();
-const editInput=z.object({requestKey:z.uuid(),revision:z.number().int().nonnegative(),reason:z.string().trim().min(5).max(500),financial:financialEditInput.optional(),customer,deliveryAddress:z.string().trim().max(1000),itemProfiles:z.array(z.object({position:z.number().int().positive(),ncm:z.string().regex(/^(\d{8})?$/),fiscalProfile:productFiscalInput}).strict()).max(100).optional()}).strict();
-const projection=s=>({agreement:s.agreement,financial:financialProjection(s),customer:s.customer_details,deliveryAddress:s.delivery_address,itemProfiles:s.items.map(i=>({position:i.position,ncm:i.ncm,fiscalProfile:i.fiscal_profile}))});
+const editInput=z.object({requestKey:z.uuid(),revision:z.number().int().nonnegative(),reason:z.string().trim().min(5).max(500),financial:financialEditInput.optional(),customer,deliveryAddress:z.string().trim().max(1000),deliveryMode:z.enum(['pickup','delivery']).optional(),deliveryEmployeeId:z.string().uuid().nullable().optional(),itemProfiles:z.array(z.object({position:z.number().int().positive(),ncm:z.string().regex(/^(\d{8})?$/),fiscalProfile:productFiscalInput}).strict()).max(100).optional()}).strict();
+const projection=s=>({agreement:s.agreement,financial:financialProjection(s),customer:s.customer_details,deliveryAddress:s.delivery_address,deliveryMode:s.delivery_mode,deliveryEmployeeId:s.delivery_employee_id,deliveryEmployeeName:s.delivery_employee_name,itemProfiles:s.items.map(i=>({position:i.position,ncm:i.ncm,fiscalProfile:i.fiscal_profile}))});
 export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
  const route=fn=>scoped('sales',true,async(c,r,m)=>{if(!manager(m))throw httpError(403,'Editar vendas exige permissão de gestão de vendas.','FORBIDDEN');return fn(c,r,m);});
  app.get('/api/v1/sales/:id/edit',route(async(c,r,m)=>{
@@ -30,14 +30,41 @@ export function mountSaleEditing(app,{scoped,saleView,ownedSale}){
   if(sale.revision!==b.revision)throw httpError(409,'Esta venda foi alterada. Atualize antes de editar novamente.','STALE_SALE');
   if(sale.cancelled_at||sale.document_id)throw httpError(409,'Venda cancelada ou com documento fiscal vinculado. Utilize o fluxo fiscal de correção/cancelamento.','SALE_EDIT_LOCKED');
   await assertNoFiscalReservation(c,id,true);await assertNoSmartpos(c,{saleId:id});
-  if(b.deliveryAddress!==sale.delivery_address&&(await c.query("SELECT 1 FROM bansir.delivery_tasks WHERE sale_id=$1 AND status IN('assigned','en_route','delivered') UNION ALL SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1",[id])).rowCount)throw httpError(409,'O destino está vinculado a um pedido ou entrega. Revise a entrega antes de alterar o endereço operacional. O endereço fiscal pode ser corrigido separadamente.','SALE_DELIVERY_LOCKED');
+  const targetDeliveryMode=b.deliveryMode||sale.delivery_mode;
+  if(targetDeliveryMode==='delivery'&&b.deliveryAddress!==sale.delivery_address&&(await c.query("SELECT 1 FROM bansir.delivery_tasks WHERE sale_id=$1 AND status IN('en_route','delivered') UNION ALL SELECT 1 FROM bansir.storefront_orders WHERE sale_id=$1 LIMIT 1",[id])).rowCount)throw httpError(409,'A entrega já está em rota ou concluída. Revise a entrega antes de alterar o endereço operacional. O endereço fiscal pode ser corrigido separadamente.','SALE_DELIVERY_LOCKED');
   const before=projection(sale);
-  if(b.financial)await applyFinancialEdit(c,i,sale,b.financial,b.reason,b.requestKey,b.customer,m);
+  if(b.financial)await applyFinancialEdit(c,i,sale,b.financial,b.reason,b.requestKey,b.customer,m,targetDeliveryMode);
   if(b.itemProfiles){requirePermission(m,'fiscal');if(b.itemProfiles.length!==sale.items.length||new Set(b.itemProfiles.map(p=>p.position)).size!==sale.items.length||b.itemProfiles.some(p=>!sale.items.some(i=>i.position===p.position)))throw httpError(400,'Informe os mesmos itens da venda para revisar a tributação.','SALE_ITEMS_MISMATCH');
    for(const p of b.itemProfiles)await c.query('UPDATE bansir.sale_items SET ncm=$3,fiscal_profile=$4 WHERE sale_id=$1 AND position=$2',[id,p.position,p.ncm,p.fiscalProfile]);
   }
   if(fiscalDraftHash(before.customer?.fiscal||{})!==fiscalDraftHash(b.customer.fiscal))requirePermission(m,'fiscal');
-  await c.query('UPDATE bansir.sales SET customer_name=$2,customer_document=$3,customer_phone=$4,customer_snapshot=$5,delivery_address=$6,revision=revision+1 WHERE id=$1',[id,b.customer.name,b.customer.document,b.customer.phone,b.customer,b.deliveryAddress]);
+
+  let newDriverId=sale.delivery_employee_id,newDriverName=sale.delivery_employee_name||'',newDriverPhone=sale.delivery_employee_phone||'';
+  if(targetDeliveryMode==='pickup'){
+   newDriverId=null;newDriverName='';newDriverPhone='';
+   await c.query("UPDATE bansir.delivery_tasks SET status='cancelled',version=version+1,updated_at=now() WHERE sale_id=$1 AND status<>'cancelled' AND status<>'delivered'",[id]);
+  }else if(targetDeliveryMode==='delivery'){
+   if(b.deliveryEmployeeId!==undefined){
+    if(b.deliveryEmployeeId){
+     const deliverer=(await c.query('SELECT id,name,phone FROM bansir.deliverers WHERE id=$1 AND active',[b.deliveryEmployeeId])).rows[0];
+     if(!deliverer)throw httpError(404,'Entregador não encontrado neste estabelecimento.','DELIVERER_NOT_FOUND');
+     newDriverId=deliverer.id;newDriverName=deliverer.name;newDriverPhone=deliverer.phone;
+    }else{
+     newDriverId=null;newDriverName='';newDriverPhone='';
+    }
+   }
+   const taskAddress=b.deliveryAddress||sale.delivery_address,taskStatus=newDriverId?'assigned':'pending';
+   const existingTask=(await c.query('SELECT * FROM bansir.delivery_tasks WHERE sale_id=$1',[id])).rows[0];
+   if(existingTask){
+    if(existingTask.status!=='delivered'){
+     await c.query("UPDATE bansir.delivery_tasks SET driver_id=$2,status=$3,address=$4,departed_at=NULL,delivered_at=NULL,version=version+1,updated_at=now() WHERE sale_id=$1",[id,newDriverId,taskStatus,taskAddress]);
+    }
+   }else{
+    await c.query("INSERT INTO bansir.delivery_tasks(tenant_id,establishment_id,sale_id,driver_id,status,address) VALUES($1,$2,$3,$4,$5,$6)",[i.tenantId,i.establishmentId,id,newDriverId,taskStatus,taskAddress]);
+   }
+  }
+
+  await c.query('UPDATE bansir.sales SET customer_name=$2,customer_document=$3,customer_phone=$4,customer_snapshot=$5,delivery_address=$6,delivery_mode=$7,delivery_employee_id=$8,delivery_employee_name=$9,delivery_employee_phone=$10,revision=revision+1 WHERE id=$1',[id,b.customer.name,b.customer.document,b.customer.phone,b.customer,b.deliveryAddress,targetDeliveryMode,newDriverId,newDriverName,newDriverPhone]);
   const updated=await saleView(c,id);
   await c.query('INSERT INTO bansir.sale_revisions(tenant_id,establishment_id,sale_id,revision,request_key,request_hash,user_id,reason,before_data,after_data,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp())',[i.tenantId,i.establishmentId,id,updated.revision,b.requestKey,fingerprint,i.userId,b.reason,before,projection(updated)]);
   return {data:updated};

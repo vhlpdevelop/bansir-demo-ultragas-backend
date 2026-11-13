@@ -1,9 +1,27 @@
 import {z} from 'zod';
 import {httpError} from './database.js';
+import {requirePermission} from './catalog.js';
 const text=z.string().trim().max(200),address=z.object({street:text.default(''),number:text.default(''),complement:text.default(''),neighborhood:text.default(''),city:text.default(''),state:z.string().max(2).default(''),zipCode:z.string().max(12).default('')}).strict();
 const input=z.object({name:text.min(2),tradeName:text.default(''),document:z.string().max(25).transform(v=>v.replace(/\D/g,'')).refine(v=>[11,14].includes(v.length),'Informe CPF ou CNPJ completo.'),stateRegistration:text.default(''),email:z.union([z.email(),z.literal('')]).default(''),phone:text.default(''),contactPerson:text.default(''),category:text.default('Outros'),address:address.default({}),bankDetails:z.object({bank:text.default(''),agency:text.default(''),account:text.default(''),pixKey:text.default(''),pixType:text.default('cnpj')}).strict().default({}),notes:z.string().max(3000).default(''),active:z.boolean().default(true)}).strict();
 const view=r=>({...r.data,id:r.id,_id:r.id,active:r.active,createdAt:r.created_at});
 export function mountSuppliers(app,{scoped}){
+ app.post('/api/v1/suppliers/from-inbound/:id',scoped('suppliers',false,async(c,req,member)=>{
+  requirePermission(member,'fiscal',true);
+  const {rows:[note]}=await c.query('SELECT supplier_cnpj,supplier_name FROM bansir.fiscal_inbound WHERE id=$1',[z.uuid().parse(req.params.id)]);
+  if(!note)throw httpError(404,'Nota não encontrada.','NOT_FOUND');
+  if(!/^\d{14}$/.test(note.supplier_cnpj||''))throw httpError(409,'O CNPJ do emitente ainda não está disponível.','SUPPLIER_DOCUMENT_REQUIRED');
+  const i=req.identity;
+  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`supplier:${i.tenantId}:${i.establishmentId}:${note.supplier_cnpj}`]);
+  const {rows:[existing]}=await c.query("SELECT * FROM bansir.suppliers WHERE data->>'document'=$1 ORDER BY active DESC,created_at DESC LIMIT 1",[note.supplier_cnpj]);
+  if(existing){
+   if(existing.active)return {data:view(existing)};
+   return {data:view((await c.query('UPDATE bansir.suppliers SET active=true,updated_at=now() WHERE id=$1 RETURNING *',[existing.id])).rows[0])};
+  }
+  const name=(note.supplier_name||'').trim().slice(0,200);
+  const {active,...data}=input.parse({name:name.length>=2?name:note.supplier_cnpj,document:note.supplier_cnpj,category:'A classificar'});
+  const {rows:[supplier]}=await c.query('INSERT INTO bansir.suppliers(tenant_id,establishment_id,data,active) VALUES($1,$2,$3,$4) RETURNING *',[i.tenantId,i.establishmentId,data,active]);
+  return {status:201,data:view(supplier)};
+ }));
  app.get('/api/v1/suppliers',scoped('suppliers',true,async(c,req)=>{
   const q=z.string().max(200).default('').parse(req.query.search),category=z.string().max(200).default('').parse(req.query.category);
   return {data:(await c.query("SELECT * FROM bansir.suppliers WHERE ($1='' OR strpos(lower(concat(data->>'name',' ',data->>'tradeName',' ',data->>'document')),lower($1))>0) AND($2='' OR $2='all' OR data->>'category'=$2) ORDER BY created_at DESC LIMIT 1000",[q,category])).rows.map(view)};
