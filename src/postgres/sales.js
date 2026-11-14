@@ -21,6 +21,7 @@ import { createFiscalDocument, fiscalDraftHash } from './fiscal.js';
 import { pixCode } from './pix.js';
 import { queueWhatsapp } from './whatsapp.js';
 import { currentTerminal, requireTerminal, assertCashTerminal } from './pdv-terminals.js';
+import { cashProductTotals, cashFullSummary } from './cash-summary.js';
 
 const cents = z.number().int().min(0).max(1000000000), text = z.string().trim().max(200), uuid = z.uuid();
 const hash = fiscalDraftHash;
@@ -48,7 +49,8 @@ export async function cashView(c, cash) {
  SELECT 'cash'::text AS method,m.amount_cents AS cents FROM bansir.cash_movements m WHERE m.cash_session_id=$1 AND m.kind='refund' AND m.created_at<=$2
  UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payments p JOIN bansir.sale_cancellations x ON x.sale_id=p.sale_id WHERE coalesce(x.cash_session_id,p.cash_session_id)=$1 AND p.method<>'cash' AND x.created_at<=$2 AND (p.reversed_at IS NULL OR p.reversed_at>x.created_at)
  UNION ALL SELECT p.method,p.amount_cents FROM bansir.sale_payment_reversals r JOIN bansir.sale_payments p ON p.id=r.payment_id WHERE r.cash_session_id=$1 AND p.method<>'cash' AND r.created_at<=$2) r GROUP BY method`, [cash.id, cutoff])).rows;
-  return { ...cash, sales_cents: Number(pending.sales_cents), receivable_cents: Number(pending.cents), refundTotals: Object.fromEntries(refunds.map(t => [t.method, Number(t.cents)])), opening_cents: Number(cash.opening_cents), expected_cents: cash.closed_at ? Number(cash.expected_cents) : await cashBalance(c, cash), counted_cents: cash.counted_cents === null ? null : Number(cash.counted_cents), difference_cents: cash.difference_cents === null ? null : Number(cash.difference_cents), paymentTotals: Object.fromEntries(totals.map(t => [t.method, Number(t.cents)])) };
+  const productSummary = await cashProductTotals(c, cash.id, cutoff);
+  return { ...cash, sales_cents: Number(pending.sales_cents), receivable_cents: Number(pending.cents), refundTotals: Object.fromEntries(refunds.map(t => [t.method, Number(t.cents)])), opening_cents: Number(cash.opening_cents), expected_cents: cash.closed_at ? Number(cash.expected_cents) : await cashBalance(c, cash), counted_cents: cash.counted_cents === null ? null : Number(cash.counted_cents), difference_cents: cash.difference_cents === null ? null : Number(cash.difference_cents), paymentTotals: Object.fromEntries(totals.map(t => [t.method, Number(t.cents)])), productSummary };
 }
 export async function saleView(c, id) {
   const s = (await c.query(`SELECT s.*,s.due_date::text AS due_date,cash.terminal_id,cash.terminal_name,x.reason AS cancellation_reason,x.created_at AS cancelled_at,f.document_id,d.status AS fiscal_status,d.protocol,d.access_key,d.rejection_code,d.payload#>>'{request,NFe,infNFe,ide,mod}' AS fiscal_model
@@ -190,6 +192,12 @@ export function mountSales(app, { scoped, secret }) {
     const { rows: [cash] } = await c.query('INSERT INTO bansir.cash_sessions(tenant_id,establishment_id,user_id,opening_cents,terminal_id,terminal_name) VALUES($1,$2,$3,$4,$5,$6) RETURNING *', [i.tenantId, i.establishmentId, i.userId, openingCents, terminal?.id || null, terminal?.name || null]); return { status: 201, data: await cashView(c, cash) };
   }));
   app.get('/api/v1/pdv/cash/history', scoped('sales', true, async (c, req) => ({ data: await Promise.all((await c.query('SELECT * FROM bansir.cash_sessions WHERE user_id=$1 ORDER BY opened_at DESC LIMIT 30', [req.identity.userId])).rows.map(cash => cashView(c, cash))) })));
+  app.get('/api/v1/pdv/cash/:id/summary', scoped('sales', true, async (c, req, member) => {
+    const id = uuid.parse(req.params.id);
+    const cash = (await c.query('SELECT s.*, u.name AS operator_name FROM bansir.cash_sessions s JOIN bansir.users u ON u.id=s.user_id WHERE s.id=$1', [id])).rows[0];
+    if (!cash || (cash.user_id !== req.identity.userId && !viewsAll(member))) fail('Caixa não encontrado.', 'NOT_FOUND', 404);
+    return { data: await cashFullSummary(c, { cash, cashViewData: await cashView(c, cash) }) };
+  }));
   const cashAdmin = member => ['admin', 'superadmin'].includes(member.role);
   const reopenDigest = (i, terminalId, code) => createHmac('sha256', secret)
     .update(JSON.stringify(['cash-reopen', i.tenantId, i.establishmentId, terminalId, code])).digest('hex');
