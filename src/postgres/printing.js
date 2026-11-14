@@ -10,7 +10,7 @@ import PDFDocument from 'pdfkit';
 import {z} from 'zod';
 import {httpError} from './database.js';
 import {saleView,ownedSale} from './sales.js';
-const widthOf=req=>z.coerce.number().refine(n=>[58,80].includes(n)).default(80).parse(req.query.width);
+export const widthOf=req=>z.coerce.number().refine(n=>[58,80].includes(n)).default(80).parse(req.query.width);
 export async function danfePdf(doc,width=80){
  if(!['authorized','cancelled'].includes(doc.status)||!doc.xml)throw httpError(409,'Documento fiscal autorizado ainda não disponível.','XML_NOT_AVAILABLE');
  if(Buffer.byteLength(doc.xml)>2*1024*1024||/<!DOCTYPE|<!ENTITY/i.test(doc.xml)||XMLValidator.validate(doc.xml)!==true)throw httpError(409,'XML fiscal inválido.','INVALID_FISCAL_XML');
@@ -45,11 +45,11 @@ export async function danfePdf(doc,width=80){
  pdf.moveDown();line(n.dest?'Consumidor: '+[n.dest.xNome,n.dest.CPF||n.dest.CNPJ].filter(Boolean).join(' - '):'CONSUMIDOR NÃO IDENTIFICADO');line('NFC-e '+n.ide.nNF+'  Série '+n.ide.serie);line('Emissão: '+n.ide.dhEmi);line('Protocolo: '+p.nProt);line('Autorização: '+p.dhRecbto);line('Chave de acesso:',true);line(doc.access_key.match(/.{1,4}/g).join(' '),true);line('Consulte pela chave em:',true);line(root.NFe.infNFeSupl.urlChave,true);pdf.moveDown();
  const image=await QRCode.toBuffer(root.NFe.infNFeSupl.qrCode,{width:280,margin:2,errorCorrectionLevel:'M'}),qrWidth=Math.min(110,w-20);const qrY=pdf.y;pdf.image(image,(w-qrWidth)/2,qrY,{width:qrWidth});pdf.y=qrY+qrWidth+8;if(t.vTotTrib)line('Tributos totais R$ '+money(t.vTotTrib));if(n.infAdic?.infCpl)line(n.infAdic.infCpl);pdf.page.dictionary.data.MediaBox=[0,Math.max(0,pdf.page.height-pdf.y-18),w,pdf.page.height];pdf.end();return result;
 }
-export async function receiptPdf(sale,store,width=80){
+export async function receiptPdf(sale,store,width=80,voucher=null){
  const w=width*72/25.4,margin=12,inner=w-margin*2,font=width===58?7.5:8.5,chars=Math.floor(inner/(font*.6));
  const address=receiptCustomerAddress(sale),notes=sale.customer_details?.notes||sale.receipt_customer_notes||'',district=sale.customer_details?.fiscal?.enderDest?.xBairro||sale.customer_district||'';
  const textLines=v=>String(v||'').split('\n').reduce((n,l)=>n+Math.max(1,Math.ceil(l.length/chars)),0);
- const height=Math.max(700,600+(sale.link_order?38:0)+(sale.agreement?95:0)+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
+ const height=Math.max(700,600+(voucher?180:0)+(sale.link_order?38:0)+(sale.agreement?95:0)+sale.items.reduce((n,i)=>n+35+textLines(i.product_name)*12,0)+sale.payments.length*22+[notes,address,store.address,store.store_name,sale.customer_name].reduce((n,v)=>n+textLines(v)*12,0));
  const doc=new PDFDocument({size:[w,height],margins:{top:12,left:margin,right:margin,bottom:12}}),chunks=[];
  const result=new Promise((resolve,reject)=>{doc.on('data',b=>chunks.push(b));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
  const money=v=>(Number(v||0)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -61,29 +61,58 @@ export async function receiptPdf(sale,store,width=80){
  line('CNPJ: '+(cnpj.length===14?cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5'):store.document_id||'Não informado'),'center');
  if(store.contact)line('Contato: '+store.contact,'center');if(store.address)line(store.address,'center');rule();
  const stamp=new Date(sale.created_at).toLocaleString('pt-BR',{timeZone:'America/Cuiaba',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+ if(voucher){
+  line('VALE GÁS DIGITAL','center',14,true);
+  line('Código: '+voucher.code,'center',11,true);
+  line('Emissão: '+stamp);
+  if(sale.saleNumber)line('Cupom de venda: '+sale.saleNumber);
+  if(sale.customer_name)line('Cliente: '+sale.customer_name);
+  if(sale.customer_phone)line('Telefone: '+sale.customer_phone);
+  rule();
+ }else{
  if(width===80&&sale.saleNumber.length<=6){pair('Cupom: '+sale.saleNumber,'Data: '+stamp,font,true);}else{line('Cupom: '+sale.saleNumber,'left',13.5,true);line('Data: '+stamp);}rule();
  if(sale.revision>0)line('Revisão administrativa: '+sale.revision);
- line('Cliente....: '+(sale.customer_name||'Consumidor não identificado'));line('Endereço...: '+(address||'Não informado'));line('Bairro.....: '+(district||'Não informado'));line('Telefone...: '+(sale.customer_phone||'Não informado'));rule();
+ line('Cliente....: '+(sale.customer_name||'Consumidor não identificado'));if(address||district)line('Endereço...: '+[address,district].filter(Boolean).join(' - '));if(sale.customer_phone)line('Telefone...: '+sale.customer_phone);rule();
  if(sale.agreement){line('Convênio: '+sale.agreement.snapshot.name);line('Responsável: '+sale.agreement.snapshot.payerName);line('Vencimento: '+sale.agreement.due_date.split('-').reverse().join('/'));{const plan=receiptBalancePlan(sale.agreement),current=sale.agreement.currentBalances||{},who={individual:'cliente',group:'grupo'},known=plan.items.filter(x=>x.position),missing=plan.items.filter(x=>!x.position&&Number.isFinite(current[x.scope])),entry=plan.entryCents??sale.total_cents;if(!plan.items.length){if(plan.entryCents!==null)pair('Lançamento desta venda','R$ '+money(entry));}else{if(known.length===1&&!missing.length){const [{scope,position}]=known;line('Posição ao lançar a venda','left',font,true);pair('Saldo anterior do '+who[scope],'R$ '+money(position.previousCents));pair('Lançamento desta venda','R$ '+money(entry));pair('Saldo após lançamento','R$ '+money(position.totalCents),font,true);}else{if(known.length){line('Posição ao lançar a venda','left',font,true);pair('Lançamento desta venda','R$ '+money(entry));for(const {scope,position} of known){pair('Saldo anterior do '+who[scope],'R$ '+money(position.previousCents));pair('Total '+who[scope]+' após venda','R$ '+money(position.totalCents),font,true);}}for(const {scope} of missing)pair('Saldo atual do '+who[scope],'R$ '+money(current[scope]));}}}line(sale.outstanding_cents>0?'PAGAMENTO POR CONVENIO - A RECEBER':'PAGAMENTO POR CONVENIO - QUITADO');rule();}
- line('*** Observação ***','center',font,true);rule();line(notes||'Sem observações.');rule();
+ if(String(notes||'').trim()){line('Obs.: '+String(notes).trim(),'left',font,true);rule();}
+ }
  const qtyWidth=inner*.23,priceWidth=inner*.25,subWidth=inner*.29,qtyX=margin+inner-qtyWidth-priceWidth-subWidth,priceX=qtyX+qtyWidth,subX=priceX+priceWidth;
  const tableRow=(left,qty,price,total,bold=false)=>{doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(font);const y=doc.y;let bottom=y;doc.text(left,margin,y,{width:qtyX-margin-3});bottom=Math.max(bottom,doc.y);doc.text(qty,qtyX,y,{width:qtyWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(price,priceX,y,{width:priceWidth-3,align:'right'});bottom=Math.max(bottom,doc.y);doc.text(total,subX,y,{width:subWidth,align:'right'});doc.y=Math.max(bottom,doc.y)+4;};
  tableRow(width===58?'Prod.':'Produto','Qt','Preço','Subtotal',true);rule();
  for(const item of sale.items){line(item.product_name);if(item.gas_do_povo)line('Gás do Povo');tableRow('........',Number(item.quantity).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3}),money(item.unit_price_cents),money(item.gross_cents));doc.y+=3;}
- rule();pair('(+) Subtotal',money(sale.subtotal_cents));pair('(+) Taxa entrega',money(sale.delivery_fee_cents));pair('(-) Desconto',money(sale.discount_cents));pair('(=) TOTAL',money(sale.total_cents),width===58?12.5:15.5,true);rule();
+ if(voucher){
+  rule();pair('TOTAL DO VALE','R$ '+money(sale.total_cents),width===58?11:14,true);rule();
+  if(voucher.status==='ACTIVE'){
+   const qr=await QRCode.toBuffer(voucher.code,{width:320,margin:4,errorCorrectionLevel:'M'});
+   const size=Math.min(inner,115),y=doc.y;
+   doc.image(qr,(w-size)/2,y,{width:size});
+   doc.y=y+size+5;
+   line('Apresente o QR Code ou o código para resgatar.','center');
+  }else{
+   line(voucher.status==='REDEEMED'?'VALE JÁ RESGATADO':'VALE CANCELADO','center',font+1,true);
+  }
+  line('VALE GÁS DIGITAL · SEM VALOR FISCAL','center',font);
+  doc.page.dictionary.data.MediaBox=[0,Math.max(0,doc.page.height-doc.y-14),w,doc.page.height];
+  doc.end();return result;
+ }
+ const fee=Number(sale.delivery_fee_cents||0),disc=Number(sale.discount_cents||0),due=Number(sale.outstanding_cents||0);
+ rule();if(fee>0||disc>0)pair('(+) Subtotal',money(sale.subtotal_cents));if(fee>0)pair('(+) Taxa entrega',money(fee));if(disc>0)pair('(-) Desconto',money(disc));pair('(=) TOTAL',money(sale.total_cents),width===58?12.5:15.5,true);rule();
  const labels={cash:'Dinheiro',pix:'Pix',credit_card:'Cartão de crédito',debit_card:'Cartão de débito',online:'Pagamento online'},totals={};
  if(sale.link_order){
-  pair('Forma prevista',labels[sale.link_order.preferred_payment]||'A combinar');
+  pair('Forma prevista',labels[sale.link_order.preferred_payment]||'A combinar',font,true);
   const status=sale.cancelled_at?'Cancelada':sale.outstanding_cents>0?(sale.paid_cents>0?'Parcialmente pago':'A receber'):'Quitado';
   pair('Situação do pagamento',status,font,true);
   if(sale.payments.length)rule();
  }
  let received=0,change=0;for(const p of sale.payments){const amount=Number(p.amount_cents),cashReceived=Number(p.received_cents??amount);totals[p.method]=(totals[p.method]||0)+amount;received+=p.method==='cash'?cashReceived:amount;if(p.method==='cash')change+=cashReceived-amount;}
- for(const [method,value]of Object.entries(totals))pair('(=) '+(labels[method]||method),money(value));
- pair('(=) Total recebido',money(received),font,true);pair('(=) Troco',money(change));rule();
- pair('Saldo devedor:','R$ '+money(sale.outstanding_cents),font,true);rule();
+ const methodEntries=Object.entries(totals);
+ for(const [method,value]of methodEntries)pair('(=) '+(labels[method]||method),money(value),font,true);
+ if(methodEntries.length>1||change>0)pair('(=) Total recebido',money(received),font,true);
+ if(change>0)pair('(=) Troco',money(change));
+ if(methodEntries.length)rule();
+ if(due>0){pair('Saldo devedor:','R$ '+money(due),font,true);rule();}
  if(sale.cancelled_at){line('VENDA CANCELADA','center',font+1,true);line(sale.cancellation_reason||'');rule();}
- line('Que nosso dia seja abençoado.','center',font,true);doc.moveDown(.5);line('RECIBO DE VENDA - SEM VALOR FISCAL','center',width===58?6:7);line('Não substitui documento fiscal autorizado.','center',width===58?6:7);
+ line('SEM VALOR FISCAL','center',width===58?6.5:7.5);
  doc.page.dictionary.data.MediaBox=[0,Math.max(0,doc.page.height-doc.y-14),w,doc.page.height];doc.end();return result;
 }
 export async function printerTestPdf(width=80){
