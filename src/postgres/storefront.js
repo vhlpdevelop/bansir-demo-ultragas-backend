@@ -91,7 +91,7 @@ export function mountPublicStorefront(app,{database,route,clock=()=>new Date(),i
   });res.set({'Content-Type':result.mime,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}).send(result.body);}catch(e){next(e);}
  });
  app.get('/api/v1/public/stores/:slug',reads,route(async req=>({data:await publicStorefront(database,req.params.slug,null,async(c,store)=>{
-  const products=(await c.query('SELECT id,name,price_cents,fulfillment_pricing,gas_do_povo,gas_do_povo_delivery,stock,unit,brand,category,image_id FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY name',[store.config.productIds])).rows;
+  const products=(await c.query('SELECT id,name,price_cents,fulfillment_pricing,gas_do_povo,gas_do_povo_delivery,stock,unit,brand,category,image_id FROM bansir.products WHERE id=ANY($1::uuid[]) ORDER BY array_position($1::uuid[],id) NULLS LAST,name',[store.config.productIds])).rows;
   const day=pricingDay(store.config.timeZone,clock());
   return {slug:store.slug,config:store.config,pricingDay:day,businessStatus:businessStatus(store.config,clock()),products:products.map(p=>({id:p.id,name:p.name,priceCents:Number(p.price_cents),...productQuote(p,day),available:p.stock>0,unit:p.unit,brand:p.brand,category:p.category,imageId:p.image_id||null,imageUrl:p.image_id?`/api/v1/public/stores/${encodeURIComponent(store.slug)}/products/${p.id}/image`:''}))};
  })})));
