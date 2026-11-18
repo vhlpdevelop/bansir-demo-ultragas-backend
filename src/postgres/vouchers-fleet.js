@@ -1,3 +1,5 @@
+import {receiptPdf,widthOf} from './printing.js';
+import {grantPrint} from './qz-signing.js';
 import {randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {httpError} from './database.js';
@@ -22,6 +24,28 @@ const presentVoucher=(row,m,redeemable)=>{const v=voucherView(row);if(canIssue(m
 const vehicleView=row=>({...row,_id:row.id,purchaseValue:Number(row.purchase_cents)/100,currentKm:Number(row.current_km),lastKmUpdate:row.last_km_update,maintenanceRules:row.maintenance_rules});
 
 export function mountVouchersFleet(app,{database}){
+ app.get('/api/v1/vouchers/receipt/:id',endpoint(database,async(c,req,m)=>{
+  if(!canIssue(m))forbidden();
+  const id=uuid.parse(req.params.id),i=req.identity;
+  const voucher=(await c.query(`SELECT v.*,s.coupon_number FROM bansir.vouchers v
+    LEFT JOIN bansir.sales s ON s.id=v.sale_id AND s.establishment_id=v.establishment_id AND s.tenant_id=v.tenant_id
+    WHERE v.id=$1 AND v.tenant_id=$2 AND v.establishment_id=$3`,[id,i.tenantId,i.establishmentId])).rows[0];
+  if(!voucher)throw httpError(404,'Vale não encontrado.','NOT_FOUND');
+  const store=(await c.query('SELECT store_name,document_id,address,contact FROM bansir.store_settings')).rows[0]||{};
+  const sale={
+   created_at:voucher.issued_at,saleNumber:voucher.coupon_number,
+   customer_name:voucher.customer_name,customer_phone:voucher.customer_phone,
+   total_cents:voucher.total_cents,payments:[],
+   items:voucher.items.map(item=>({
+    product_name:item.productName,quantity:item.quantity,
+    unit_price_cents:Math.round(Number(item.price)*100),
+    gross_cents:Math.round(Number(item.price)*100)*item.quantity
+   }))
+  };
+  const pdf=await receiptPdf(sale,store,widthOf(req),voucher);
+  grantPrint(i,pdf);
+  return {data:{base64:pdf.toString('base64'),filename:`vale-gas-${voucher.code}.pdf`}};
+ }));
  app.get('/api/v1/vouchers',endpoint(database,async(c,req,m)=>{
   if(!canIssue(m)&&!canRedeem(m))forbidden();const status=z.enum(['ACTIVE','REDEEMED','CANCELLED']).optional().parse(req.query.status);
   const rows=(await c.query('SELECT * FROM bansir.vouchers WHERE tenant_id=$1 AND establishment_id=$2 AND ($3::text IS NULL OR status=$3) ORDER BY issued_at DESC LIMIT 100',[req.identity.tenantId,req.identity.establishmentId,status||null])).rows;

@@ -1,3 +1,5 @@
+import {grantPrint} from './qz-signing.js';
+import {advanceReceiptPdf} from './advance-receipt.js';
 import {randomUUID} from 'node:crypto';
 import {paymentSummary} from './payment-summary.js';
 import {z} from 'zod';
@@ -12,7 +14,7 @@ const manage=m=>{if(!admin(m))deny();};
 const access=(m,part)=>{if(!admin(m)&&!m.allowed_routes?.some(r=>r==='financial'||r===part))deny();};
 const money=z.number().finite().min(0).max(10000000).refine(v=>Math.abs(v*100-Math.round(v*100))<0.00001,'Informe duas casas decimais.');
 const text=z.string().trim().max(200),uuid=z.uuid();
-const employeeInput=z.object({name:text.min(2),email:z.email().max(200),phone:text.default(''),pixKey:text.default(''),roleTitle:text.min(1),laborType:z.enum(['MOD','MOI']),baseSalary:money,commissionType:z.enum(['percentage','fixed']),commissionValue:money,userId:uuid.nullable().optional(),active:z.boolean().optional()}).strict().refine(d=>d.commissionType!=='percentage'||d.commissionValue<=100,'Comissão percentual não pode superar 100%.');
+const employeeInput=z.object({name:text.min(2),email:z.email().max(200),phone:text.default(''),pixKey:text.default(''),cpf:z.string().regex(/^(?:[0-9]{11})?$/).optional(),registration:text.max(40).optional(),roleTitle:text.min(1),laborType:z.enum(['MOD','MOI']),baseSalary:money,commissionType:z.enum(['percentage','fixed']),commissionValue:money,userId:uuid.nullable().optional(),active:z.boolean().optional()}).strict().refine(d=>d.commissionType!=='percentage'||d.commissionValue<=100,'Comissão percentual não pode superar 100%.');
 const entryInput=z.object({requestKey:uuid,title:text.min(2),type:z.enum(['income','expense']),category:text.min(1),amount:money.refine(n=>n>0),paymentMethod:z.enum(['pix','cartao_credito','cartao_debito','dinheiro','transferencia','boleto','vale','outro']),notes:z.string().max(2000).default(''),brandName:text.optional(),sellerName:text.optional(),status:z.enum(['pending','completed']).default('pending'),date:z.iso.datetime({offset:true}).optional(),dueDate:z.iso.date().optional()}).strict();
 const viewEntry=r=>({...r,_id:r.id,amount:Number(r.amount_cents)/100,paymentMethod:r.payment_method,sellerName:r.seller_name,dueDate:r.due_date,settledAt:r.settled_at,source:'manual'});
 const gasLevel=(role,pts,count)=>{const isDelivery=/entregador|motorista/i.test(role||'');if(pts>=600||count>=50)return isDelivery?'Campeão das Rotas Diamante 💎':'Mestre do Gás Diamante 💎';if(pts>=300||count>=25)return isDelivery?'Mestre das Entregas Ouro 🥇':'Especialista Bansir Ouro 🏆';if(pts>=100||count>=10)return isDelivery?'Entregador Ágil Prata 🥈':'Vendedor Destaque Prata 🥈';return isDelivery?'Entregador Bronze 🛵':'Novato do Gás Bronze 🎯';};
@@ -87,6 +89,36 @@ async function settings(c){return (await c.query('SELECT data FROM bansir.pricin
 export function mountManagement(app,{scoped}){
  app.get('/api/v1/employees/users',scoped('employees',true,async(c,_r,m)=>{manage(m);return {data:(await c.query('SELECT u.id,u.name FROM bansir.users u JOIN bansir.establishment_memberships e ON e.user_id=u.id WHERE e.active AND u.active ORDER BY u.name')).rows};}));
  app.get('/api/v1/employees',scoped('employees',true,async(c,_r,m)=>{manage(m);return {data:await employees(c)};}));
+ app.get('/api/v1/employees/:id/receipt-identity',scoped('employees',true,async(c,req,m)=>{
+  manage(m);
+  const row=(await c.query('SELECT cpf,registration FROM bansir.employees WHERE id=$1 AND tenant_id=$2 AND establishment_id=$3',[uuid.parse(req.params.id),req.identity.tenantId,req.identity.establishmentId])).rows[0];
+  if(!row)throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');
+  const settings=(await c.query('SELECT merchant_city FROM bansir.store_settings')).rows[0];
+  return {data:{...row,location:settings?.merchant_city||''}};
+ }));
+ app.post('/api/v1/employees/vouchers/:id/receipt',scoped('employees',true,async(c,req,m)=>{
+  manage(m);
+  const fields=z.object({
+   cpf:z.string().regex(/^\d{11}$/),registration:text.max(40).default(''),
+   nature:text.min(3).max(120),location:text.min(3).max(80),date:z.iso.date(),
+   width:z.union([z.literal(58),z.literal(80)]).optional(),
+   method:z.enum(['','Dinheiro em espécie','Pix','Transferência bancária']),
+   period:z.string().regex(/^(?:\d{4}-(?:0[1-9]|1[0-2]))?$/)
+  }).strict().parse(req.body);
+  const row=(await c.query(`SELECT a.amount_cents,a.justification,a.status,e.name AS employee_name,e.role_title,e.cpf,e.registration,b.legal_name,b.document_id
+    FROM bansir.employee_advances a JOIN bansir.employees e ON e.id=a.employee_id AND e.establishment_id=a.establishment_id AND e.tenant_id=a.tenant_id
+    JOIN bansir.establishments b ON b.id=a.establishment_id AND b.tenant_id=a.tenant_id
+    WHERE a.id=$1 AND a.tenant_id=$2 AND a.establishment_id=$3`,
+    [uuid.parse(req.params.id),req.identity.tenantId,req.identity.establishmentId])).rows[0];
+  if(!row)throw httpError(404,'Vale não encontrado.','NOT_FOUND');
+  if(row.status==='CANCELADO')throw httpError(409,'Vale cancelado.','INVALID_ADVANCE_STATUS');
+  if(!row.legal_name?.trim()||String(row.document_id||'').replace(/\D/g,'').length!==14)throw httpError(409,'Preencha a razão social e o CNPJ da loja antes de gerar o recibo.','EMPLOYER_DETAILS_REQUIRED');
+  if(row.justification==='adiantamento_salarial'&&!fields.period)throw httpError(400,'Informe a competência da folha.','PAYROLL_PERIOD_REQUIRED');
+  if(row.justification!=='adiantamento_salarial')fields.period='';
+  const pdf=await advanceReceiptPdf(row,{...fields,cpf:row.cpf||fields.cpf,registration:row.registration||fields.registration},fields.width);
+  if(fields.width)grantPrint(req.identity,pdf);
+  return {data:{base64:pdf.toString('base64'),filename:'recibo-vale-'+req.params.id+'.pdf'}};
+ }));
  app.get('/api/v1/employees/vouchers',scoped('employees',true,async(c,_r,m)=>{manage(m);return {data:(await c.query(`SELECT a.*,e.name AS employee_name,v.name AS vehicle_name,u.name AS issued_by_name FROM bansir.employee_advances a JOIN bansir.employees e ON e.id=a.employee_id LEFT JOIN bansir.vehicles v ON v.id=a.vehicle_id JOIN bansir.users u ON u.id=a.issued_by ORDER BY a.date DESC`)).rows.map(a=>({...a,_id:a.id,amount:Number(a.amount_cents)/100,employee:{_id:a.employee_id,name:a.employee_name},vehicle:a.vehicle_id?{_id:a.vehicle_id,name:a.vehicle_name}:null,vehicleKm:a.vehicle_km,issuedByName:a.issued_by_name}))};}));
  app.get('/api/v1/employees/:id',scoped('employees',true,async(c,req,m)=>{manage(m);const employee=(await employees(c)).find(e=>e.id===uuid.parse(req.params.id));if(!employee)throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');return {data:employee};}));
  app.post('/api/v1/employees/vouchers/:id/discount',scoped('employees',false,async(c,req,m)=>{manage(m);const {reference}=z.object({reference:text.min(3)}).strict().parse(req.body),id=uuid.parse(req.params.id),old=(await c.query('SELECT * FROM bansir.employee_advances WHERE id=$1 FOR UPDATE',[id])).rows[0];if(!old)throw httpError(404,'Adiantamento não encontrado.','NOT_FOUND');if(old.status==='DESCONTADO'){if(old.payroll_reference!==reference)throw httpError(409,'Desconto já registrado em outra referência.','ALREADY_DISCOUNTED');return {data:old};}if(old.status!=='EMITIDO')throw httpError(409,'Adiantamento indisponível para desconto.','INVALID_ADVANCE_STATUS');return {data:(await c.query("UPDATE bansir.employee_advances SET status='DESCONTADO',payroll_reference=$2,discounted_by=$3,discounted_at=now() WHERE id=$1 RETURNING *",[id,reference,req.identity.userId])).rows[0]};}));
@@ -106,6 +138,7 @@ export function mountManagement(app,{scoped}){
   const args=[d.name,d.email.toLowerCase(),d.phone,d.pixKey,d.roleTitle,d.laborType,Math.round(d.baseSalary*100),d.commissionType,d.commissionValue,d.userId||null,d.active??true];
   if(id)await c.query('UPDATE bansir.employees SET name=$1,email=$2,phone=$3,pix_key=$4,role_title=$5,labor_type=$6,salary_cents=$7,commission_type=$8,commission_value=$9,user_id=$10,active=$11 WHERE id=$12',[...args,id]);
   else id=(await c.query('INSERT INTO bansir.employees(name,email,phone,pix_key,role_title,labor_type,salary_cents,commission_type,commission_value,user_id,active,tenant_id,establishment_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',[...args,i.tenantId,i.establishmentId])).rows[0].id;
+  if(d.cpf!==undefined||d.registration!==undefined)await c.query('UPDATE bansir.employees SET cpf=coalesce($2,cpf),registration=coalesce($3,registration) WHERE id=$1',[id,d.cpf??null,d.registration??null]);
   return {status:method==='post'?201:200,data:(await employees(c)).find(e=>e.id===id)};
  }));
  app.delete('/api/v1/employees/:id',scoped('employees',false,async(c,req,m)=>{manage(m);if(!(await c.query('UPDATE bansir.employees SET active=false WHERE id=$1 RETURNING id',[uuid.parse(req.params.id)])).rowCount)throw httpError(404,'Funcionário não encontrado.','NOT_FOUND');return {data:true};}));

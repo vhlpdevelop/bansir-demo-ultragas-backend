@@ -46,6 +46,6 @@ export function mountQzSigning(app,{scoped}){
   const url = await getSignedUrl(installerStorage, command, {expiresIn: 300});
   return {data: {url}};
  }));
- app.get('/api/v1/printing/qz',scoped('sales',true,async()=>{let config;try{config=signingConfig();}catch{}return {data:{configured:!!config,certificate:config?.certificate||null}};}));
- app.post('/api/v1/printing/qz/sign',scoped('sales',true,async(c,req)=>{let config;try{config=signingConfig();}catch{}return {data:{signature:signQz(req.identity,req.body,config)}};}));
+ app.get('/api/v1/printing/qz',scoped(['sales','valegas-issue','employees'],true,async()=>{let config;try{config=signingConfig();}catch{}return {data:{configured:!!config,certificate:config?.certificate||null}};}));
+ app.post('/api/v1/printing/qz/sign',scoped(['sales','valegas-issue','employees'],true,async(c,req)=>{let config;try{config=signingConfig();}catch{}return {data:{signature:signQz(req.identity,req.body,config)}};}));
 }

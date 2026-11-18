@@ -1,3 +1,4 @@
+import {mountAppearance} from './appearance.js';
 import {validationMessage} from './validation-message.js';
 import {mountAgreements} from './agreement-routes.js';
 import {mountSupplierCnpj} from './supplier-cnpj.js';
@@ -200,6 +201,7 @@ export function createPostgresApp({ database, jwtSecret, corsOrigin = '', nodeEn
   }));
 
   mountNotifications(app,{scoped,route,database});
+  mountAppearance(app,{route,database});
   mountFiscal(app,{scoped});
   mountFiscalIssuance(app,{scoped});
   mountSales(app,{scoped,secret:jwtSecret});

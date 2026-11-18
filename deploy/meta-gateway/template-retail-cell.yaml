@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Bansir Meta Retails cell for the existing central gateway
+Parameters:
+  ArtifactBucket:
+    Type: String
+    Default: bansir-meta-artifacts-783764583281-sa-east-1
+  ArtifactKey:
+    Type: String
+    Default: bansir-meta-gateway-embedded-v1.zip
+  RoutesTable:
+    Type: String
+    Default: bansir-meta-prod-Routes-AK0AJBNQT0MM
+  MetaAppId:
+    Type: String
+    Default: '1793938688602287'
+    AllowedPattern: '[0-9]{5,30}'
+  MetaSecretArn:
+    Type: String
+    Default: arn:aws:secretsmanager:sa-east-1:783764583281:secret:bansir/meta/webhook-FuDOJo
+    Description: ARN of Secrets Manager JSON containing appSecret and verifyToken
+  CellId:
+    Type: String
+    Default: retail-1
+    AllowedValues: [retail-1]
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 128
+    CodeUri:
+      Bucket: !Ref ArtifactBucket
+      Key: !Ref ArtifactKey
+Resources:
+  CellDead:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
+  CellQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: !Sub bansir-meta-cell-${CellId}
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 120
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy: {deadLetterTargetArn: !GetAtt CellDead.Arn, maxReceiveCount: 8}
+  Connect:
+    DependsOn: ConnectLog
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-connect-${CellId}
+      Handler: src/lambda.connect
+      Timeout: 60
+      Environment:
+        Variables:
+          META_APP_ID: !Ref MetaAppId
+          META_GRAPH_VERSION: v25.0
+          META_SECRET_ARN: !Ref MetaSecretArn
+          CELL_ID: !Ref CellId
+          CELL_QUEUE_URL: !Ref CellQueue
+          ROUTES_TABLE: !Ref RoutesTable
+      Policies:
+        - Statement:
+            - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref MetaSecretArn}
+            - Effect: Allow
+              Action: ['dynamodb:GetItem','dynamodb:PutItem','dynamodb:UpdateItem']
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RoutesTable}
+  ConnectLog:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-connect-${CellId}', RetentionInDays: 7}
+  ConnectPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - {Effect: Allow, Action: 'lambda:InvokeFunction', Resource: !GetAtt Connect.Arn}
+  CellConsumerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: ['sqs:ReceiveMessage','sqs:DeleteMessage','sqs:GetQueueAttributes','sqs:ChangeMessageVisibility']
+            Resource: !GetAtt CellQueue.Arn
+Outputs:
+  ConnectFunctionArn: {Value: !GetAtt Connect.Arn}
+  ConnectPolicyArn: {Value: !Ref ConnectPolicy}
+  CellQueueUrl: {Value: !Ref CellQueue}
+  CellQueueArn: {Value: !GetAtt CellQueue.Arn}
+  CellConsumerPolicyArn: {Value: !Ref CellConsumerPolicy}
+  CellDeadQueueUrl: {Value: !Ref CellDead}
