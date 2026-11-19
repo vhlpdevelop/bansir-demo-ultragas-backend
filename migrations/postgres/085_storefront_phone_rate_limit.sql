@@ -12,4 +12,3 @@ $$;
 
 REVOKE ALL ON FUNCTION bansir.storefront_phone_allowed(uuid, uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION bansir.storefront_phone_allowed(uuid, uuid, text) TO bansir_storefront;
-
